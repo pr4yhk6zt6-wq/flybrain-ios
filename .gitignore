@@ -7,3 +7,5 @@ build/
 DerivedData/
 *.ipa
 *.xcarchive
+.cache/
+.local/
