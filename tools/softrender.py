@@ -258,7 +258,28 @@ def build_world(env):
 
 # --------------------------------------------------------------- rasteriser
 
-def render(W, H, draws, camPos, viewProj, env):
+def _clip_near(poly, near):
+    """Sutherland-Hodgman against the view-space near plane (keep z <= -near)
+    — the same clip the GPU performs. Each polygon vertex is (vs3, attrs6),
+    attrs = worldPos + normal. A replica that skips this drops the open-world
+    floor entirely, because two of its four corners sit behind the camera."""
+    out = []
+    n = len(poly)
+    for i in range(n):
+        a = poly[i]
+        b = poly[(i + 1) % n]
+        da = -near - a[0][2]
+        db = -near - b[0][2]
+        a_in = da >= 0
+        if a_in:
+            out.append(a)
+        if a_in != (db >= 0):
+            t = da / (da - db)
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
+def render(W, H, draws, camPos, view, proj, env, near=0.01):
     colour = np.zeros((H, W, 3), np.float32)
     depth = np.full((H, W), np.inf, np.float32)
     flymask = np.zeros((H, W), bool)
@@ -280,13 +301,8 @@ def render(W, H, draws, camPos, viewProj, env):
         nrm = verts[:, 3:6] @ R.T
         ln = np.linalg.norm(nrm, axis=1, keepdims=True)
         nrm = np.where(ln > 1e-9, nrm / np.maximum(ln, 1e-9), 0.0)
-
-        clip = np.concatenate([wp, np.ones((len(wp), 1))], axis=1) @ viewProj.T
-        w = clip[:, 3]
-        ok = w > 1e-6
-        ndc = np.where(ok[:, None], clip[:, 0:3] / np.maximum(w, 1e-6)[:, None], 1e6)
-        sx = (ndc[:, 0] * 0.5 + 0.5) * W
-        sy = (1.0 - (ndc[:, 1] * 0.5 + 0.5)) * H
+        vsh = np.concatenate([wp, np.ones((len(wp), 1))], axis=1) @ view.T
+        vs = vsh[:, 0:3]
 
         base_col = np.array(inst["colour"][0:3], np.float32)
         emissive = inst["colour"][3]
@@ -294,68 +310,98 @@ def render(W, H, draws, camPos, viewProj, env):
         is_fly = inst.get("fly", False)
 
         for t0, t1, t2 in idx.reshape(-1, 3):
-            if not (ok[t0] and ok[t1] and ok[t2]):
-                continue
-            x0, y0, z0, iw0 = sx[t0], sy[t0], ndc[t0, 2], 1.0 / w[t0]
-            x1, y1, z1, iw1 = sx[t1], sy[t1], ndc[t1, 2], 1.0 / w[t1]
-            x2, y2, z2, iw2 = sx[t2], sy[t2], ndc[t2, 2], 1.0 / w[t2]
-            area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
-            if area >= -1e-9:
-                continue
-            minx = max(int(math.floor(min(x0, x1, x2))), 0)
-            maxx = min(int(math.ceil(max(x0, x1, x2))), W - 1)
-            miny = max(int(math.floor(min(y0, y1, y2))), 0)
-            maxy = min(int(math.ceil(max(y0, y1, y2))), H - 1)
-            if minx > maxx or miny > maxy:
-                continue
-            px = np.arange(minx, maxx + 1, dtype=np.float32) + 0.5
-            py = np.arange(miny, maxy + 1, dtype=np.float32) + 0.5
-            X, Y = np.meshgrid(px, py)
-            w0 = ((x1 - X) * (y2 - Y) - (x2 - X) * (y1 - Y)) / area
-            w1 = ((x2 - X) * (y0 - Y) - (x0 - X) * (y2 - Y)) / area
-            w2 = 1.0 - w0 - w1
-            inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
-            if not inside.any():
-                continue
-            iw = w0 * iw0 + w1 * iw1 + w2 * iw2
-            with np.errstate(divide="ignore", invalid="ignore"):
-                inv = np.where(np.abs(iw) > 1e-20, 1.0 / iw, 0.0)
-            zz = (w0 * z0 * iw0 + w1 * z1 * iw1 + w2 * z2 * iw2) * inv
-            hit = inside & (zz < depth[miny:maxy + 1, minx:maxx + 1])
-            if not hit.any():
-                continue
-            b0 = (w0 * iw0 * inv)[hit]
-            b1 = (w1 * iw1 * inv)[hit]
-            b2 = (w2 * iw2 * inv)[hit]
-            wpos = (wp[t0][None, :] * b0[:, None] + wp[t1][None, :] * b1[:, None]
-                    + wp[t2][None, :] * b2[:, None])
-            N = (nrm[t0][None, :] * b0[:, None] + nrm[t1][None, :] * b1[:, None]
-                 + nrm[t2][None, :] * b2[:, None])
-            Nl = np.linalg.norm(N, axis=1, keepdims=True)
-            N = np.where(Nl > 1e-9, N / np.maximum(Nl, 1e-9), 0.0)
+            poly = _clip_near(
+                [(vs[t0], np.concatenate([wp[t0], nrm[t0]])),
+                 (vs[t1], np.concatenate([wp[t1], nrm[t1]])),
+                 (vs[t2], np.concatenate([wp[t2], nrm[t2]]))], near)
+            for k in range(1, len(poly) - 1):
+                tri = (poly[0], poly[k], poly[k + 1])
+                tvs = np.stack([p[0] for p in tri])
+                att = np.stack([p[1] for p in tri])
+                c4 = np.concatenate([tvs, np.ones((3, 1))], axis=1) @ proj.T
+                w = c4[:, 3]
+                if (w <= 1e-6).any():
+                    continue
+                ndc = c4[:, 0:3] / w[:, None]
+                sx = (ndc[:, 0] * 0.5 + 0.5) * W
+                sy = (1.0 - (ndc[:, 1] * 0.5 + 0.5)) * H
+                # Perspective-correct depth the GPU way: clip-space z is affine
+                # in view space, so interpolate it with barycentric/w weights,
+                # then divide by the interpolated w (which is 1 / sum(b/w)).
+                # Interpolating ndc z directly double-divides and corrupts
+                # depth across the huge clipped ground triangles.
+                z0, z1, z2 = c4[0, 2], c4[1, 2], c4[2, 2]
+                iw0, iw1, iw2 = 1.0 / w[0], 1.0 / w[1], 1.0 / w[2]
+                x0, y0 = sx[0], sy[0]
+                x1, y1 = sx[1], sy[1]
+                x2, y2 = sx[2], sy[2]
+                area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+                # No winding cull: the app draws with cull mode .none and a
+                # depth test, and the ground quad is wound so that seen from
+                # above its screen area is positive. Backfaces simply lose
+                # the depth race, exactly like on the GPU.
+                if abs(area) < 1e-9:
+                    continue
+                minx = max(int(math.floor(min(x0, x1, x2))), 0)
+                maxx = min(int(math.ceil(max(x0, x1, x2))), W - 1)
+                miny = max(int(math.floor(min(y0, y1, y2))), 0)
+                maxy = min(int(math.ceil(max(y0, y1, y2))), H - 1)
+                if minx > maxx or miny > maxy:
+                    continue
+                px = np.arange(minx, maxx + 1, dtype=np.float32) + 0.5
+                py = np.arange(miny, maxy + 1, dtype=np.float32) + 0.5
+                X, Y = np.meshgrid(px, py)
+                w0 = ((x1 - X) * (y2 - Y) - (x2 - X) * (y1 - Y)) / area
+                w1 = ((x2 - X) * (y0 - Y) - (x0 - X) * (y2 - Y)) / area
+                w2 = 1.0 - w0 - w1
+                inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+                if not inside.any():
+                    continue
+                iw = w0 * iw0 + w1 * iw1 + w2 * iw2
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    inv = np.where(np.abs(iw) > 1e-20, 1.0 / iw, 0.0)
+                # zz ends up as sum(b/w * clipz): the /sum(b/w) of the
+                # perspective correction and the *w_pix needed to turn clip z
+                # back into ndc z cancel exactly.
+                zz = w0 * z0 * iw0 + w1 * z1 * iw1 + w2 * z2 * iw2
+                hit = inside & (zz < depth[miny:maxy + 1, minx:maxx + 1])
+                if not hit.any():
+                    continue
+                b0 = (w0 * iw0 * inv)[hit]
+                b1 = (w1 * iw1 * inv)[hit]
+                b2 = (w2 * iw2 * inv)[hit]
+                wpos = (att[0][None, 0:3] * b0[:, None]
+                        + att[1][None, 0:3] * b1[:, None]
+                        + att[2][None, 0:3] * b2[:, None])
+                N = (att[0][None, 3:6] * b0[:, None]
+                     + att[1][None, 3:6] * b1[:, None]
+                     + att[2][None, 3:6] * b2[:, None])
+                Nl = np.linalg.norm(N, axis=1, keepdims=True)
+                N = np.where(Nl > 1e-9, N / np.maximum(Nl, 1e-9), 0.0)
 
-            base = np.repeat(base_col[None, :], len(wpos), axis=0)
-            if checker > 0:
-                c = np.floor(wpos[:, [0, 2]] * checker)
-                f = np.mod(c[:, 0] + c[:, 1] + 2.0, 2.0)
-                base = base * (0.74 + 0.26 * f)[:, None]
-            ndl = np.maximum(N @ sun, 0.0)[:, None]
-            lit = base * (ambient[None, :] + ndl * 0.85)
-            V_ = camPos[None, :] - wpos
-            Vl = np.linalg.norm(V_, axis=1, keepdims=True)
-            V_ = np.where(Vl > 1e-9, V_ / np.maximum(Vl, 1e-9), 0.0)
-            rim = np.power(1.0 - np.maximum((N * V_).sum(1), 0.0), 3.0)[:, None]
-            lit = lit + base * rim * 0.25 + base * emissive
-            dist = np.linalg.norm(wpos - camPos[None, :], axis=1)
-            fog = np.clip(1.0 - np.exp(-dist * env["fog"]), 0, 1)[:, None]
-            lit = lit * (1 - fog) + sky[None, :] * fog
+                base = np.repeat(base_col[None, :], len(wpos), axis=0)
+                if checker > 0:
+                    c = np.floor(wpos[:, [0, 2]] * checker)
+                    f = np.mod(c[:, 0] + c[:, 1] + 2.0, 2.0)
+                    base = base * (0.74 + 0.26 * f)[:, None]
+                ndl = np.maximum(N @ sun, 0.0)[:, None]
+                lit = base * (ambient[None, :] + ndl * 0.85)
+                V_ = camPos[None, :] - wpos
+                Vl = np.linalg.norm(V_, axis=1, keepdims=True)
+                V_ = np.where(Vl > 1e-9, V_ / np.maximum(Vl, 1e-9), 0.0)
+                rim = np.power(1.0 - np.maximum((N * V_).sum(1), 0.0), 3.0)[:, None]
+                lit = lit + base * rim * 0.25 + base * emissive
+                # fog per fragment, exactly like the fixed Metal shader
+                dist = np.linalg.norm(wpos - camPos[None, :], axis=1)
+                fog = np.clip(1.0 - np.exp(-dist * env["fog"]), 0, 1)[:, None]
+                lit = lit * (1 - fog) + sky[None, :] * fog
 
-            yy, xx = np.nonzero(hit)
-            yys, xxs = yy + miny, xx + minx
-            depth[yys, xxs] = zz[yy, xx]
-            colour[yys, xxs] = lit
-            if is_fly:
-                flymask[yys, xxs] = True
+                yy, xx = np.nonzero(hit)
+                yys, xxs = yy + miny, xx + minx
+                depth[yys, xxs] = zz[yy, xx]
+                colour[yys, xxs] = lit
+                if is_fly:
+                    flymask[yys, xxs] = True
 
     return colour, depth, flymask
 
@@ -468,8 +514,8 @@ def main():
     back = np.array([-math.sin(heading), 0.0, math.cos(heading)])
     camPos = pos + back * distance + np.array([0.0, 0.3, 0.0])
     view = lookAt(camPos, pos, np.array([0.0, 1.0, 0.0]))
-    proj = perspective(math.radians(55), args.W / args.H, 0.01, 80)
-    colour, depth, flymask = render(args.W, args.H, draws, camPos, proj @ view, env)
+    proj = perspective(math.radians(55), args.W / args.H, 0.01, 8000)
+    colour, depth, flymask = render(args.W, args.H, draws, camPos, view, proj, env)
 
     Image.fromarray((np.clip(colour, 0, 1) * 255).astype(np.uint8)).save(args.out)
     print(f"wrote {args.out}   scene draws={n_scene}  fly parts="

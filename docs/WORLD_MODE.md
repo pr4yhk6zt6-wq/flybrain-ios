@@ -38,14 +38,25 @@ buffer plus one readback:
 | Body | BANC group(s) | Count |
 |---|---|---|
 | Flight thrust / lift | `motor_wing_power_left` + `_right` | 12 + 12 |
-| Yaw in flight | `motor_wing_steering_right` − `_left` | 12 + 12 |
+| Yaw in flight | `motor_wing_steering_right` − `_left`, minus a slowly adapted baseline | 12 + 12 |
 | Walking speed | mean of front/middle/hind `motor_*_leg_*` | 391 |
 | Turning on foot | right-side leg rate − left-side, minus a slowly adapted baseline | — |
 
 The adapted baseline (`turnBias`, tau 1.5 s) matters: the two leg populations
 never fire perfectly evenly, and raw differential drive turned the animal in
 circles at a steady ~11°/s forever. Only *changes* in asymmetry steer now —
-the same equilibrium-reflex idea the wing lift loop uses.
+the same equilibrium-reflex idea the wing lift loop uses. The flight yaw gets
+the same treatment (`yawBias` on the left/right drag difference): without it
+a sustained steering asymmetry pinned the fly at the 1600°/s yaw clamp and it
+spun like a top, which the first open-world video showed at 1464°/s.
+
+One renderer note: fog is computed **per fragment** from the interpolated
+world position. Per-vertex fog was invisible while the floor was a 13 cm
+quad, but on the open-world floor all four vertices sit ~20 m away and each
+carried fog ≈ 1, interpolating the whole ground into the sky colour — the
+frame read as "the map vanished". `tools/softrender.py` reproduces the GPU
+pass (near-plane clip, no winding cull, perspective-correct depth) and is the
+fastest way to see what the world pass will look like.
 | Escape jump | `motor_jump_escape` (the giant fibre target) | 2 |
 | Head turn | `motor_neck` | 49 |
 | Feeding | `motor_proboscis` | 35 |

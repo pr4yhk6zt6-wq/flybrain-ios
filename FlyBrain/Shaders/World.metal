@@ -38,7 +38,6 @@ struct VSOut {
     float3 normal;
     float4 colour;
     float  checker;
-    float  fog;
 };
 
 vertex VSOut worldVertex(VSIn in [[stage_in]],
@@ -55,9 +54,6 @@ vertex VSOut worldVertex(VSIn in [[stage_in]],
     out.normal = normalize((inst.model * float4(in.normal, 0.0)).xyz);
     out.colour = inst.colour;
     out.checker = inst.params.x;
-
-    float dist = length(wp.xyz - p.cameraPos);
-    out.fog = 1.0 - exp(-dist * p.fogDensity);
     return out;
 }
 
@@ -84,7 +80,15 @@ fragment float4 worldFragment(VSOut in [[stage_in]],
     lit += base * rim * 0.25;
 
     lit += base * in.colour.a;          // emissive
-    lit = mix(lit, p.skyColour, saturate(in.fog));
+
+    // Fog PER FRAGMENT, from the interpolated world position. This used to
+    // be per-vertex, which was fine while the floor was a 13 cm quad but
+    // made the open-world floor invisible: all four of its vertices sit
+    // ~20 m away, every vertex fogged to ~1.0, and the interpolation painted
+    // the whole ground in sky colour — the "the map vanished" bug.
+    float dist = length(in.worldPos - p.cameraPos);
+    float fog = 1.0 - exp(-dist * p.fogDensity);
+    lit = mix(lit, p.skyColour, saturate(fog));
     return float4(lit, 1.0);
 }
 

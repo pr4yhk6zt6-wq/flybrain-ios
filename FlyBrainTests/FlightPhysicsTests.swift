@@ -189,6 +189,42 @@ final class FlightPhysicsTests: XCTestCase {
         XCTAssertLessThan(degPerSec, 5, "still circling after 12 s of bias")
     }
 
+    /// The flight twin of the same complaint, from the user's video of the
+    /// open world: a sustained steering asymmetry pinned the fly at the
+    /// 1600 deg/s yaw clamp (the HUD read 1464). The adapted yaw baseline
+    /// must unwind the spin.
+    func testSustainedFlightAsymmetryDoesNotSpinAtTheClamp() {
+        let world = World()
+        let body = FlyBody()
+        body.reset()
+        var d = FlyDrives()
+        d.wingPowerL = 300; d.wingPowerR = 300
+        d.wingSteerL = 300; d.wingSteerR = 0
+        body.setDrives(d)
+        for _ in 0..<(60 * 12) { body.update(dt: 1.0 / 60, world: world) }
+
+        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
+        XCTAssertLessThan(degPerSec, 300, "still spinning after 12 s of bias")
+    }
+
+    /// ...while a fresh steering command still yaws the flying animal.
+    func testFlightSteeringStillResponds() {
+        let world = World()
+        let body = FlyBody()
+        body.reset()
+        var d = FlyDrives()
+        d.wingPowerL = 300; d.wingPowerR = 300
+        body.setDrives(d)
+        for _ in 0..<(60 * 6) { body.update(dt: 1.0 / 60, world: world) }
+
+        d.wingSteerL = 300; d.wingSteerR = 0
+        body.setDrives(d)
+        for _ in 0..<30 { body.update(dt: 1.0 / 60, world: world) }
+
+        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
+        XCTAssertGreaterThan(degPerSec, 200, "flight steering dead")
+    }
+
     /// ...while a fresh asymmetry must still steer, or the adaptation would
     /// have lobotomised the animal's turning.
     func testTurnsStillRespondToNewAsymmetry() {

@@ -137,8 +137,11 @@ final class World {
     /// it completely, so the horizon reads as endless.
     let bounds: Float = 2000.0
     /// Invisible sky cap. Nothing is drawn at this height; it only keeps the
-    /// fly below 5 m so the chase camera never loses it overhead.
-    var ceilingHeight: Float { 500.0 }
+    /// fly low enough that the ground still fills its eyes and the chase
+    /// camera never loses it overhead. At 1.5 m the floor is well inside the
+    /// fog horizon; at the old 5 m the fly climbed until the world below it
+    /// dissolved into haze and the visual system had nothing to hold on to.
+    var ceilingHeight: Float { 150.0 }
     /// Scenery clusters near the origin so the fly always has things to
     /// interact with while the space around it stays open.
     let sceneryExtent: Float = 250.0

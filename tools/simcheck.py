@@ -74,7 +74,7 @@ class World:
 
     @property
     def ceilingHeight(self):
-        return 500.0               # invisible sky cap, nothing drawn there
+        return 150.0               # invisible sky cap, nothing drawn there
 
     def rebuild(self):
         self.objects = []
@@ -151,6 +151,7 @@ class FlyBody:
         self.yawRate = 0.0
         self.referenceRate = 120.0
         self.turnBias = 0.0
+        self.yawBias = 0.0
         self.energy = 1.0
         self.hurt = 0.0
         self.isEating = False
@@ -159,6 +160,7 @@ class FlyBody:
 
     referenceTau = 2.0
     turnBiasTau = 1.5
+    yawBiasTau = 1.5
 
     def stroke_amplitude(self, rate):
         hover = strokeAmplitudeHover
@@ -201,7 +203,9 @@ class FlyBody:
 
         dragL = wing_force(phiL, dragCoefficient)
         dragR = wing_force(phiR, dragCoefficient)
-        yawTorque = clamp((dragR - dragL) * r2, -maxYawTorque, maxYawTorque)
+        rawYawDrag = dragR - dragL
+        self.yawBias += (rawYawDrag - self.yawBias) * min(1.0, dt / self.yawBiasTau)
+        yawTorque = clamp((rawYawDrag - self.yawBias) * r2, -maxYawTorque, maxYawTorque)
 
         if self.airborne > 0.5:
             c = yawDamping
@@ -461,6 +465,29 @@ for _ in range(30):
 dps = abs(b.yawRate) * 180 / math.pi
 check("testTurnsStillRespondToNewAsymmetry", dps > 5,
       f"yaw {dps:.2f} deg/s right after the change")
+
+# 16 the flight twin of the same complaint, seen in the user's video: a
+# sustained steering asymmetry pinned the fly at the 1600 deg/s yaw clamp
+# (HUD read 1464). The adapted yaw baseline must unwind the spin.
+w, b = make()
+b.d = Drives(wingPowerL=300, wingPowerR=300, wingSteerL=300, wingSteerR=0)
+for _ in range(60 * 12):
+    b.update(1 / 60, w)
+dps = abs(b.yawRate) * 180 / math.pi
+check("testSustainedFlightAsymmetryDoesNotSpinAtTheClamp", dps < 300,
+      f"yaw {dps:.0f} deg/s after 12 s of constant steer bias")
+
+# 17 ...while a fresh steering command still yaws the flying animal
+w, b = make()
+b.d = Drives(wingPowerL=300, wingPowerR=300)
+for _ in range(60 * 6):
+    b.update(1 / 60, w)
+b.d = Drives(wingPowerL=300, wingPowerR=300, wingSteerL=300, wingSteerR=0)
+for _ in range(30):
+    b.update(1 / 60, w)
+dps = abs(b.yawRate) * 180 / math.pi
+check("testFlightSteeringStillResponds", dps > 200,
+      f"yaw {dps:.0f} deg/s right after the change")
 
 print()
 bad = [r for r in results if not r[1]]

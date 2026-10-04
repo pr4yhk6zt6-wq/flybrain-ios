@@ -299,6 +299,15 @@ final class FlyBody {
     private(set) var turnBias: Float = 0
     private let turnBiasTau: Float = 1.5
 
+    /// Flight twin of `turnBias`: an adapted baseline on the left/right wing
+    /// drag difference. In the open world nothing interrupted a sustained
+    /// steering asymmetry, so the animal spun at the 1600 deg/s yaw clamp —
+    /// the flight version of the old walking circles. Cancelling the
+    /// sustained part (tau 1.5 s, the order of the haltere/optomotor
+    /// straightening a real fly gets) leaves genuine saccades intact.
+    private(set) var yawBias: Float = 0
+    private let yawBiasTau: Float = 1.5
+
     private func strokeAmplitude(from rateHz: Float) -> Float {
         let hover = FlyMorphology.strokeAmplitudeHover
         let maxPhi = FlyMorphology.strokeAmplitudeMax
@@ -331,6 +340,7 @@ final class FlyBody {
         energy = 1.0
         hurt = 0
         turnBias = 0
+        yawBias = 0
     }
 
     func readMotorDrives(from sim: SimulationEngine) {
@@ -411,9 +421,16 @@ final class FlyBody {
         // left/right asymmetry with a steady spin of several thousand deg/s —
         // the quasi-steady blade-element estimate keeps scaling with the stroke
         // amplitude, but the animal does not.
+        //
+        // The sustained part of the asymmetry is cancelled by the adapted
+        // baseline (see `yawBias`); otherwise a constant left/right drive
+        // difference pins the fly at the yaw clamp forever — which is exactly
+        // the 1464 deg/s spin the open world made visible.
+        let rawYawDrag = dragR - dragL
+        yawBias += (rawYawDrag - yawBias) * min(1, dt / yawBiasTau)
         let yawTorque = max(-FlyMorphology.maxYawTorque,
                             min(FlyMorphology.maxYawTorque,
-                                (dragR - dragL) * FlyMorphology.r2))
+                                (rawYawDrag - yawBias) * FlyMorphology.r2))
 
         if pose.airborne > 0.5 {
             // Angular: torque, inertia, and flapping counter-torque damping.
