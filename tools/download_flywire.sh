@@ -31,6 +31,17 @@ wait
 echo
 echo "Verifying checksums..."
 cd "$DEST"
+
+# macOS ships `md5 -q`, Linux ships `md5sum`. Normalise to one function.
+if command -v md5sum >/dev/null 2>&1; then
+  hash_of() { md5sum "$1" | awk '{print $1}'; }
+elif command -v md5 >/dev/null 2>&1; then
+  hash_of() { md5 -q "$1"; }
+else
+  echo "  no md5 tool available, skipping verification"
+  hash_of() { echo "skip"; }
+fi
+
 cat > .md5sums <<'EOF'
 701c0faf054ceddb460bea4e87d6a624  classification.csv.gz
 41206440318c77418bfc7cff1cb3e0fa  connections.csv.gz
@@ -40,5 +51,22 @@ b3951998eeeda84bb4a2e209b456f683  labels.csv.gz
 6d134fe2712cb81d179d4b033a86fdc5  names.csv.gz
 f60333e9e4124160b9b203b1712a6f91  neurons.csv.gz
 EOF
-md5sum -c .md5sums
+
+fail=0
+while read -r want name; do
+  got=$(hash_of "$name")
+  if [[ "$got" == "skip" ]]; then
+    echo "  ?    $name"
+  elif [[ "$got" == "$want" ]]; then
+    echo "  OK   $name"
+  else
+    echo "  FAIL $name (expected $want, got $got)"
+    fail=1
+  fi
+done < .md5sums
+
+if [[ $fail -ne 0 ]]; then
+  echo "Checksum verification failed." >&2
+  exit 1
+fi
 echo "OK — all 7 files verified."
