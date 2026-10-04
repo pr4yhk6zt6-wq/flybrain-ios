@@ -1,0 +1,9 @@
+data/raw/
+reports/*.parquet
+.secrets/
+__pycache__/
+*.pyc
+build/
+DerivedData/
+*.ipa
+*.xcarchive
