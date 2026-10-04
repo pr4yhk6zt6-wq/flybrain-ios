@@ -29,6 +29,11 @@ struct SimParams {
     var retinaCount: UInt32 = 0
     var flags: UInt32 = 0
     var dtMillis: Float = 1.0
+
+    var contrastGain: Float = 8.0
+    var adaptationRate: Float = 0.0033
+    var cameraBias: Float = 0.5
+    var pad1: Float = 0
 }
 
 /// Live numbers for the HUD.
@@ -58,6 +63,11 @@ final class SimulationEngine {
         didSet { recomputeDecays() }
     }
     var isPaused: Bool = false
+
+    /// How hard camera contrast drives the photoreceptors.
+    var contrastGain: Float = 8.0 {
+        didSet { params.contrastGain = contrastGain }
+    }
 
     private(set) var stats = SimulationStats()
 
@@ -365,6 +375,25 @@ final class SimulationEngine {
         guard index >= 0 && index < connectome.neuronCount else { return }
         let e = externalInput.contents().assumingMemoryBound(to: Float.self)
         e[index] = amplitude
+    }
+
+    /// Mean drive currently sitting on the photoreceptors. Reading a handful of
+    /// cells from the shared buffer is enough for a UI meter and costs nothing.
+    func meanRetinalDrive() -> Float {
+        let input = externalInput.contents().assumingMemoryBound(to: Float.self)
+        let idx = connectome.retinaIdx.contents().assumingMemoryBound(to: UInt32.self)
+        let n = connectome.retinaCount
+        guard n > 0 else { return 0 }
+        let stride = max(1, n / 256)
+        var total: Float = 0
+        var count = 0
+        var i = 0
+        while i < n {
+            total += input[Int(idx[i])]
+            count += 1
+            i += stride
+        }
+        return count > 0 ? total / Float(count) : 0
     }
 
     /// Drive the whole retina with a flat value when there is no camera.

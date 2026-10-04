@@ -38,6 +38,11 @@ struct SimParams {
     uint  retinaCount;
     uint  flags;            // bit0 = use camera texture instead of flat drive
     float dtMillis;
+
+    float contrastGain;     // how hard camera contrast pushes the photoreceptors
+    float adaptationRate;   // per-step rate of the slow luminance adaptation
+    float cameraBias;       // baseline drive when the scene is perfectly flat
+    float pad1;
 };
 
 // Fixed-point scale for the atomic current accumulator.
@@ -220,14 +225,16 @@ kernel void sampleRetina(
     const float v = float(retinaUV[gid * 2 + 1]);
     const float lum = camera.sample(s, float2(u, v)).r;
 
-    // Slow luminance adaptation, tau ~ 300 ms at dt = 1 ms.
+    // Slow luminance adaptation. The rate is a parameter rather than a constant
+    // so the UI can trade responsiveness against stability: adapt too fast and
+    // the cell goes blind to anything but flicker, too slow and it saturates.
     const float a = adaptation[gid];
-    const float aNext = a + (lum - a) * 0.0033f;
+    const float aNext = a + (lum - a) * P.adaptationRate;
     adaptation[gid] = aNext;
 
-    // Contrast, not absolute brightness. Rectified: photoreceptors depolarise.
-    const float contrast = (lum - aNext) * 4.0f;
-    externalIn[retinaIdx[gid]] = clamp(0.5f + contrast, 0.0f, 2.0f);
+    // Contrast, not absolute brightness — this is what lamina monopolars encode.
+    const float contrast = (lum - aNext) * P.contrastGain;
+    externalIn[retinaIdx[gid]] = clamp(P.cameraBias + contrast, 0.0f, 4.0f);
 }
 
 // ============================================================================

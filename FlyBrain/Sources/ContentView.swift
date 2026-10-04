@@ -68,6 +68,19 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
                 .animation(.easeInOut(duration: 0.2), value: engine.selected?.index)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8),
+                   value: engine.showCameraWindow)
+
+                // Floating camera window, above the HUD but below nothing.
+                if engine.cameraEnabled && engine.showCameraWindow {
+                    FloatingCameraWindow(
+                        session: engine.camera.session,
+                        retinalDrive: engine.retinalActivity,
+                        framesDelivered: engine.cameraFrames,
+                        meanLuminance: engine.cameraLuminance,
+                        onClose: { engine.showCameraWindow = false })
+                    .transition(.scale.combined(with: .opacity))
+                }
 
                 VStack {
                     HStack {
@@ -194,9 +207,22 @@ struct ControlPanel: View {
             labelledSlider("Point size", value: $engine.pointScale,
                            range: 0.5...10, detail: nil)
 
+            if engine.cameraEnabled {
+                labelledSlider("Camera contrast", value: $engine.contrastGain,
+                               range: 0...30,
+                               detail: engine.contrastGain < 2 ? "barely coupled" : nil)
+            }
+
             HStack {
                 Toggle("Camera", isOn: $engine.cameraEnabled)
                     .toggleStyle(.switch)
+                if engine.cameraEnabled && !engine.showCameraWindow {
+                    Button {
+                        engine.showCameraWindow = true
+                    } label: {
+                        Image(systemName: "pip.enter").font(.caption)
+                    }
+                }
                 Spacer()
                 Button(engine.isPaused ? "Resume" : "Pause") { engine.isPaused.toggle() }
                     .buttonStyle(.bordered)

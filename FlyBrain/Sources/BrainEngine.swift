@@ -38,12 +38,23 @@ final class BrainEngine: ObservableObject {
     @Published var cameraEnabled: Bool = false {
         didSet { cameraEnabled ? startCamera() : stopCamera() }
     }
+    @Published var showCameraWindow: Bool = true
+    /// Live mean drive sitting on the photoreceptors, for the preview meter.
+    @Published private(set) var retinalActivity: Float = 0
+    @Published private(set) var cameraFrames: Int = 0
+    @Published private(set) var cameraLuminance: Float = 0
+    @Published var contrastGain: Float = 8.0 {
+        didSet { simulation?.contrastGain = contrastGain }
+    }
 
     let device: MTLDevice
     private(set) var renderer: Renderer?
     private var connectome: Connectome?
     private var simulation: SimulationEngine?
-    private var camera: CameraFeed?
+    /// Created eagerly: the preview window needs the AVCaptureSession to exist
+    /// before capture starts, otherwise the first frames land nowhere visible.
+    private(set) lazy var camera: CameraFeed = CameraFeed(device: device)
+    private var cameraCancellables = Set<AnyCancellable>()
     private weak var view: MTKView?
 
     private var systemMask: UInt32 = 0xFFFF_FFFF
@@ -82,8 +93,19 @@ final class BrainEngine: ObservableObject {
             r.renderMode = renderMode
             r.pointScale = pointScale
             r.cameraTextureProvider = { [weak self] in
-                self?.camera?.latestTexture()
+                guard let self, self.cameraEnabled else { return nil }
+                return self.camera.latestTexture()
             }
+            sim.contrastGain = contrastGain
+
+            camera.$framesDelivered
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] in self?.cameraFrames = $0 }
+                .store(in: &cameraCancellables)
+            camera.$meanLuminance
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] in self?.cameraLuminance = $0 }
+                .store(in: &cameraCancellables)
 
             connectome = c
             simulation = sim
@@ -109,6 +131,7 @@ final class BrainEngine: ObservableObject {
         guard let sim = simulation, let r = renderer else { return }
         stats = sim.stats
         fps = r.fps
+        retinalActivity = sim.meanRetinalDrive()
         // Keep the brain running at wall-clock-ish speed without dropping frames:
         // if we have headroom, simulate more milliseconds per frame.
         if r.fps > 55 && r.stepsPerFrame < 16 {
@@ -178,14 +201,18 @@ final class BrainEngine: ObservableObject {
     // MARK: - Camera
 
     private func startCamera() {
-        if camera == nil { camera = CameraFeed(device: device) }
-        camera?.requestAccessAndStart { [weak self] granted in
-            if !granted { self?.cameraEnabled = false }
+        showCameraWindow = true
+        camera.requestAccessAndStart { [weak self] granted in
+            guard let self else { return }
+            if !granted {
+                self.cameraEnabled = false
+                self.loadError = nil
+            }
         }
     }
 
     private func stopCamera() {
-        camera?.stop()
+        camera.stop()
         // Fall back to a flat drive so the brain does not simply go dark.
         simulation?.setFlatRetinalInput(1.0)
     }
@@ -200,7 +227,7 @@ final class BrainEngine: ObservableObject {
             wasPausedByBackground = !isPaused
             isPaused = true
             view?.isPaused = true
-            camera?.stop()
+            camera.stop()
         } else if wasPausedByBackground {
             wasPausedByBackground = false
             isPaused = false
