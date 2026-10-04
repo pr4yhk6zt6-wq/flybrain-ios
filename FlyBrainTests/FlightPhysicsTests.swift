@@ -353,8 +353,9 @@ final class WorldContainmentTests: XCTestCase {
         d.wingPowerL = 240; d.wingPowerR = 240
         body.setDrives(d)
         for _ in 0..<(60 * 50) { body.update(dt: 1.0 / 60, world: world) }
-        let lift = FlyMorphology.flightForce(strokeAmplitude: body.pose.strokeAmplitudeL)
-                 + FlyMorphology.flightForce(strokeAmplitude: body.pose.strokeAmplitudeR)
+        // flightForce() already sums both wings (see testHoverLiftEqualsBodyWeight).
+        let meanPhi = (body.pose.strokeAmplitudeL + body.pose.strokeAmplitudeR) * 0.5
+        let lift = FlyMorphology.flightForce(strokeAmplitude: meanPhi)
         let ratio = lift / (FlyMorphology.mass * FlyMorphology.gravity)
         XCTAssertEqual(ratio, 1.0, accuracy: 0.05,
                        "trim never re-caught the climb command")
@@ -374,29 +375,31 @@ final class WorldContainmentTests: XCTestCase {
         d.legL = 60; d.legR = 60
         body.setDrives(d)
 
-        var walkDurations: [Float] = []
-        var stopDurations: [Float] = []
+        // Durations are counted in whole frames: subtracting two Float32
+        // timestamps can read 0.2999878 s for an exact 18-frame stop.
+        var walkFrames: [Int] = []
+        var stopFrames: [Int] = []
         var current = body.habit
-        var start: Float = 0
+        var start = 0
         for i in 0..<(60 * 300) {
             body.update(dt: 1.0 / 60, world: world)
             if body.habit != current {
-                let t = Float(i) / 60
                 switch current {
-                case .walk:  walkDurations.append(t - start)
-                case .stop:  stopDurations.append(t - start)
+                case .walk:  walkFrames.append(i - start)
+                case .stop:  stopFrames.append(i - start)
                 case .groom: break
                 }
                 current = body.habit
-                start = t
+                start = i
             }
         }
-        XCTAssertFalse(walkDurations.isEmpty, "the fly never walked")
-        XCTAssertFalse(stopDurations.isEmpty, "the fly never stopped")
-        let meanWalk = walkDurations.reduce(0, +) / Float(walkDurations.count)
+        XCTAssertFalse(walkFrames.isEmpty, "the fly never walked")
+        XCTAssertFalse(stopFrames.isEmpty, "the fly never stopped")
+        let meanWalk = Float(walkFrames.reduce(0, +)) / Float(walkFrames.count) / 60
         XCTAssertGreaterThan(meanWalk, 1.5, "walk bouts shorter than measured")
         XCTAssertLessThan(meanWalk, 5.0, "walk bouts longer than measured")
-        XCTAssertGreaterThanOrEqual(stopDurations.min() ?? 0, 0.3,
+        let minStop = Float(stopFrames.min() ?? 0) / 60
+        XCTAssertGreaterThanOrEqual(minStop, 0.3,
                                     "stop shorter than the 300 ms floor")
     }
 
