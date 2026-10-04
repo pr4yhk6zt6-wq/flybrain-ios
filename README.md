@@ -5,8 +5,10 @@ A real-time simulation of the complete adult fruit-fly brain (FlyWire FAFB v783 
 leaky-integrate-and-fire network on the iPhone GPU, rendered as a live 3-D point cloud,
 driven by the phone's camera as the fly's eyes.
 
-> **Status:** Step 1 of 7 complete — dataset studied, subset chosen, budgets proven.
-> See [`docs/STEP1_DATASET.md`](docs/STEP1_DATASET.md).
+> **Status:** Steps 1–2 of 7 complete — the whole connectome is packed into a
+> 21.57 MiB binary and validated by a reference spiking simulation.
+> See [`docs/STEP1_DATASET.md`](docs/STEP1_DATASET.md) and
+> [`docs/STEP2_PIPELINE.md`](docs/STEP2_PIPELINE.md).
 
 ## The headline result from Step 1
 
@@ -25,7 +27,7 @@ reduced fallback dataset — the entire connectome goes in the app bundle at rou
 ## Roadmap
 
 - [x] **1. Study the FlyWire dataset, choose the subset** → `docs/STEP1_DATASET.md`
-- [ ] 2. Data pipeline: connectome → packed binary / Metal buffers
+- [x] **2. Data pipeline: connectome → packed binary / Metal buffers** → `docs/STEP2_PIPELINE.md`
 - [ ] 3. Metal compute shader for the LIF simulation
 - [ ] 4. 3-D renderer (instanced point cloud + spike arcs)
 - [ ] 5. Camera → photoreceptor input
@@ -37,19 +39,30 @@ reduced fallback dataset — the entire connectome goes in the app bundle at rou
 ```
 tools/download_flywire.sh        fetch the 62 MB public Codex dumps, md5-verified
 tools/step1_profile_flywire.py   census, neuropil breakdown, GPU budget calculator
+tools/build_connectome.py        CSVs -> flybrain.bin (CSR, half weights, uint8 delays)
+tools/verify_and_simulate.py     22 structural checks + NumPy reference LIF simulation
 docs/STEP1_DATASET.md            Step 1 findings and the decisions they force
+docs/STEP2_PIPELINE.md           binary format, weight/delay model, gain calibration
 reports/step1_report.json        machine-readable census
 reports/step1_neuropils.csv      all 79 neuropils with synapse counts and system labels
+reports/step2_simulation.json    validation results + 600 ms rate trace
+build/flybrain.bin               21.57 MiB packed connectome (gitignored, reproducible)
 data/raw/                        downloaded CSVs (gitignored)
 ```
 
-## Reproducing Step 1
+## Reproducing Steps 1–2
 
 ```bash
-bash tools/download_flywire.sh
 pip3 install numpy pandas pyarrow
-python3 tools/step1_profile_flywire.py
+bash tools/download_flywire.sh           # 62 MB, md5-verified
+python3 tools/step1_profile_flywire.py   # census and budgets
+python3 tools/build_connectome.py        # -> build/flybrain.bin, 21.57 MiB
+python3 tools/verify_and_simulate.py --ms 600 --gain 6.0 --drive 1.5
 ```
+
+The last command prints 22/22 structural checks and a 600 ms spiking simulation of the
+whole brain: **19 Hz population rate, stable, activity propagating from the retina
+into the central complex through real FlyWire wiring.**
 
 ## Three corrections to the original brief
 
