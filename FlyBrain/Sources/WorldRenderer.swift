@@ -67,8 +67,33 @@ final class WorldRenderer {
     /// Each ommatidium covers this many pixels of the 128x128 render.
     var facetSize: UInt32 = 6
 
+    /// Why the anatomical mesh is, or is not, on screen.
+    ///
+    /// This exists because the mesh used to be loaded with `try?`. When
+    /// flymodel.bin was not in the bundle the whole animal silently stopped
+    /// being drawn: no crash, no log, no empty silhouette — a room with
+    /// nothing in it. The state is published up to the HUD instead, so a
+    /// missing asset says so on screen.
+    enum FlyMeshState {
+        case loaded(bodyMillimetres: Float, wingspanMillimetres: Float)
+        case missing
+        case failed(String)
+
+        var isLoaded: Bool { if case .loaded = self { return true } else { return false } }
+
+        /// Short text for the HUD. Nil means "nothing to report".
+        var note: String? {
+            switch self {
+            case .loaded: return nil
+            case .missing: return "NO FLY MESH (fallback body)"
+            case .failed(let why): return "FLY MESH: \(why)"
+            }
+        }
+    }
+    private(set) var flyMeshState: FlyMeshState = .missing
+
     /// The real Drosophila mesh. Optional so the app still runs if the asset
-    /// is missing; it falls back to nothing rather than crashing.
+    /// is missing; the primitive fallback in `appendPrimitiveFly` covers it.
     private(set) var flyModel: FlyModel?
     private var partMatrices: [float4x4] = []
     private var flyInstanceStart = 0
@@ -140,11 +165,22 @@ final class WorldRenderer {
         }
 
         // The anatomical fly. 41 parts, 76 joints, from the Janelia/DeepMind
-        // CT reconstruction.
-        flyModel = try? FlyModel(device: device)
-        if let m = flyModel {
+        // CT reconstruction. If it will not load we say so rather than
+        // quietly rendering an empty room.
+        do {
+            let m = try FlyModel(device: device)
+            flyModel = m
+            flyMeshState = .loaded(
+                bodyMillimetres: m.measuredBodyLength * m.normalisationScale * 10,
+                wingspanMillimetres: m.measuredWingspan * m.normalisationScale * 10)
             partMatrices = [float4x4](repeating: matrix_identity_float4x4,
                                       count: m.parts.count)
+        } catch FlyModelError.missing {
+            flyModel = nil
+            flyMeshState = .missing
+        } catch {
+            flyModel = nil
+            flyMeshState = .failed(error.localizedDescription)
         }
 
         try makeEyeTargets(colorFormat: colorFormat)
@@ -212,6 +248,14 @@ final class WorldRenderer {
             cubes.append(inst)
         }
 
+        // The fallback fly is built from the same three primitives as the
+        // scenery, so it has to join the batches before their ranges are
+        // frozen. The real mesh is appended after, because each of its parts
+        // is drawn separately against its own slice of the mesh buffers.
+        if showFly, flyModel == nil {
+            appendPrimitiveFly(body: body, cubes: &cubes, spheres: &spheres, quads: &quads)
+        }
+
         cubeRange = 0..<cubes.count
         sphereRange = cubes.count..<(cubes.count + spheres.count)
         quadRange = (cubes.count + spheres.count)..<(cubes.count + spheres.count + quads.count)
@@ -233,8 +277,93 @@ final class WorldRenderer {
         }
     }
 
-    /// Pose the real mesh and append one instance per body part. Falls back
-    /// to nothing when the asset is unavailable.
+    /// A stand-in fly, assembled from the same three primitives as the
+    /// scenery.
+    ///
+    /// It is not decoration. `FlyModel` is optional because the app should
+    /// still run if flymodel.bin is not in the bundle — but "still runs" used
+    /// to mean "draw the room and skip the animal", and a missing asset is
+    /// exactly the kind of failure that only appears on a device. So the
+    /// fallback draws a fly: the right size (2.5 mm body, 4.6 mm span), the
+    /// right colour, wings beating at the commanded stroke amplitude. It is
+    /// worse than the CT mesh, and it is much better than nothing.
+    private func appendPrimitiveFly(body: FlyBody,
+                                    cubes: inout [WorldInstance],
+                                    spheres: inout [WorldInstance],
+                                    quads: inout [WorldInstance]) {
+        let p = body.pose
+
+        // Body frame: +Y up, -Z forward, so the fly looks where it is going.
+        let frame = float4x4(translation: p.position)
+            * float4x4(rotationY: p.heading)
+            * float4x4(rotationX: p.pitch)
+            * float4x4(rotationZ: p.roll)
+
+        // Plain builders, not captures: a nested function that closes over an
+        // `inout` array is the sort of thing the compiler argues about.
+        func blob(_ t: SIMD3<Float>, _ s: SIMD3<Float>, _ c: SIMD3<Float>,
+                  _ alpha: Float = 0) -> WorldInstance {
+            var inst = WorldInstance()
+            inst.model = frame * float4x4(translation: t) * float4x4(scale: s)
+            inst.colour = SIMD4<Float>(c, alpha)
+            return inst
+        }
+        func box(_ t: SIMD3<Float>, _ s: SIMD3<Float>, _ c: SIMD3<Float>,
+                 _ roll: Float = 0) -> WorldInstance {
+            var inst = WorldInstance()
+            inst.model = frame * float4x4(translation: t)
+                * float4x4(rotationZ: roll) * float4x4(scale: s)
+            inst.colour = SIMD4<Float>(c, 0)
+            return inst
+        }
+        func plate(_ t: SIMD3<Float>, _ s: SIMD3<Float>, _ c: SIMD3<Float>,
+                   _ alpha: Float, _ roll: Float) -> WorldInstance {
+            var inst = WorldInstance()
+            inst.model = frame * float4x4(translation: t)
+                * float4x4(rotationZ: roll) * float4x4(scale: s)
+            inst.colour = SIMD4<Float>(c, alpha)
+            return inst
+        }
+
+        let cuticle = SIMD3<Float>(0.674, 0.35, 0.143)      // MJCF "body"
+        let eye     = SIMD3<Float>(0.62, 0.06, 0.02)
+        let leg     = SIMD3<Float>(0.20, 0.10, 0.05)
+        let membrane = SIMD3<Float>(0.539, 0.686, 0.800)    // MJCF "membrane"
+
+        // 2.5 mm nose to tail, so the fallback sits inside the same collision
+        // radius the physics uses.
+        spheres.append(blob(SIMD3<Float>(0, 0, -0.010),
+                            SIMD3<Float>(0.070, 0.070, 0.090), cuticle))
+        spheres.append(blob(SIMD3<Float>(0, -0.005, 0.085),
+                            SIMD3<Float>(0.055, 0.055, 0.100), cuticle))
+        spheres.append(blob(SIMD3<Float>(0, 0.005, -0.075),
+                            SIMD3<Float>(0.045, 0.045, 0.045), cuticle))
+        spheres.append(blob(SIMD3<Float>( 0.033, 0.015, -0.095),
+                            SIMD3<Float>(0.028, 0.028, 0.028), eye))
+        spheres.append(blob(SIMD3<Float>(-0.033, 0.015, -0.095),
+                            SIMD3<Float>(0.028, 0.028, 0.028), eye))
+
+        // Wings flap about the body's long axis at the commanded amplitude.
+        let sweepL = sin(p.wingPhase) * p.strokeAmplitudeL * 0.5
+        let sweepR = sin(p.wingPhase + 0.02) * p.strokeAmplitudeR * 0.5
+        quads.append(plate(SIMD3<Float>(-0.130, 0.050, 0.010),
+                           SIMD3<Float>(0.220, 1, 0.085), membrane, 0.22, sweepL))
+        quads.append(plate(SIMD3<Float>( 0.130, 0.050, 0.010),
+                           SIMD3<Float>(0.220, 1, 0.085), membrane, 0.22, -sweepR))
+
+        // Six legs: tucked up in flight, dropped when it lands.
+        let tuck = 1 - p.airborne
+        for side in [Float(-1), Float(1)] {
+            for (i, z) in [Float(-0.045), Float(0.010), Float(0.060)].enumerated() {
+                let drop = -0.055 - tuck * 0.045
+                let splay = side * (0.045 + tuck * 0.020) * (i == 1 ? 1.3 : 1.0)
+                cubes.append(box(SIMD3<Float>(splay, drop, z),
+                                 SIMD3<Float>(0.010, 0.090 + tuck * 0.030, 0.010), leg))
+            }
+        }
+    }
+
+    /// Pose the real mesh and append one instance per body part.
     private func appendFly(body: FlyBody, into list: inout [WorldInstance]) {
         guard let model = flyModel else { return }
         let p = body.pose

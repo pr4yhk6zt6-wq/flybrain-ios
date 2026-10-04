@@ -88,6 +88,11 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
     @Published var showBrainPiP = true
     @Published var showEyePiP = true
 
+    /// Set when the anatomical fly mesh could not be loaded. Shown in the HUD:
+    /// a missing asset used to mean a fly that was simply not drawn, with
+    /// nothing anywhere saying why.
+    @Published private(set) var flyMeshNote: String?
+
     /// 1 ms brain steps per displayed frame.
     var stepsPerFrame: Int = 4
 
@@ -123,6 +128,17 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
                                          colorFormat: view.colorPixelFormat)
         }
         if let m = renderer?.flyModel { body.attach(model: m) }
+        flyMeshNote = renderer?.flyMeshState.note
+        if let r = renderer, case .loaded(let bodyMM, let spanMM) = r.flyMeshState {
+            print(String(format: "[FlyBrain] fly mesh: body %.2f mm, "
+                                 + "wingspan %.2f mm, %d parts, %d triangles",
+                         bodyMM, spanMM,
+                         r.flyModel?.parts.count ?? 0,
+                         r.flyModel?.triangleCount ?? 0))
+        } else if let note = renderer?.flyMeshState.note {
+            // Loud on purpose. The alternative is an empty room.
+            print("[FlyBrain] \(note)")
+        }
         view.delegate = self
         body.reset()
         world.environment = environment

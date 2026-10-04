@@ -46,12 +46,17 @@ tools/download_flywire.sh        fetch the 62 MB public Codex dumps, md5-verifie
 tools/step1_profile_flywire.py   census, neuropil breakdown, GPU budget calculator
 tools/build_connectome.py        CSVs -> flybrain.bin (CSR, half weights, uint8 delays)
 tools/verify_and_simulate.py     22 structural checks + NumPy reference LIF simulation
+tools/build_flymodel.py          flybody MJCF -> flymodel.bin, the articulated body
+tools/softrender.py              CPU replica of the world pass; measures the fly on screen
+tools/simcheck.py                port of FlyBody.update; runs the physics tests on Linux
 docs/STEP1_DATASET.md            Step 1 findings and the decisions they force
 docs/STEP2_PIPELINE.md           binary format, weight/delay model, gain calibration
+docs/WORLD_MODE.md               the embodied fly, its scale, and what to do if it vanishes
 reports/step1_report.json        machine-readable census
 reports/step1_neuropils.csv      all 79 neuropils with synapse counts and system labels
 reports/step2_simulation.json    validation results + 600 ms rate trace
 build/flybrain.bin               21.57 MiB packed connectome (gitignored, reproducible)
+build/flymodel.bin               1.71 MiB articulated fly body (gitignored, reproducible)
 data/raw/                        downloaded CSVs (gitignored)
 ```
 

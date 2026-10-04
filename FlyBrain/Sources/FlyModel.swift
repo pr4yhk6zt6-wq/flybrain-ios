@@ -69,9 +69,14 @@ final class FlyModel {
     let triangleCount: Int
 
     /// Uniform scale applied so the model's 2.5 mm body length matches our
-    /// world units, where 1.0 = 1 cm. Solved from the loaded bounds.
+    /// world units, where 1.0 = 1 cm. Solved from the ASSEMBLED rest pose.
     private(set) var normalisationScale: Float = 1
     private(set) var normalisationOffset = SIMD3<Float>(0, 0, 0)
+    /// Body length of the loaded model in its own units, before scaling.
+    /// Diagnostic only — it is the number the scale is solved from.
+    private(set) var measuredBodyLength: Float = 0
+    /// Lateral extent (wingspan) of the loaded model in its own units.
+    private(set) var measuredWingspan: Float = 0
 
     init(device: MTLDevice, url: URL? = nil) throws {
         let fileURL: URL
@@ -170,18 +175,30 @@ final class FlyModel {
             data.copyBytes(to: dst, from: offs[3]..<(offs[3] + lens[3]))
         }
 
-        // Normalise: centre the model and scale a 2.5 mm fly into world units
-        // where 1.0 == 1 cm. D. melanogaster body length is 2.0-2.5 mm.
-        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        for i in 0..<vertexCount {
-            let p = SIMD3<Float>(verts[i * 6], verts[i * 6 + 1], verts[i * 6 + 2])
-            lo = simd_min(lo, p); hi = simd_max(hi, p)
-        }
-        let extent = hi - lo
-        let longest = max(extent.x, max(extent.y, extent.z))
-        normalisationScale = longest > 0 ? (0.25 / longest) : 1    // 2.5 mm = 0.25 cm
-        normalisationOffset = -(lo + hi) * 0.5
+        // Normalise: centre the model and scale the ANIMAL to 2.5 mm, because
+        // that is the body length every other constant in FlyBody refers to —
+        // the collision radius, the eye offset ahead of the centre of mass, the
+        // walking stride.
+        //
+        // The obvious measurement is wrong, and it is worth saying why in a
+        // comment nobody will read until it bites again. Every part keeps its
+        // vertices in its OWN frame, so the AABB of the raw vertex buffer is
+        // the union of 41 unassembled boxes. Its longest axis is a single wing
+        // held out sideways, not the animal: 0.525 units here against an
+        // assembled body length of 0.301. Normalising by it set the WINGSPAN to
+        // 2.5 mm and left the body 1.43 mm — the fly was drawn at 57 % of life
+        // size while the physics kept treating it as a 2.5 mm animal, so its
+        // collision radius was twice its visible body.
+        //
+        // So: assemble the rest pose first, then measure that.
+        let (alo, ahi) = restBounds(vertices: verts)
+        let assembled = ahi - alo
+        // MJCF is Z-up with the animal facing +X, so X is the body axis.
+        let bodyLength = max(assembled.x, 1e-6)
+        measuredBodyLength = bodyLength
+        measuredWingspan = assembled.y
+        normalisationScale = 0.25 / bodyLength          // 2.5 mm = 0.25 cm
+        normalisationOffset = -(alo + ahi) * 0.5
 
         guard let vb = device.makeBuffer(bytes: verts,
                                          length: MemoryLayout<Float>.stride * verts.count,
@@ -203,6 +220,39 @@ final class FlyModel {
         ib.label = "flyModelIndices"
         indexBuffer = ib
         triangleCount = indexCount / 3
+    }
+
+    // MARK: - Measuring
+
+    /// Bounds of the assembled model, in the model's own units, at the rest
+    /// pose. Each part's vertices are transformed through its full parent
+    /// chain first, so what comes back is the size of the animal rather than
+    /// the size of the biggest loose box in the file.
+    private func restBounds(vertices: [Float]) -> (SIMD3<Float>, SIMD3<Float>) {
+        var m = [float4x4](repeating: matrix_identity_float4x4, count: parts.count)
+        for (i, part) in parts.enumerated() {
+            let parentM = part.parent >= 0 ? m[Int(part.parent)] : matrix_identity_float4x4
+            m[i] = parentM * float4x4(translation: part.restTranslation)
+                           * float4x4(quaternion: part.restRotation)
+        }
+
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for (i, part) in parts.enumerated() where part.vertexCount > 0 {
+            let r = m[i]
+            for v in 0..<Int(part.vertexCount) {
+                let b = (Int(part.vertexStart) + v) * 6
+                let p = SIMD3<Float>(vertices[b], vertices[b + 1], vertices[b + 2])
+                let w = SIMD3<Float>(
+                    r.columns.0.x * p.x + r.columns.1.x * p.y + r.columns.2.x * p.z + r.columns.3.x,
+                    r.columns.0.y * p.x + r.columns.1.y * p.y + r.columns.2.y * p.z + r.columns.3.y,
+                    r.columns.0.z * p.x + r.columns.1.z * p.y + r.columns.2.z * p.z + r.columns.3.z)
+                lo = simd_min(lo, w)
+                hi = simd_max(hi, w)
+            }
+        }
+        if parts.isEmpty || lo.x > hi.x { return (.zero, .zero) }
+        return (lo, hi)
     }
 
     // MARK: - Posing

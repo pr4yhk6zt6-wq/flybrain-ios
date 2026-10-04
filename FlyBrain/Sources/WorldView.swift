@@ -275,6 +275,16 @@ struct WorldView: View {
                 bar("LEG R", world.drives.legR, 60, .orange)
                 bar("JUMP", world.drives.jump, 20, .red)
             }
+            // If the anatomical mesh did not load, say so on screen. It used
+            // to fail silently, and the symptom was just "no fly".
+            if let note = world.flyMeshNote {
+                Text(note)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.18),
+                                in: RoundedRectangle(cornerRadius: 4))
+            }
         }
         .padding(9)
         .background(Color.black.opacity(0.45))

@@ -97,6 +97,18 @@ enum FlyMorphology {
     static let strokeAmplitudeHover: Float = 2.468   // rad
     /// Maximum (morphological) stroke amplitude, 3.1 rad (~178 deg).
     static let strokeAmplitudeMax: Float = 3.1       // rad
+    /// How far the steering muscles (b1/b2) can shift the stroke amplitude of
+    /// their own side: ~20 degrees (Lehmann & Dickinson 1997). This is a hard
+    /// limit on the muscle, not a gain we chose, so the bias saturates here.
+    static let steeringRange: Float = 20.0 * .pi / 180
+    /// Peak yaw rate recorded in free-flight saccades: ~1600 deg/s, held for a
+    /// few tens of milliseconds (Fry, Sayaman & Dickinson 2003). Sustaining a
+    /// faster rate than the animal has ever been measured at would take more
+    /// torque than a fly can make, so the steering torque saturates here.
+    static let maxYawRate: Float = 1600.0 * .pi / 180
+    /// The torque that rate costs against the flapping counter-torque. About
+    /// 0.86 nN m, against the ~1 nN m Fry et al. inferred for a saccade.
+    static var maxYawTorque: Float { yawDamping * maxYawRate }
     /// Mean lift coefficient at hovering kinematics (Sane & Dickinson 2001).
     static let liftCoefficient: Float = 1.8
     /// Mean drag is 1.27x mean lift in hovering (Sun & Tang 2002).
@@ -330,10 +342,24 @@ final class FlyBody {
         // Steering muscles bias the stroke amplitude of their own side; this is
         // the measured mechanism of yaw control in Drosophila (b1/b2 muscles
         // shift stroke amplitude by up to ~20 deg, Lehmann & Dickinson 1997).
-        let steerBiasL = (drives.wingSteerL - drives.wingSteerR) / 60.0 * 0.35
-        let steerBiasR = (drives.wingSteerR - drives.wingSteerL) / 60.0 * 0.35
-        let phiL = max(0, strokeAmplitude(from: drives.wingPowerL) + steerBiasL)
-        let phiR = max(0, strokeAmplitude(from: drives.wingPowerR) + steerBiasR)
+        //
+        // Both ends of this are now clamped, and neither was. A steering group
+        // firing at 300 Hz on one side and silent on the other — which is what
+        // a saturating motor population does — used to ask for 100 deg of bias,
+        // five times what the muscle can deliver, and the result ran the wing
+        // past its morphological limit to 248 deg of sweep. That is the number
+        // the yaw-rate test caught at 14,895 deg/s.
+        let steerBiasL = max(-FlyMorphology.steeringRange,
+                             min(FlyMorphology.steeringRange,
+                                 (drives.wingSteerL - drives.wingSteerR) / 60.0
+                                 * FlyMorphology.steeringRange))
+        let steerBiasR = -steerBiasL
+        // A wing is a joint. It cannot be commanded past 178 deg, whatever the
+        // power muscles are shouting.
+        let phiL = max(0, min(FlyMorphology.strokeAmplitudeMax,
+                              strokeAmplitude(from: drives.wingPowerL) + steerBiasL))
+        let phiR = max(0, min(FlyMorphology.strokeAmplitudeMax,
+                              strokeAmplitude(from: drives.wingPowerR) + steerBiasR))
         pose.strokeAmplitudeL = phiL
         pose.strokeAmplitudeR = phiR
 
@@ -356,7 +382,14 @@ final class FlyBody {
                                             coefficient: FlyMorphology.dragCoefficient)
         let dragR = FlyMorphology.wingForce(strokeAmplitude: phiR,
                                             coefficient: FlyMorphology.dragCoefficient)
-        let yawTorque = (dragR - dragL) * FlyMorphology.r2
+        // The steering torque saturates at the largest a melanogaster has been
+        // measured producing. Without it the model answers an extreme
+        // left/right asymmetry with a steady spin of several thousand deg/s —
+        // the quasi-steady blade-element estimate keeps scaling with the stroke
+        // amplitude, but the animal does not.
+        let yawTorque = max(-FlyMorphology.maxYawTorque,
+                            min(FlyMorphology.maxYawTorque,
+                                (dragR - dragL) * FlyMorphology.r2))
 
         if pose.airborne > 0.5 {
             // Angular: torque, inertia, and flapping counter-torque damping.

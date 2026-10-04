@@ -86,12 +86,51 @@ featureless floor gives it nothing to work with.
 - Two PiP windows (brain, fly eye) are independently draggable and their
   positions persist via `@AppStorage`.
 
+## The fly's body
+
+The animal is the Janelia/DeepMind `flybody` CT reconstruction — 41 rigid parts,
+76 real hinge joints with anatomical axes and limits, packed by
+`tools/build_flymodel.py` into `flymodel.bin` (1.7 MiB). One draw call per part.
+
+Two things about it are worth knowing, because both have caused the fly to go
+missing:
+
+**Size.** `FlyModel` normalises the mesh, and it normalises the *assembled* pose
+— it walks the parent chain, transforms every vertex, and scales the body length
+that comes out to 2.5 mm. It used to measure the AABB of the raw vertex buffer
+instead. That is not the animal: each part keeps its vertices in its own frame,
+so the raw AABB is the union of 41 unassembled boxes and its longest axis is one
+wing held out sideways. Scaling by it produced a 1.43 mm body and a 2.91 mm
+wingspan — a fly at 57 % of life size, being flown by physics that assumed
+2.5 mm. With the assembled measurement the same model gives a 2.50 mm body,
+5.08 mm wingspan and 1.30 mm height, which are the published numbers for
+*D. melanogaster*.
+
+**It must be in the bundle.** `flymodel.bin` is a resource, not source, and CI
+builds it. If it is absent, the renderer draws a stand-in fly from the same
+primitives as the scenery and the HUD says `NO FLY MESH (fallback body)`. It
+never again draws an empty room and says nothing. The `.ipa` is checked for
+`flymodel.bin` before it is uploaded, so a build without it fails CI instead of
+failing on a phone.
+
 ## Rendering cost
 
 The whole world is three draw calls — one instanced cube batch, one icosphere
-batch, one quad batch — plus a sky triangle. The fly itself is assembled from
-those same primitives (thorax, abdomen, head, two eyes, two wings, six legs), so
-it costs nothing extra. Instance buffers are triple-buffered.
+batch, one quad batch — plus a sky triangle, plus one draw per fly part. Instance
+buffers are triple-buffered.
+
+## If the fly is not there
+
+1. **Check the HUD.** `NO FLY MESH (fallback body)` means `flymodel.bin` is
+   missing from the bundle. Rebuild it: `python3 tools/build_flymodel.py
+   --cache data/flybody --out build/flymodel.bin --budget 110000` and copy it
+   into `FlyBrain/Resources/`.
+2. **Double-tap** to recentre the chase camera, and pinch out if the fly is
+   simply very close to the lens.
+3. **`python3 tools/softrender.py out.png`** re-renders the frame on the CPU
+   using the same instance list and the same shader maths, and prints how many
+   pixels the fly covers. If it is there in the PNG and not on the phone, the
+   problem is in the asset, not the geometry.
 
 ## Camera fixes shipped alongside
 

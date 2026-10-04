@@ -88,6 +88,46 @@ final class FlightPhysicsTests: XCTestCase {
         XCTAssertLessThan(degPerSec, 2000, "yaw saturated")
     }
 
+    /// A wing is a joint. However hard the power and steering groups fire, the
+    /// commanded sweep must stay inside the morphological limit of 178 deg —
+    /// the build that shipped 0.3 asked for 248.
+    func testStrokeAmplitudeStaysInsideTheMorphologicalLimit() {
+        let world = World()
+        let body = FlyBody()
+        body.reset()
+        var d = FlyDrives()
+        d.wingPowerL = 500; d.wingPowerR = 500
+        d.wingSteerL = 500; d.wingSteerR = 0
+        body.setDrives(d)
+        for _ in 0..<(60 * 3) { body.update(dt: 1.0 / 60, world: world) }
+
+        XCTAssertLessThanOrEqual(body.pose.strokeAmplitudeL,
+                                 FlyMorphology.strokeAmplitudeMax + 1e-4,
+                                 "left wing commanded past its limit")
+        XCTAssertLessThanOrEqual(body.pose.strokeAmplitudeR,
+                                 FlyMorphology.strokeAmplitudeMax + 1e-4,
+                                 "right wing commanded past its limit")
+        XCTAssertGreaterThanOrEqual(body.pose.strokeAmplitudeR, 0)
+    }
+
+    /// b1/b2 shift stroke amplitude by up to ~20 degrees (Lehmann & Dickinson
+    /// 1997). The steering bias is a muscle limit, not a gain, so no amount of
+    /// asymmetric firing may exceed it.
+    func testSteeringBiasIsBoundedToTheMeasuredTwentyDegrees() {
+        let world = World()
+        let body = FlyBody()
+        body.reset()
+        var d = FlyDrives()
+        d.wingPowerL = 300; d.wingPowerR = 300
+        d.wingSteerL = 300; d.wingSteerR = 0
+        body.setDrives(d)
+        for _ in 0..<(60 * 3) { body.update(dt: 1.0 / 60, world: world) }
+
+        let bias = abs(body.pose.strokeAmplitudeL - body.pose.strokeAmplitudeR) * 0.5
+        XCTAssertLessThanOrEqual(bias, FlyMorphology.steeringRange + 1e-3,
+                                 "steering asked for more than the muscle can do")
+    }
+
     /// The headline regression: after ten seconds of maximum drive in every
     /// environment, the fly is still in the room.
     func testFlyCannotEscapeAnyEnvironment() {
