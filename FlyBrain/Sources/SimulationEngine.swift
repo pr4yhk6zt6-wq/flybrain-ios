@@ -93,7 +93,10 @@ final class SimulationEngine {
     private let ring: MTLBuffer
     private let rngState: MTLBuffer
     private let externalInput: MTLBuffer
-    private let adaptation: MTLBuffer
+    /// Per-retina-cell luminance adaptation, one buffer per eye, indexed in
+    /// the same order as the per-eye (idx, uv) splits in the connectome.
+    private let adaptationL: MTLBuffer
+    private let adaptationR: MTLBuffer
     private let spikeList: MTLBuffer
     private let spikeCount: MTLBuffer
     private let spikeFlags: MTLBuffer
@@ -156,7 +159,10 @@ final class SimulationEngine {
         let n = connectome.neuronCount
 
         func zeroed(_ bytes: Int, _ label: String) throws -> MTLBuffer {
-            guard let b = device.makeBuffer(length: bytes, options: .storageModeShared) else {
+            // Metal refuses zero-length buffers; a side with no retina cells
+            // still needs a placeholder.
+            guard let b = device.makeBuffer(length: max(bytes, 4),
+                                            options: .storageModeShared) else {
                 throw SimulationError.allocationFailed(label)
             }
             memset(b.contents(), 0, bytes)
@@ -170,7 +176,8 @@ final class SimulationEngine {
         ring          = try zeroed(ringSlots * n * MemoryLayout<Int32>.stride, "delayRing")
         rngState      = try zeroed(n * MemoryLayout<UInt32>.stride, "rngState")
         externalInput = try zeroed(n * MemoryLayout<Float>.stride, "externalInput")
-        adaptation    = try zeroed(connectome.retinaCount * MemoryLayout<Float>.stride, "adaptation")
+        adaptationL   = try zeroed(connectome.retinaCountL * MemoryLayout<Float>.stride, "adaptationL")
+        adaptationR   = try zeroed(connectome.retinaCountR * MemoryLayout<Float>.stride, "adaptationR")
         spikeList     = try zeroed(n * MemoryLayout<UInt32>.stride, "spikeList")
         spikeCount    = try zeroed(MemoryLayout<UInt32>.stride, "spikeCount")
         spikeFlags    = try zeroed(n, "spikeFlags")
@@ -243,7 +250,13 @@ final class SimulationEngine {
     /// All of it goes in one command buffer: at 1 ms per step and 60 fps we need
     /// ~16 steps per frame, and 16 separate command buffers per frame would spend
     /// more time in the driver than in the kernels.
+    /// Brain-view convenience: one camera image feeding both eyes, the old
+    /// behaviour.
     func step(count steps: Int, cameraTexture: MTLTexture?) {
+        step(count: steps, leftEye: cameraTexture, rightEye: cameraTexture)
+    }
+
+    func step(count steps: Int, leftEye: MTLTexture?, rightEye: MTLTexture?) {
         guard !isPaused, steps > 0 else { return }
         guard let cb = queue.makeCommandBuffer() else { return }
         cb.label = "FlyBrain.step x\(steps)"
@@ -284,19 +297,16 @@ final class SimulationEngine {
                 e.endEncoding()
             }
 
-            // --- camera -> photoreceptors ---------------------------------
-            if let tex = cameraTexture, let e = cb.makeComputeCommandEncoder() {
-                e.label = "retina"
-                e.setComputePipelineState(psoRetina)
-                e.setTexture(tex, index: 0)
-                e.setBuffer(connectome.retinaIdx, offset: 0, index: 0)
-                e.setBuffer(connectome.retinaUV, offset: 0, index: 1)
-                e.setBuffer(externalInput, offset: 0, index: 2)
-                e.setBuffer(adaptation, offset: 0, index: 3)
-                setParams(e, index: 4)
-                dispatch(e, psoRetina, threads: connectome.retinaCount)
-                e.endEncoding()
-            }
+            // --- eyes -> photoreceptors -----------------------------------
+            // One dispatch per eye: the left optic lobe samples the left
+            // eye's texture, the right the right's. The kernel bounds its
+            // grid by P.retinaCount, so each pass encodes its own count.
+            retinaPass(cb, leftEye,
+                       connectome.retinaIdxL, connectome.retinaUVL,
+                       adaptationL, connectome.retinaCountL)
+            retinaPass(cb, rightEye,
+                       connectome.retinaIdxR, connectome.retinaUVR,
+                       adaptationR, connectome.retinaCountR)
 
             // --- integrate -------------------------------------------------
             if let e = cb.makeComputeCommandEncoder() {
@@ -402,6 +412,28 @@ final class SimulationEngine {
     private func setParams(_ encoder: MTLComputeCommandEncoder, index: Int) {
         var p = params
         encoder.setBytes(&p, length: MemoryLayout<SimParams>.stride, index: index)
+    }
+
+    /// One eye's photoreceptors sampling one texture. `setBytes` snapshots the
+    /// parameters at encode time, so overriding retinaCount per pass cannot
+    /// leak into the other kernels.
+    private func retinaPass(_ cb: MTLCommandBuffer, _ tex: MTLTexture?,
+                            _ idx: MTLBuffer, _ uv: MTLBuffer,
+                            _ adapt: MTLBuffer, _ count: Int) {
+        guard let tex, count > 0,
+              let e = cb.makeComputeCommandEncoder() else { return }
+        e.label = "retina"
+        e.setComputePipelineState(psoRetina)
+        e.setTexture(tex, index: 0)
+        e.setBuffer(idx, offset: 0, index: 0)
+        e.setBuffer(uv, offset: 0, index: 1)
+        e.setBuffer(externalInput, offset: 0, index: 2)
+        e.setBuffer(adapt, offset: 0, index: 3)
+        var p = params
+        p.retinaCount = UInt32(count)
+        e.setBytes(&p, length: MemoryLayout<SimParams>.stride, index: 4)
+        dispatch(e, psoRetina, threads: count)
+        e.endEncoding()
     }
 
     private func dispatch(_ e: MTLComputeCommandEncoder,

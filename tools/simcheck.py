@@ -63,8 +63,9 @@ def clamp(x, lo, hi):
 
 # ------------------------------------------------------------------- World
 class World:
-    bounds = 6.0
-    ceiling_by_env = {"kitchen": 3.2, "garden": 8.0, "lab": 3.2}
+    # Open world: the floor runs to the fog horizon; bounds is only the
+    # invisible 20 m analytical backstop.
+    bounds = 2000.0
 
     def __init__(self, env="kitchen"):
         self.env = env
@@ -73,21 +74,10 @@ class World:
 
     @property
     def ceilingHeight(self):
-        return self.ceiling_by_env[self.env]
+        return 500.0               # invisible sky cap, nothing drawn there
 
     def rebuild(self):
         self.objects = []
-        t = 0.25
-        h = self.ceilingHeight
-        b = self.bounds
-        span = b * 2 + t * 2
-        for pos, size in [((0, h / 2, -b - t / 2), (span, h, t)),
-                          ((0, h / 2, b + t / 2), (span, h, t)),
-                          ((-b - t / 2, h / 2, 0), (t, h, span)),
-                          ((b + t / 2, h / 2, 0), (t, h, span))]:
-            self.objects.append(("wall", list(pos), list(size)))
-        if self.env != "garden":
-            self.objects.append(("ceiling", [0, h + t / 2, 0], [span, t, span]))
         if self.env == "kitchen":
             self.objects.append(("fruit", [1.4, 0.18, -1.1], [0.18] * 3))
 
@@ -160,6 +150,7 @@ class FlyBody:
         self.stepFrequency = 0.0
         self.yawRate = 0.0
         self.referenceRate = 120.0
+        self.turnBias = 0.0
         self.energy = 1.0
         self.hurt = 0.0
         self.isEating = False
@@ -167,6 +158,7 @@ class FlyBody:
         self.proboscisExtension = 0.0
 
     referenceTau = 2.0
+    turnBiasTau = 1.5
 
     def stroke_amplitude(self, rate):
         hover = strokeAmplitudeHover
@@ -246,7 +238,8 @@ class FlyBody:
             stride = walkSpeedMax / stepFrequencyMax
             speedMS = f * stride
             legDiff = (self.d.legR - self.d.legL) / max(self.referenceRate, 1.0)
-            self.yawRate = -legDiff * f * 2.0
+            self.turnBias += (legDiff - self.turnBias) * min(1.0, dt / self.turnBiasTau)
+            self.yawRate = -(legDiff - self.turnBias) * f * 2.0
             self.heading += self.yawRate * dt
             fwd = [math.sin(self.heading), 0.0, -math.cos(self.heading)]
             v = [fwd[i] * speedMS * METRES_TO_WORLD for i in range(3)]
@@ -437,12 +430,37 @@ check("testLargeTimestepIsClamped",
 
 # 13 containment
 w = World()
-p, n = w.contain([500, 500, 500], 0.1)
+p, n = w.contain([5000, 5000, 5000], 0.1)
 check("testContainClampsAPointFarOutsideTheRoom",
       any(x != 0 for x in n) and abs(p[0]) <= w.bounds and p[1] <= w.ceilingHeight)
 p, n = w.contain([0, 1.0, 0], 0.1)
 check("testContainLeavesAnInteriorPointAlone",
       all(x == 0 for x in n) and p == [0, 1.0, 0])
+
+# 14 the user's complaint: a constant left/right leg bias used to turn the
+# fly in circles forever (steady ~11 deg/s on the HUD). With the adapted
+# turn baseline it must straighten out.
+w, b = make()
+b.reset((0, 0.02, 0))
+b.d = Drives(legL=30, legR=45)
+for _ in range(60 * 12):
+    b.update(1 / 60, w)
+dps = abs(b.yawRate) * 180 / math.pi
+check("testSustainedLegAsymmetryDoesNotCircleForever", dps < 5,
+      f"yaw {dps:.2f} deg/s after 12 s of constant bias")
+
+# 15 ...but a CHANGE in asymmetry still turns the animal (steering works)
+w, b = make()
+b.reset((0, 0.02, 0))
+b.d = Drives(legL=30, legR=30)
+for _ in range(60 * 6):
+    b.update(1 / 60, w)
+b.d = Drives(legL=20, legR=45)          # a new, stronger asymmetry
+for _ in range(30):
+    b.update(1 / 60, w)
+dps = abs(b.yawRate) * 180 / math.pi
+check("testTurnsStillRespondToNewAsymmetry", dps > 5,
+      f"yaw {dps:.2f} deg/s right after the change")
 
 print()
 bad = [r for r in results if not r[1]]

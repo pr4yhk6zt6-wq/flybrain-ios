@@ -10,11 +10,19 @@ that come out the other end move the animal.
 Everything below happens once per displayed frame, inside one Metal command
 buffer plus one readback:
 
-1. **Render the world from the fly's head** into a 128×128 offscreen texture,
-   through a 140° frustum (`WorldRenderer.drawEye`).
-2. **Blur it to ommatidial acuity.** A real fly has ~700 facets per eye, about
-   1.5° apart, so a sharp render is far too good. `ommatidiaBlur` box-filters
-   6×6 pixel cells and collapses to a green-weighted luminance.
+1. **Render the world from the fly's two eyes** — one 128×128 offscreen
+   texture per eye (`WorldRenderer.drawEye`). The eye cameras copy the
+   flybody model: optical axes 67° off the body axis, 140° fields, so the
+   pair covers ~274°. Earlier builds rendered ONE cyclopean camera from the
+   head midpoint and fed that single image to both optic lobes — the brain
+   got no left/right difference to steer with, the fly circled, and the eye
+   preview showed a one-eyed animal. Now the left texture feeds the left
+   hemisphere's retina cells and the right texture the right's (the split is
+   by the side flag in `neuronMeta`, done once at load in `Connectome`), and
+   the PiP shows both eyes side by side.
+2. **Blur each eye to ommatidial acuity.** A real fly has ~700 facets per
+   eye, about 1.5° apart, so a sharp render is far too good. `ommatidiaBlur`
+   box-filters 6×6 pixel cells and collapses to a green-weighted luminance.
 3. **Step the brain** 4 × 1 ms with that texture as the photoreceptor input —
    the same `sampleRetina` kernel the phone camera used.
 4. **Read the motor group rates back.** `reduceGroupSpikes` counts, on the GPU,
@@ -32,7 +40,12 @@ buffer plus one readback:
 | Flight thrust / lift | `motor_wing_power_left` + `_right` | 12 + 12 |
 | Yaw in flight | `motor_wing_steering_right` − `_left` | 12 + 12 |
 | Walking speed | mean of front/middle/hind `motor_*_leg_*` | 391 |
-| Turning on foot | right-side leg rate − left-side | — |
+| Turning on foot | right-side leg rate − left-side, minus a slowly adapted baseline | — |
+
+The adapted baseline (`turnBias`, tau 1.5 s) matters: the two leg populations
+never fire perfectly evenly, and raw differential drive turned the animal in
+circles at a steady ~11°/s forever. Only *changes* in asymmetry steer now —
+the same equilibrium-reflex idea the wing lift loop uses.
 | Escape jump | `motor_jump_escape` (the giant fibre target) | 2 |
 | Head turn | `motor_neck` | 49 |
 | Feeding | `motor_proboscis` | 35 |
@@ -74,6 +87,15 @@ Kitchen (wooden table, dark), garden (grass, bright sky, tall stems) and lab
 (white bench, hard light) are switchable live. The ground checker scale differs
 per environment on purpose: optic flow is what the visual system keys off, and a
 featureless floor gives it nothing to work with.
+
+Every environment is now an OPEN world: a floor that runs to a fog horizon under
+an open sky, with loose scenery clustered a couple of metres around the origin.
+There are no walls and no ceiling anywhere. The old 12 cm room was a matchbox
+for an animal that flies at 0.9 m/s — it crossed the room in a sixth of a
+second and spent its whole life colliding, which read as "the fly is broken".
+`World.bounds` (20 m) survives only as an invisible analytical backstop so the
+integrator cannot wander to infinity; the fog hides it completely. The sky cap
+(5 m, also invisible) keeps the chase camera from losing the fly overhead.
 
 ## Interaction
 

@@ -53,7 +53,7 @@ struct ChaseCamera {
         // Near plane has to be tight: at 0.9 cm from a 0.25 cm animal, a 2 cm
         // near plane would clip the subject away entirely.
         let proj = float4x4(perspectiveFOV: 55 * .pi / 180, aspect: aspect,
-                            near: 0.01, far: 80)
+                            near: 0.01, far: 8000)
         let view = float4x4(lookAt: smoothed, target: lookAt, up: SIMD3<Float>(0, 1, 0))
         return (proj * view, smoothed)
     }
@@ -144,8 +144,9 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
         world.environment = environment
     }
 
-    /// The texture the photoreceptors read, also shown in the eye PiP.
-    var eyeTexture: MTLTexture? { renderer?.eyeBlurred }
+    /// The two eye textures the photoreceptors read, also shown in the PiP.
+    var eyeTextureL: MTLTexture? { renderer?.eyeBlurredL }
+    var eyeTextureR: MTLTexture? { renderer?.eyeBlurredR }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
@@ -167,9 +168,11 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
         renderer.buildInstances(world: world, body: body, showFly: true)
         renderer.drawEye(commandBuffer: cb, body: body, world: world, time: Float(now))
 
-        // 3. One frame of brain, driven by that image.
+        // 3. One frame of brain, driven by both eyes.
         if !sim.isPaused {
-            sim.step(count: stepsPerFrame, cameraTexture: renderer.eyeBlurred)
+            sim.step(count: stepsPerFrame,
+                     leftEye: renderer.eyeBlurredL,
+                     rightEye: renderer.eyeBlurredR)
         }
 
         // 7. The view the user watches, in the same command buffer.

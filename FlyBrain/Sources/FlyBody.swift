@@ -78,6 +78,17 @@ enum FlyMorphology {
     /// Body length, 2.5 mm.
     static let bodyLength: Float = 2.5e-3            // m
 
+    // --- eyes (flybody MJCF eye cameras, Vaxenburg et al. 2025) -----------
+    /// The optical axis of each compound eye sits 67 degrees off the body
+    /// axis (measured from the published model's eye-camera quaternions), and
+    /// each eye sees a 140-degree field. Together the two fields cover about
+    /// 274 degrees with a small frontal overlap — the near-panoramic visual
+    /// field of a real fly.
+    static let eyeAzimuth: Float = 67.0 * .pi / 180
+    static let eyeFieldOfView: Float = 140.0 * .pi / 180
+    /// Half the distance between the two eyes, in world (cm-scale) units.
+    static let eyeLateralOffset: Float = 0.033
+
     // --- wing (Lehmann & Dickinson 1997; Sun & Tang 2002) ---
     /// Wing length R, 2.39 mm.
     static let wingLength: Float = 2.39e-3           // m
@@ -276,6 +287,18 @@ final class FlyBody {
     private(set) var referenceRate: Float = 120.0
     private let referenceTau: Float = 2.0       // s
 
+    /// Adapted baseline of the left/right leg-rate asymmetry while walking.
+    ///
+    /// The two leg populations of the connectome do not fire perfectly evenly,
+    /// and the raw difference used to turn the body forever — the animal
+    /// circled at a steady ~11 deg/s instead of walking straight. This is the
+    /// same equilibrium idea as `referenceRate`: only *changes* in asymmetry
+    /// around the adapted mean steer the body, so an intended turn still
+    /// works but a constant baseline bias dies away (tau ~1.5 s, the order of
+    /// the optomotor straightening a real fly gets from balanced optic flow).
+    private(set) var turnBias: Float = 0
+    private let turnBiasTau: Float = 1.5
+
     private func strokeAmplitude(from rateHz: Float) -> Float {
         let hover = FlyMorphology.strokeAmplitudeHover
         let maxPhi = FlyMorphology.strokeAmplitudeMax
@@ -307,6 +330,7 @@ final class FlyBody {
         pose = FlyPose(position: p)
         energy = 1.0
         hurt = 0
+        turnBias = 0
     }
 
     func readMotorDrives(from sim: SimulationEngine) {
@@ -440,9 +464,11 @@ final class FlyBody {
 
             // Turning on foot: the two tripods step at different rates, and the
             // body rotates about the slower side. Differential stride is the
-            // measured mechanism.
+            // measured mechanism. The adapted baseline (see `turnBias`) keeps a
+            // constant left/right bias from circling the animal forever.
             let legDiff = (drives.legR - drives.legL) / max(referenceRate, 1)
-            pose.yawRate = -legDiff * f * 2.0
+            turnBias += (legDiff - turnBias) * min(1, dt / turnBiasTau)
+            pose.yawRate = -(legDiff - turnBias) * f * 2.0
             pose.heading += pose.yawRate * dt
 
             let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
@@ -618,18 +644,33 @@ final class FlyBody {
 
     // MARK: - Sensing
 
-    /// Eye position and gaze. The flybody model puts the two 140-degree eye
-    /// cameras at +/- 0.0219 in head-local units; we render from the midpoint,
-    /// because one cyclopean 140-degree view is the closest a single
-    /// rectilinear pass can get to a 270-degree panoramic visual field.
-    var eyeTransform: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>) {
+    /// The two compound-eye cameras, one per optic lobe.
+    ///
+    /// The flybody model puts the eye cameras at +/- 0.0219 in head-local
+    /// units with their optical axes 67 degrees off the body axis, each with
+    /// a 140-degree field. We used to render ONE cyclopean camera from the
+    /// midpoint and feed that single image to both hemispheres — which gave
+    /// the brain no left/right difference to steer with, and the eye preview
+    /// showed a one-eyed fly. Now each hemisphere gets its own eye.
+    var eyeTransforms: (left: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>),
+                        right: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>)) {
         let yaw = pose.heading + pose.headYaw
         let pitch = pose.pitch + pose.headPitch
-        let f = SIMD3<Float>(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
         // Head is one third of a body length ahead of the centre of mass.
         let ahead = FlyMorphology.bodyLength * 0.33 * metresToWorld
-        let headOffset = SIMD3<Float>(sin(yaw), 0.12, -cos(yaw)) * ahead
-        return (pose.position + headOffset, normalize(f), SIMD3<Float>(0, 1, 0))
+        let head = pose.position + SIMD3<Float>(sin(yaw), 0.12, -cos(yaw)) * ahead
+        // The fly's right side: forward x up.
+        let right = SIMD3<Float>(cos(yaw), 0, sin(yaw))
+
+        func eye(_ azimuth: Float) -> (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>) {
+            let y = yaw + azimuth
+            let f = SIMD3<Float>(sin(y) * cos(pitch), sin(pitch), -cos(y) * cos(pitch))
+            let p = head + right * (azimuth >= 0 ? FlyMorphology.eyeLateralOffset
+                                                 : -FlyMorphology.eyeLateralOffset)
+            return (p, normalize(f), SIMD3<Float>(0, 1, 0))
+        }
+        return (left: eye(-FlyMorphology.eyeAzimuth),
+                right: eye(FlyMorphology.eyeAzimuth))
     }
 
     func writeSensoryDrives(to sim: SimulationEngine, world: World, visionActive: Bool) {

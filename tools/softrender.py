@@ -215,48 +215,39 @@ def icosphere_mesh(subdivisions):
 
 # -------------------------------------------------------------- the world
 
+# Open world, matching World.swift: a floor under the sky, no walls or
+# ceiling; BOUNDS is only the invisible 20 m analytical backstop.
 ENVS = {
     "kitchen": dict(sky=(0.14, 0.12, 0.14), ground=(0.55, 0.42, 0.28),
-                    checker=3.0, fog=0.03, ceiling=3.2),
+                    checker=3.0, fog=0.0025),
     "garden": dict(sky=(0.38, 0.62, 0.86), ground=(0.22, 0.42, 0.16),
-                   checker=10.0, fog=0.012, ceiling=8.0),
+                   checker=10.0, fog=0.0012),
     "lab": dict(sky=(0.07, 0.08, 0.10), ground=(0.85, 0.86, 0.88),
-                checker=1.5, fog=0.03, ceiling=3.2),
+                checker=1.5, fog=0.0025),
 }
 
-BOUNDS = 6.0
+BOUNDS = 2000.0
+SCENERY_EXTENT = 250.0
 
 
 def build_world(env):
     objs = []
     e = ENVS[env]
-    t, h, b = 0.25, e["ceiling"], BOUNDS
-    span = b * 2 + t * 2
-    for pos, size in [((0, h / 2, -b - t / 2), (span, h, t)),
-                      ((0, h / 2, b + t / 2), (span, h, t)),
-                      ((-b - t / 2, h / 2, 0), (t, h, span)),
-                      ((b + t / 2, h / 2, 0), (t, h, span))]:
-        objs.append(dict(kind="wall", pos=np.array(pos), size=np.array(size),
-                         colour=(0.52, 0.47, 0.42), mesh="cube", amount=1))
-    if env != "garden":
-        objs.append(dict(kind="ceiling", pos=np.array((0, h + t / 2, 0)),
-                         size=np.array((span, t, span)),
-                         colour=(0.30, 0.29, 0.28), mesh="cube", amount=1))
     rng = np.random.default_rng(7)
     if env == "kitchen":
         for _ in range(5):
             s = float(rng.uniform(0.25, 0.8))
             objs.append(dict(kind="cube", pos=np.array(
-                [float(rng.uniform(-4.8, 4.8)), s * 0.5,
-                 float(rng.uniform(-4.8, 4.8))]),
+                [float(rng.uniform(-SCENERY_EXTENT, SCENERY_EXTENT)), s * 0.5,
+                 float(rng.uniform(-SCENERY_EXTENT, SCENERY_EXTENT))]),
                 size=np.array([s, s, s]), colour=(0.45, 0.50, 0.62),
                 mesh="cube", amount=1))
         for _ in range(2):
             s = float(rng.uniform(0.3, 0.5))
             hh = s * 2.0
             objs.append(dict(kind="pillar", pos=np.array(
-                [float(rng.uniform(-4.8, 4.8)), hh * 0.5,
-                 float(rng.uniform(-4.8, 4.8))]),
+                [float(rng.uniform(-SCENERY_EXTENT, SCENERY_EXTENT)), hh * 0.5,
+                 float(rng.uniform(-SCENERY_EXTENT, SCENERY_EXTENT))]),
                 size=np.array([s, hh, s]), colour=(0.60, 0.58, 0.52),
                 mesh="cube", amount=1))
         objs.append(dict(kind="fruit", pos=np.array([1.4, 0.18, -1.1]),

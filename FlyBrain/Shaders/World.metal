@@ -187,3 +187,37 @@ fragment float4 blitFragment(BlitOut in [[stage_in]],
     c *= 1.0 - saturate(dot(r, r) * 1.4);             // edge of the visual field
     return float4(c, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// Two-eye blit: the left compound eye in the left half of the preview, the
+// right in the right half, each with its own facet lattice and field-edge
+// falloff, divided by a dark seam. This is what the fly actually sees — two
+// eyes, not one.
+// ---------------------------------------------------------------------------
+
+fragment float4 eyePairFragment(BlitOut in [[stage_in]],
+                                texture2d<float> leftEye  [[texture(0)]],
+                                texture2d<float> rightEye [[texture(1)]],
+                                constant float &facets [[buffer(0)]])
+{
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float side = step(0.5, in.uv.x);
+    float2 uv = float2(fract(in.uv.x * 2.0), in.uv.y);
+    float lum = mix(leftEye.sample(s, uv).r, rightEye.sample(s, uv).r, side);
+
+    float2 g = uv * facets;
+    g.x += fmod(floor(g.y), 2.0) * 0.5;
+    float2 f = fract(g) - 0.5;
+    float d = max(abs(f.x) * 1.15 + abs(f.y) * 0.6, abs(f.y) * 1.2);
+    float border = smoothstep(0.42, 0.5, d);
+
+    float3 c = float3(lum * 0.35, lum, lum * 0.45);
+    c *= (1.0 - border * 0.55);
+
+    float2 r = uv - 0.5;
+    c *= 1.0 - saturate(dot(r, r) * 1.4);             // edge of each eye's field
+
+    float seam = 1.0 - smoothstep(0.0, 0.015, abs(in.uv.x - 0.5));
+    c *= 1.0 - seam * 0.85;                           // the divide between eyes
+    return float4(c, 1.0);
+}

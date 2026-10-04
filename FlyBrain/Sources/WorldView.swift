@@ -71,11 +71,15 @@ struct WorldMetalView: UIViewRepresentable {
 
 // MARK: - The fly's-eye PiP
 
-/// Draws the ommatidially-filtered eye texture with a facet lattice over it.
+/// Draws the two ommatidially-filtered eye textures side by side — left eye
+/// in the left half, right eye in the right half — with a facet lattice over
+/// each, so the preview shows the fly's pair of compound eyes rather than a
+/// single cyclopean view.
 final class EyePreviewRenderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private var pipeline: MTLRenderPipelineState?
-    var source: (() -> MTLTexture?)?
+    var sourceLeft: (() -> MTLTexture?)?
+    var sourceRight: (() -> MTLTexture?)?
     var facets: Float = 22
 
     init?(device: MTLDevice, library: MTLLibrary, format: MTLPixelFormat) {
@@ -85,7 +89,7 @@ final class EyePreviewRenderer: NSObject, MTKViewDelegate {
         let d = MTLRenderPipelineDescriptor()
         d.label = "eyePreview"
         d.vertexFunction = library.makeFunction(name: "blitVertex")
-        d.fragmentFunction = library.makeFunction(name: "blitFragment")
+        d.fragmentFunction = library.makeFunction(name: "eyePairFragment")
         d.colorAttachments[0].pixelFormat = format
         pipeline = try? device.makeRenderPipelineState(descriptor: d)
     }
@@ -94,13 +98,15 @@ final class EyePreviewRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         guard let pipeline,
-              let tex = source?(),
+              let texL = sourceLeft?(),
+              let texR = sourceRight?(),
               let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
               let cb = queue.makeCommandBuffer(),
               let e = cb.makeRenderCommandEncoder(descriptor: pass) else { return }
         e.setRenderPipelineState(pipeline)
-        e.setFragmentTexture(tex, index: 0)
+        e.setFragmentTexture(texL, index: 0)
+        e.setFragmentTexture(texR, index: 1)
         var f = facets
         e.setFragmentBytes(&f, length: MemoryLayout<Float>.stride, index: 0)
         e.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -126,7 +132,8 @@ struct EyeMetalView: UIViewRepresentable {
         v.isOpaque = true
         v.backgroundColor = .black
         let w = world
-        context.coordinator?.source = { [weak w] in w?.eyeTexture }
+        context.coordinator?.sourceLeft = { [weak w] in w?.eyeTextureL }
+        context.coordinator?.sourceRight = { [weak w] in w?.eyeTextureR }
         v.delegate = context.coordinator
         return v
     }
@@ -146,19 +153,25 @@ struct DraggablePiP<Content: View>: View {
     @State private var dragOffset: CGSize = .zero
     @State private var expanded = true
 
+    /// Size of the open window; the eye pair is 2:1 so it gets a wider frame
+    /// than the brain view.
+    var expandedSize: CGSize = CGSize(width: 136, height: 152)
+
     init(title: String, storageKey: String,
          defaultX: Double = 0, defaultY: Double = 0,
+         expandedSize: CGSize = CGSize(width: 136, height: 152),
          onClose: @escaping () -> Void,
          @ViewBuilder content: @escaping () -> Content) {
         self.title = title
         self.onClose = onClose
         self.content = content
+        self.expandedSize = expandedSize
         _storedX = AppStorage(wrappedValue: defaultX, "pip_\(storageKey)_x")
         _storedY = AppStorage(wrappedValue: defaultY, "pip_\(storageKey)_y")
     }
 
     private var size: CGSize {
-        expanded ? CGSize(width: 136, height: 152) : CGSize(width: 108, height: 20)
+        expanded ? expandedSize : CGSize(width: 108, height: 20)
     }
 
     var body: some View {
@@ -236,8 +249,9 @@ struct WorldView: View {
             }
 
             if world.showEyePiP {
-                DraggablePiP(title: "FLY EYE", storageKey: "eye",
+                DraggablePiP(title: "FLY EYES", storageKey: "eye",
                              defaultX: 170, defaultY: 320,
+                             expandedSize: CGSize(width: 178, height: 110),
                              onClose: { world.showEyePiP = false }) {
                     EyeMetalView(brain: brain, world: world)
                 }

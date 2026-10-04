@@ -102,6 +102,16 @@ final class Connectome {
     /// bind it at offset zero. 9,733 uints — 39 KB, not worth being clever.
     let retinaIdx: MTLBuffer      // uint32 x R
 
+    /// Per-eye splits of the retina: left-hemisphere cells (side flag left)
+    /// sample the left eye's texture, right-hemisphere the right eye's.
+    /// Centre cells without a side flag (ocelli etc.) join both lists.
+    let retinaIdxL: MTLBuffer     // uint32 x L
+    let retinaUVL: MTLBuffer      // half2  x L
+    let retinaCountL: Int
+    let retinaIdxR: MTLBuffer     // uint32 x R'
+    let retinaUVR: MTLBuffer      // half2  x R'
+    let retinaCountR: Int
+
     // CPU-side, for the neuron inspector
     private let rootIDPointer: UnsafePointer<UInt64>
     private let metaPointer: UnsafePointer<UInt8>
@@ -241,6 +251,49 @@ final class Connectome {
             .assumingMemoryBound(to: UInt8.self)
         positionPointer = UnsafeRawPointer(base.advanced(by: offsets[ConnectomeSection.positions.rawValue]))
             .assumingMemoryBound(to: Float16.self)
+
+        // ---- per-eye retina splits ---------------------------------------
+        // The embodied fly renders one texture per compound eye, and each
+        // optic lobe must sample its own eye. Split the (idx, uv) pairs by
+        // the side flag packed into byte 3 of neuronMeta (bit 4 left,
+        // bit 5 right — same packing `info(at:)` decodes).
+        var idxL: [UInt32] = [], idxR: [UInt32] = []
+        var uvL: [UInt16] = [], uvR: [UInt16] = []
+        let idxSplit = retinaIdx.contents().assumingMemoryBound(to: UInt32.self)
+        let uvSplit = base.advanced(by: offsets[ConnectomeSection.retinaUV.rawValue])
+            .assumingMemoryBound(to: UInt16.self)
+        for i in 0..<retinaCount {
+            let flags = metaPointer[Int(idxSplit[i]) * 8 + 3]
+            let isL = (flags & 0b0001_0000) != 0
+            let isR = (flags & 0b0010_0000) != 0
+            if isL || !isR {
+                idxL.append(idxSplit[i])
+                uvL.append(uvSplit[i * 2]); uvL.append(uvSplit[i * 2 + 1])
+            }
+            if isR || !isL {
+                idxR.append(idxSplit[i])
+                uvR.append(uvSplit[i * 2]); uvR.append(uvSplit[i * 2 + 1])
+            }
+        }
+
+        func sideBuffers(_ idx: [UInt32], _ uv: [UInt16],
+                         _ li: String, _ lu: String) throws -> (MTLBuffer, MTLBuffer) {
+            guard let bi = device.makeBuffer(bytes: idx,
+                                             length: idx.count * MemoryLayout<UInt32>.stride,
+                                             options: .storageModeShared),
+                  let bu = device.makeBuffer(bytes: uv,
+                                             length: uv.count * MemoryLayout<UInt16>.stride,
+                                             options: .storageModeShared) else {
+                throw ConnectomeError.bufferCreationFailed(li)
+            }
+            bi.label = li
+            bu.label = lu
+            return (bi, bu)
+        }
+        (retinaIdxL, retinaUVL) = try sideBuffers(idxL, uvL, "retinaIdxL", "retinaUVL")
+        (retinaIdxR, retinaUVR) = try sideBuffers(idxR, uvR, "retinaIdxR", "retinaUVR")
+        retinaCountL = idxL.count
+        retinaCountR = idxR.count
 
         metadata = loadedMeta
     }

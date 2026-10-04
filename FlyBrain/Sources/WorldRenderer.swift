@@ -58,11 +58,16 @@ final class WorldRenderer {
     private var frameIndex = 0
     private let maxInstances = 640
 
-    /// The fly's-eye render target, and the ommatidially-blurred version the
-    /// photoreceptor kernel actually samples.
-    private(set) var eyeTexture: MTLTexture!
-    private(set) var eyeBlurred: MTLTexture!
-    private var eyeDepth: MTLTexture!
+    /// One render target per compound eye, plus the ommatidially-blurred
+    /// versions the photoreceptor kernel actually samples. The left texture
+    /// feeds the left optic lobe, the right the right — the brain finally
+    /// gets a real left/right difference to steer with.
+    private(set) var eyeTextureL: MTLTexture!
+    private(set) var eyeTextureR: MTLTexture!
+    private(set) var eyeBlurredL: MTLTexture!
+    private(set) var eyeBlurredR: MTLTexture!
+    private var eyeDepthL: MTLTexture!
+    private var eyeDepthR: MTLTexture!
     let eyeSize = 128
     /// Each ommatidium covers this many pixels of the 128x128 render.
     var facetSize: UInt32 = 6
@@ -187,28 +192,24 @@ final class WorldRenderer {
     }
 
     private func makeEyeTargets(colorFormat: MTLPixelFormat) throws {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: colorFormat, width: eyeSize, height: eyeSize, mipmapped: false)
-        d.usage = [.renderTarget, .shaderRead]
-        d.storageMode = .private
-        guard let t = device.makeTexture(descriptor: d) else { throw WorldError.allocation("eye") }
-        t.label = "flyEye"
-        eyeTexture = t
-
-        let b = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: eyeSize, height: eyeSize, mipmapped: false)
-        b.usage = [.shaderRead, .shaderWrite]
-        b.storageMode = .private
-        guard let bt = device.makeTexture(descriptor: b) else { throw WorldError.allocation("eyeBlur") }
-        bt.label = "flyEyeOmmatidia"
-        eyeBlurred = bt
-
-        let dd = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .depth32Float, width: eyeSize, height: eyeSize, mipmapped: false)
-        dd.usage = [.renderTarget]
-        dd.storageMode = .private
-        guard let dt = device.makeTexture(descriptor: dd) else { throw WorldError.allocation("eyeDepth") }
-        eyeDepth = dt
+        func make(_ label: String, _ format: MTLPixelFormat,
+                  _ usage: MTLTextureUsage) throws -> MTLTexture {
+            let d = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: format, width: eyeSize, height: eyeSize, mipmapped: false)
+            d.usage = usage
+            d.storageMode = .private
+            guard let t = device.makeTexture(descriptor: d) else {
+                throw WorldError.allocation(label)
+            }
+            t.label = label
+            return t
+        }
+        eyeTextureL = try make("flyEyeL", colorFormat, [.renderTarget, .shaderRead])
+        eyeTextureR = try make("flyEyeR", colorFormat, [.renderTarget, .shaderRead])
+        eyeBlurredL = try make("flyEyeOmmatidiaL", .rgba16Float, [.shaderRead, .shaderWrite])
+        eyeBlurredR = try make("flyEyeOmmatidiaR", .rgba16Float, [.shaderRead, .shaderWrite])
+        eyeDepthL = try make("flyEyeDepthL", .depth32Float, [.renderTarget])
+        eyeDepthR = try make("flyEyeDepthR", .depth32Float, [.renderTarget])
     }
 
     // MARK: - Building the frame's instance list
@@ -461,30 +462,45 @@ final class WorldRenderer {
         p.checker = world.environment.groundChecker
         p.groundColour = world.environment.groundColour
         p.skyColour = world.environment.skyColour
-        p.fogDensity = world.environment == .garden ? 0.012 : 0.03
+        // The world is metres deep now; fog is what makes the floor read as
+        // an endless horizon instead of a quad edge. ~95% fade by 15-20 m.
+        p.fogDensity = world.environment == .garden ? 0.0012 : 0.0025
         guard let e = cb.makeRenderCommandEncoder(descriptor: rpd) else { return }
         e.label = "worldMain"
         encode(e, params: p)
         e.endEncoding()
     }
 
-    /// Fly's-eye pass into the offscreen texture, then the ommatidial blur.
+    /// Fly's-eye pass: one 128x128 render per compound eye, then the
+    /// ommatidial blur of each. The two optical axes sit 67 degrees off the
+    /// body axis with 140-degree fields (the flybody eye cameras), covering
+    /// ~274 degrees together — the panoramic view a single cyclopean frustum
+    /// could only fake.
     func drawEye(commandBuffer cb: MTLCommandBuffer, body: FlyBody, world: World, time: Float) {
+        let eyes = body.eyeTransforms
+        renderOneEye(cb, target: eyeTextureL, depth: eyeDepthL, eye: eyes.left,
+                     world: world, time: time)
+        renderOneEye(cb, target: eyeTextureR, depth: eyeDepthR, eye: eyes.right,
+                     world: world, time: time)
+        blurOneEye(cb, src: eyeTextureL, dst: eyeBlurredL)
+        blurOneEye(cb, src: eyeTextureR, dst: eyeBlurredR)
+    }
+
+    private func renderOneEye(_ cb: MTLCommandBuffer, target: MTLTexture, depth: MTLTexture,
+                              eye: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>),
+                              world: World, time: Float) {
         let rpd = MTLRenderPassDescriptor()
-        rpd.colorAttachments[0].texture = eyeTexture
+        rpd.colorAttachments[0].texture = target
         rpd.colorAttachments[0].loadAction = .clear
         rpd.colorAttachments[0].storeAction = .store
         rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        rpd.depthAttachment.texture = eyeDepth
+        rpd.depthAttachment.texture = depth
         rpd.depthAttachment.loadAction = .clear
         rpd.depthAttachment.storeAction = .dontCare
         rpd.depthAttachment.clearDepth = 1.0
 
-        let eye = body.eyeTransform
-        // A fly's field of view is nearly panoramic. A single rectilinear
-        // projection cannot do 270 degrees, so we render a wide 140-degree
-        // frustum and accept the loss at the periphery.
-        let proj = float4x4(perspectiveFOV: 140 * .pi / 180, aspect: 1, near: 0.02, far: 40)
+        let proj = float4x4(perspectiveFOV: FlyMorphology.eyeFieldOfView, aspect: 1,
+                            near: 0.02, far: 6000)
         let viewM = float4x4(lookAt: eye.position,
                              target: eye.position + eye.forward,
                              up: eye.up)
@@ -496,28 +512,29 @@ final class WorldRenderer {
         p.checker = world.environment.groundChecker
         p.groundColour = world.environment.groundColour
         p.skyColour = world.environment.skyColour
-        p.fogDensity = 0.02
+        p.fogDensity = 0.0025
 
         if let e = cb.makeRenderCommandEncoder(descriptor: rpd) {
             e.label = "flyEye"
             encode(e, params: p)
             e.endEncoding()
         }
+    }
 
-        if let blur = blurPipeline, let e = cb.makeComputeCommandEncoder() {
-            e.label = "ommatidia"
-            e.setComputePipelineState(blur)
-            e.setTexture(eyeTexture, index: 0)
-            e.setTexture(eyeBlurred, index: 1)
-            var f = facetSize
-            e.setBytes(&f, length: MemoryLayout<UInt32>.stride, index: 0)
-            let w = min(blur.threadExecutionWidth, 16)
-            let h = max(1, min(blur.maxTotalThreadsPerThreadgroup / w, 16))
-            e.dispatchThreadgroups(
-                MTLSize(width: (eyeSize + w - 1) / w, height: (eyeSize + h - 1) / h, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
-            e.endEncoding()
-        }
+    private func blurOneEye(_ cb: MTLCommandBuffer, src: MTLTexture, dst: MTLTexture) {
+        guard let blur = blurPipeline, let e = cb.makeComputeCommandEncoder() else { return }
+        e.label = "ommatidia"
+        e.setComputePipelineState(blur)
+        e.setTexture(src, index: 0)
+        e.setTexture(dst, index: 1)
+        var f = facetSize
+        e.setBytes(&f, length: MemoryLayout<UInt32>.stride, index: 0)
+        let w = min(blur.threadExecutionWidth, 16)
+        let h = max(1, min(blur.maxTotalThreadsPerThreadgroup / w, 16))
+        e.dispatchThreadgroups(
+            MTLSize(width: (eyeSize + w - 1) / w, height: (eyeSize + h - 1) / h, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
+        e.endEncoding()
     }
 
     func advanceFrame() { frameIndex = (frameIndex + 1) % instanceBuffers.count }

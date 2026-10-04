@@ -103,13 +103,22 @@ The steering muscles are different: they fire phase-locked, once per cycle, and
 shift their own wing's stroke amplitude. That mechanism *is* measured, and is
 what the app uses for turning.
 
-## The walls
+## The walls (and why they are gone)
 
-The fly used to stop dead in mid-air at an invisible boundary. There are now
-actual walls and a ceiling — drawn, solid, and visible to the fly's own eyes,
-so the looming cue that makes avoidance possible is finally there. The collision
-solver also returns a corrected position rather than a nudge, so nothing
-tunnels or sticks any more.
+The containment story went through three stages. First the fly stopped dead
+in mid-air at an *invisible* boundary. Then real walls and a ceiling were
+drawn, so the eyes at least had a looming cue for the surface they were about
+to hit. But the room was 12 cm across — a matchbox for an animal that flies
+at 0.9 m/s and walks a body-length every tenth of a second. At that scale the
+fly collided with something constantly, which is not how a fly in a kitchen
+reads at all.
+
+The world is therefore open now: a floor under an open sky, fog on the
+horizon, no drawn walls or ceiling in any environment, with an invisible
+20 m analytical backstop and a 5 m sky cap so the integrator and the chase
+camera stay sane. The collision solver still returns a corrected position
+rather than a nudge, so nothing tunnels or sticks when the fly does meet one
+of the loose objects.
 
 ## What is still modelled
 

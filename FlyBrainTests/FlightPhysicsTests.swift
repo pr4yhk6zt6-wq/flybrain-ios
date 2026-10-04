@@ -172,6 +172,42 @@ final class FlightPhysicsTests: XCTestCase {
         XCTAssertLessThan(abs(body.pose.velocity.y), 1.0, "still moving")
     }
 
+    /// The regression behind the two-eye / open-world change: a constant
+    /// left/right leg bias used to circle the fly forever at a steady yaw
+    /// rate (the "walks weird, always turning" complaint). The adapted turn
+    /// baseline must straighten it out.
+    func testSustainedLegAsymmetryDoesNotCircleForever() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        var d = FlyDrives()
+        d.legL = 30; d.legR = 45          // sustained asymmetric drive
+        body.setDrives(d)
+        for _ in 0..<(60 * 12) { body.update(dt: 1.0 / 60, world: world) }
+
+        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
+        XCTAssertLessThan(degPerSec, 5, "still circling after 12 s of bias")
+    }
+
+    /// ...while a fresh asymmetry must still steer, or the adaptation would
+    /// have lobotomised the animal's turning.
+    func testTurnsStillRespondToNewAsymmetry() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        var d = FlyDrives()
+        d.legL = 30; d.legR = 30
+        body.setDrives(d)
+        for _ in 0..<(60 * 6) { body.update(dt: 1.0 / 60, world: world) }
+
+        d.legL = 20; d.legR = 45          // a new, stronger asymmetry
+        body.setDrives(d)
+        for _ in 0..<30 { body.update(dt: 1.0 / 60, world: world) }
+
+        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
+        XCTAssertGreaterThan(degPerSec, 5, "steering no longer responds")
+    }
+
     /// Walking is bounded by the measured preferred speed, ~25 mm/s
     /// (Mendes et al. 2013), so our 30 mm/s ceiling must actually bind.
     func testWalkSpeedStaysBelowThirtyMillimetresPerSecond() {
@@ -208,7 +244,7 @@ final class WorldContainmentTests: XCTestCase {
 
     func testContainClampsAPointFarOutsideTheRoom() {
         let world = World()
-        var p = SIMD3<Float>(500, 500, 500)
+        var p = SIMD3<Float>(5000, 5000, 5000)
         let n = world.contain(&p, radius: 0.1)
         XCTAssertNotEqual(n, .zero)
         XCTAssertLessThanOrEqual(abs(p.x), world.bounds)
@@ -223,12 +259,17 @@ final class WorldContainmentTests: XCTestCase {
         XCTAssertEqual(p, SIMD3<Float>(0, 1.0, 0))
     }
 
-    func testEveryEnvironmentBuildsAFloorAndFourWalls() {
+    /// The world is open now: a floor under the sky, no drawn walls or
+    /// ceiling in any environment. The old 12 cm room made the fly collide
+    /// with something every fraction of a second.
+    func testEveryEnvironmentIsOpenWithScenery() {
         for env in Environment.allCases {
             let world = World()
             world.environment = env
             world.rebuild()
             XCTAssertFalse(world.objects.isEmpty, "\(env.rawValue) is empty")
+            XCTAssertFalse(world.objects.contains { $0.kind.isStructure },
+                           "\(env.rawValue) still builds walls or a ceiling")
             XCTAssertGreaterThan(world.ceilingHeight, 0)
         }
     }

@@ -125,23 +125,31 @@ final class World {
     private var swatProgress: Float = 0
     private(set) var swatImpact = false
 
-    let bounds: Float = 6.0
-    /// Garden is open above; indoors the fly can hit the ceiling, which is
-    /// where real flies spend an irritating amount of their time.
-    var ceilingHeight: Float { environment == .garden ? 8.0 : 3.2 }
+    /// The world is OPEN: a floor under an open sky, no walls, no ceiling.
+    ///
+    /// The old 12 cm box was a matchbox for an animal that flies at 0.9 m/s —
+    /// it crossed the whole room in a sixth of a second and spent its life
+    /// colliding with walls, which is exactly what the player saw. Real
+    /// kitchens and gardens are metres across relative to a 2.5 mm fly.
+    ///
+    /// `bounds` survives only as an invisible analytical backstop, 20 m out,
+    /// that keeps the integrator from wandering to infinity; the fog hides
+    /// it completely, so the horizon reads as endless.
+    let bounds: Float = 2000.0
+    /// Invisible sky cap. Nothing is drawn at this height; it only keeps the
+    /// fly below 5 m so the chase camera never loses it overhead.
+    var ceilingHeight: Float { 500.0 }
+    /// Scenery clusters near the origin so the fly always has things to
+    /// interact with while the space around it stays open.
+    let sceneryExtent: Float = 250.0
 
     init() { rebuild() }
 
     func rebuild() {
         objects.removeAll()
 
-        // The room. Previously the arena was bounded by an INVISIBLE limit,
-        // so the fly would stop dead in mid-air for no reason the player — or
-        // the fly's own eyes — could see. Real walls fix both: they are drawn,
-        // so the optic flow has something to collide with visually, and the
-        // visual system gets the looming cue that makes avoidance possible.
-        buildRoom()
-
+        // No room any more — see `bounds`. The floor runs to the fog horizon
+        // in every environment; only loose scenery and food are placed.
         switch environment {
         case .kitchen:
             addScenery(count: 5, kind: .cube, sizeRange: 0.25...0.8)
@@ -158,36 +166,12 @@ final class World {
         swatImpact = false
     }
 
-    /// Four walls and, indoors, a ceiling. Wall thickness is deliberate: a
-    /// solid slab reads correctly from both sides and gives the fly's eye a
-    /// real surface rather than a zero-width plane that vanishes edge-on.
-    private func buildRoom() {
-        let t: Float = 0.25               // wall thickness
-        let h: Float = ceilingHeight
-        let b = bounds
-        let span = b * 2 + t * 2
-
-        func wall(_ pos: SIMD3<Float>, _ size: SIMD3<Float>) {
-            objects.append(WorldObject(kind: .wall, position: pos, size: size))
-        }
-        wall(SIMD3<Float>(0, h / 2, -b - t / 2), SIMD3<Float>(span, h, t))
-        wall(SIMD3<Float>(0, h / 2,  b + t / 2), SIMD3<Float>(span, h, t))
-        wall(SIMD3<Float>(-b - t / 2, h / 2, 0), SIMD3<Float>(t, h, span))
-        wall(SIMD3<Float>( b + t / 2, h / 2, 0), SIMD3<Float>(t, h, span))
-
-        if environment != .garden {
-            objects.append(WorldObject(kind: .ceiling,
-                                       position: SIMD3<Float>(0, h + t / 2, 0),
-                                       size: SIMD3<Float>(span, t, span)))
-        }
-    }
-
     private func addScenery(count: Int, kind: ObjectKind,
                             sizeRange: ClosedRange<Float>, tall: Float = 1.0) {
         for _ in 0..<count {
             let s = Float.random(in: sizeRange)
-            let x = Float.random(in: -bounds * 0.8...bounds * 0.8)
-            let z = Float.random(in: -bounds * 0.8...bounds * 0.8)
+            let x = Float.random(in: -sceneryExtent...sceneryExtent)
+            let z = Float.random(in: -sceneryExtent...sceneryExtent)
             let h = s * tall
             objects.append(WorldObject(kind: kind,
                                        position: SIMD3<Float>(x, h * 0.5, z),
