@@ -83,6 +83,8 @@ final class SimulationEngine {
     private let psoActivity: MTLComputePipelineState
     private let psoStats: MTLComputePipelineState
     private let psoReset: MTLComputePipelineState
+    private let psoGroupSpikes: MTLComputePipelineState
+    private let psoDriveGroups: MTLComputePipelineState
 
     // State
     private let vMembrane: MTLBuffer
@@ -98,6 +100,17 @@ final class SimulationEngine {
     private let activity: MTLBuffer
     private let statsBuffer: MTLBuffer
     private let dispatchArgs: MTLBuffer
+
+    // Named body groups: (start, count) ranges into connectome.groupIndices,
+    // a spike counter per group, and a drive value per group.
+    private let groupRanges: MTLBuffer
+    private let groupCounts: MTLBuffer
+    private let groupDrives: MTLBuffer
+    private(set) var groupNames: [String] = []
+    private(set) var groupSizes: [Int] = []
+    /// Smoothed firing rate per group, in Hz. Read by the body every frame.
+    private(set) var groupRatesHz: [Float] = []
+    private var groupIndexCount = 0
 
     private var params = SimParams()
 
@@ -137,6 +150,8 @@ final class SimulationEngine {
         psoActivity     = try pipeline("updateActivityTrace")
         psoStats        = try pipeline("reduceStats")
         psoReset        = try pipeline("resetCounters")
+        psoGroupSpikes  = try pipeline("reduceGroupSpikes")
+        psoDriveGroups  = try pipeline("driveGroups")
 
         let n = connectome.neuronCount
 
@@ -162,6 +177,28 @@ final class SimulationEngine {
         activity      = try zeroed(n * MemoryLayout<UInt16>.stride, "activityTrace")
         statsBuffer   = try zeroed(16 * MemoryLayout<UInt32>.stride, "stats")
         dispatchArgs  = try zeroed(3 * MemoryLayout<UInt32>.stride, "dispatchArgs")
+
+        // ---- named groups ---------------------------------------------
+        let groups = connectome.metadata.groups
+        let groupCount = max(groups.count, 1)
+        groupRanges = try zeroed(groupCount * MemoryLayout<UInt32>.stride * 2, "groupRanges")
+        groupCounts = try zeroed(groupCount * MemoryLayout<UInt32>.stride, "groupCounts")
+        groupDrives = try zeroed(groupCount * MemoryLayout<Float>.stride, "groupDrives")
+
+        groupNames = groups.map { $0.name }
+        groupSizes = groups.map { $0.count }
+        groupRatesHz = [Float](repeating: 0, count: groups.count)
+        groupIndexCount = connectome.groupIndexCount
+        do {
+            let r = groupRanges.contents().assumingMemoryBound(to: UInt32.self)
+            for (i, g) in groups.enumerated() {
+                r[i * 2] = UInt32(g.start)
+                r[i * 2 + 1] = UInt32(g.count)
+            }
+            // -1 means "this group is not being driven", which is the default.
+            let d = groupDrives.contents().assumingMemoryBound(to: Float.self)
+            for i in 0..<groups.count { d[i] = -1 }
+        }
 
         params.neuronCount = UInt32(n)
         params.edgeCount   = UInt32(connectome.edgeCount)
@@ -212,6 +249,28 @@ final class SimulationEngine {
         cb.label = "FlyBrain.step x\(steps)"
 
         let n = connectome.neuronCount
+
+        // --- body -> sensory populations, once per frame -------------------
+        // The body writes a scalar drive per named group; this spreads it over
+        // the group's members. Vision is excluded (drive -1) because the retina
+        // kernel owns those neurons.
+        if !groupNames.isEmpty, groupIndexCount > 0,
+           let e = cb.makeComputeCommandEncoder() {
+            e.label = "driveGroups"
+            e.setComputePipelineState(psoDriveGroups)
+            e.setBuffer(connectome.groupIndices, offset: 0, index: 0)
+            e.setBuffer(groupRanges, offset: 0, index: 1)
+            e.setBuffer(groupDrives, offset: 0, index: 2)
+            e.setBuffer(externalInput, offset: 0, index: 3)
+            var gi = UInt32(groupIndexCount)
+            var gc = UInt32(groupNames.count)
+            e.setBytes(&gi, length: MemoryLayout<UInt32>.stride, index: 4)
+            e.setBytes(&gc, length: MemoryLayout<UInt32>.stride, index: 5)
+            dispatch(e, psoDriveGroups, threads: groupIndexCount)
+            e.endEncoding()
+        }
+        memset(groupCounts.contents(), 0,
+               max(groupNames.count, 1) * MemoryLayout<UInt32>.stride)
 
         for _ in 0..<steps {
             // --- reset the per-step counters ------------------------------
@@ -301,6 +360,25 @@ final class SimulationEngine {
                 e.endEncoding()
             }
 
+            // --- motor groups -> firing rates ------------------------------
+            // Accumulated across every step of the frame, so the body sees a
+            // rate rather than one millisecond of noise.
+            if !groupNames.isEmpty, groupIndexCount > 0,
+               let e = cb.makeComputeCommandEncoder() {
+                e.label = "groupSpikes"
+                e.setComputePipelineState(psoGroupSpikes)
+                e.setBuffer(connectome.groupIndices, offset: 0, index: 0)
+                e.setBuffer(groupRanges, offset: 0, index: 1)
+                e.setBuffer(spikeFlags, offset: 0, index: 2)
+                e.setBuffer(groupCounts, offset: 0, index: 3)
+                var gi = UInt32(groupIndexCount)
+                var gc = UInt32(groupNames.count)
+                e.setBytes(&gi, length: MemoryLayout<UInt32>.stride, index: 4)
+                e.setBytes(&gc, length: MemoryLayout<UInt32>.stride, index: 5)
+                dispatch(e, psoGroupSpikes, threads: groupIndexCount)
+                e.endEncoding()
+            }
+
             params.step &+= 1
         }
 
@@ -334,7 +412,37 @@ final class SimulationEngine {
                                threadsPerThreadgroup: MTLSize(width: w, height: 1, depth: 1))
     }
 
+    /// Set the drive on a named population. Pass nil to hand the group back to
+    /// whatever else writes it (the retina kernel, for vision).
+    func setGroupDrive(_ name: String, _ value: Float?) {
+        guard let i = groupNames.firstIndex(of: name) else { return }
+        let d = groupDrives.contents().assumingMemoryBound(to: Float.self)
+        d[i] = value ?? -1
+    }
+
+    /// Smoothed firing rate of a named population, in Hz.
+    func groupRate(_ name: String) -> Float {
+        guard let i = groupNames.firstIndex(of: name), i < groupRatesHz.count else { return 0 }
+        return groupRatesHz[i]
+    }
+
+    private func harvestGroupRates(steps: Int) {
+        guard !groupNames.isEmpty else { return }
+        let c = groupCounts.contents().assumingMemoryBound(to: UInt32.self)
+        let windowMs = Float(steps) * params.dtMillis
+        guard windowMs > 0 else { return }
+        for i in 0..<groupNames.count {
+            let size = Float(max(groupSizes[i], 1))
+            let hz = Float(c[i]) / size * 1000.0 / windowMs
+            // Light smoothing: the body should respond to a rate, not to the
+            // frame-to-frame jitter of a few hundred neurons.
+            groupRatesHz[i] += (hz - groupRatesHz[i]) * 0.35
+        }
+    }
+
     private func harvestStats(steps: Int) {
+        harvestGroupRates(steps: steps)
+
         let s = statsBuffer.contents().assumingMemoryBound(to: UInt32.self)
         let fired = Int(s[0])
         spikeAccumulator += fired

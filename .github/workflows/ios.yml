@@ -34,27 +34,28 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Cache the FlyWire download
-        id: flywire-cache
+      - name: Cache the BANC download
+        id: banc-cache
         uses: actions/cache@v4
         with:
-          path: data/raw
-          key: flywire-fafb-783-v1
+          path: data/banc
+          key: banc-888-v1
 
-      - name: Download FlyWire FAFB v783
-        if: steps.flywire-cache.outputs.cache-hit != 'true'
-        run: bash tools/download_flywire.sh
+      - name: Download BANC v888 (brain + ventral nerve cord)
+        if: steps.banc-cache.outputs.cache-hit != 'true'
+        run: bash tools/download_banc.sh
 
       - name: Build the connectome binary
         run: |
           python3 -m pip install --quiet numpy pandas pyarrow
-          python3 tools/build_connectome.py --out build/flybrain.bin
+          python3 tools/build_banc.py --raw data/banc --out build/flybanc.bin \
+                                      --min-syn 3 --conduction-speed 0.25
           mkdir -p FlyBrain/Resources
-          cp build/flybrain.bin build/flybrain_meta.json FlyBrain/Resources/
+          cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
 
       - name: Validate the connectome
-        run: python3 tools/verify_and_simulate.py --ms 120 --gain 6.0 --drive 1.5
+        run: python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
 
       - name: Generate the Xcode project
         run: |
@@ -116,7 +117,7 @@ jobs:
       - name: Upload the connectome binary
         uses: actions/upload-artifact@v4
         with:
-          name: flybrain-connectome
+          name: flybanc-connectome
           path: |
-            build/flybrain.bin
-            build/flybrain_meta.json
+            build/flybanc.bin
+            build/flybanc_meta.json

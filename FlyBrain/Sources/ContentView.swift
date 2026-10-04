@@ -7,28 +7,6 @@ import SwiftUI
 import MetalKit
 import Combine
 
-// MARK: - Metal view bridge
-
-struct BrainView: UIViewRepresentable {
-    let engine: BrainEngine
-
-    func makeUIView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero, device: engine.device)
-        view.colorPixelFormat = .bgra8Unorm
-        view.depthStencilPixelFormat = .depth32Float
-        view.preferredFramesPerSecond = 60
-        view.isOpaque = true
-        view.backgroundColor = .black
-        view.delegate = engine.renderer
-        engine.attach(view: view)
-        return view
-    }
-
-    func updateUIView(_ view: MTKView, context: Context) {
-        view.isPaused = engine.isPaused
-    }
-}
-
 // MARK: - Root
 
 struct ContentView: View {
@@ -41,11 +19,28 @@ struct ContentView: View {
 
             if let error = engine.loadError {
                 FailureView(message: error)
+            } else if engine.isReady, engine.worldMode, let w = engine.worldEngine {
+                WorldView(brain: engine, world: w)
+
+                VStack {
+                    HStack {
+                        Button {
+                            withAnimation { engine.worldMode = false }
+                        } label: {
+                            Label("Brain", systemImage: "brain")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .padding(.horizontal, 11).padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                        }
+                        .padding(.leading, 16)
+                        .padding(.top, 54)
+                        Spacer()
+                    }
+                    Spacer()
+                }
             } else if engine.isReady {
-                BrainView(engine: engine)
+                BrainMetalView(engine: engine)
                     .ignoresSafeArea()
-                    .gesture(dragOrTapGesture)
-                    .simultaneousGesture(magnifyGesture)
 
                 VStack {
                     HUDView(stats: engine.stats,
@@ -85,6 +80,18 @@ struct ContentView: View {
                 VStack {
                     HStack {
                         Spacer()
+                        if engine.worldEngine != nil {
+                            Button {
+                                withAnimation { engine.worldMode = true }
+                            } label: {
+                                Label("World", systemImage: "globe.americas.fill")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .padding(.horizontal, 11).padding(.vertical, 6)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
+                            .padding(.trailing, 10)
+                            .padding(.top, 54)
+                        }
                         Button {
                             withAnimation { showControls.toggle() }
                         } label: {
@@ -114,31 +121,6 @@ struct ContentView: View {
         }
     }
 
-    // One gesture handles both orbiting and tap-to-inspect. SwiftUI's
-    // `onTapGesture(perform:)` with a location argument is iOS 17 only, and the
-    // deployment target here is iOS 15, so the tap is recognised manually: a
-    // drag that ends having moved less than ~10 points is a tap.
-    private var dragOrTapGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if hypot(value.translation.width, value.translation.height) > 10 {
-                    engine.drag(translation: value.translation)
-                }
-            }
-            .onEnded { value in
-                let moved = hypot(value.translation.width, value.translation.height)
-                if moved <= 10 {
-                    engine.tap(at: value.location)
-                }
-                engine.endDrag()
-            }
-    }
-
-    private var magnifyGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { value in engine.magnify(value) }
-            .onEnded { _ in engine.endMagnify() }
-    }
 }
 
 // MARK: - HUD
@@ -206,6 +188,28 @@ struct ControlPanel: View {
 
             labelledSlider("Point size", value: $engine.pointScale,
                            range: 0.5...10, detail: nil)
+
+            // Camera. One finger orbits or looks, two fingers slide, pinch
+            // dollies, long press glides forward.
+            HStack(spacing: 8) {
+                Picker("Camera", selection: $engine.cameraMode) {
+                    ForEach(CameraMode.allCases) { m in Text(m.label).tag(m) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 150)
+
+                Button("Recentre") { engine.resetCamera() }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+            }
+
+            HStack(spacing: 14) {
+                Toggle("inv X", isOn: $engine.invertLookX)
+                Toggle("inv Y", isOn: $engine.invertLookY)
+                Spacer()
+            }
+            .toggleStyle(.button)
+            .font(.system(size: 10, weight: .medium))
 
             if engine.cameraEnabled {
                 labelledSlider("Camera contrast", value: $engine.contrastGain,

@@ -305,3 +305,72 @@ kernel void resetCounters(
     if (gid == 0) spikeCount[0] = 0;
     if (gid < 11) stats[gid] = 0;
 }
+
+// ===========================================================================
+// Named body groups.
+//
+// World mode needs two things every frame: the firing rate of each motor
+// group (to drive wings and legs), and a way to push sensory drive into a
+// named population (smell, touch, pain). Doing either on the CPU would mean
+// reading 175k spike flags back across the bus every frame.
+//
+// Instead both run on the GPU against the concatenated `groupIndices` array
+// from the connectome, and only ~35 uints ever cross back.
+// ===========================================================================
+
+struct GroupRange {
+    uint start;
+    uint count;
+};
+
+/// One thread per neuron in the union of all groups. Counts how many members
+/// of each group spiked this step.
+kernel void reduceGroupSpikes(
+    device const uint        *groupIndices [[buffer(0)]],
+    device const GroupRange  *ranges       [[buffer(1)]],
+    device const uchar       *spikeFlags   [[buffer(2)]],
+    device       atomic_uint *counts       [[buffer(3)]],
+    constant     uint        &totalIndices [[buffer(4)]],
+    constant     uint        &groupCount   [[buffer(5)]],
+    uint                      gid          [[thread_position_in_grid]])
+{
+    if (gid >= totalIndices) return;
+    if (spikeFlags[groupIndices[gid]] == 0) return;
+
+    // Which group does this slot belong to? The ranges are sorted and
+    // contiguous, so a binary search over ~35 entries is 6 steps.
+    uint lo = 0, hi = groupCount;
+    while (lo + 1 < hi) {
+        uint mid = (lo + hi) >> 1;
+        if (ranges[mid].start <= gid) lo = mid; else hi = mid;
+    }
+    if (gid >= ranges[lo].start + ranges[lo].count) return;
+
+    atomic_fetch_add_explicit(&counts[lo], 1u, memory_order_relaxed);
+}
+
+/// Writes a per-group scalar into the external input array. A negative drive
+/// means "leave this group alone" — used for vision, which the retina kernel
+/// owns, and for groups the body is not currently driving.
+kernel void driveGroups(
+    device const uint       *groupIndices  [[buffer(0)]],
+    device const GroupRange *ranges        [[buffer(1)]],
+    device const float      *drives        [[buffer(2)]],
+    device       float      *externalInput [[buffer(3)]],
+    constant     uint       &totalIndices  [[buffer(4)]],
+    constant     uint       &groupCount    [[buffer(5)]],
+    uint                     gid           [[thread_position_in_grid]])
+{
+    if (gid >= totalIndices) return;
+
+    uint lo = 0, hi = groupCount;
+    while (lo + 1 < hi) {
+        uint mid = (lo + hi) >> 1;
+        if (ranges[mid].start <= gid) lo = mid; else hi = mid;
+    }
+    if (gid >= ranges[lo].start + ranges[lo].count) return;
+
+    float d = drives[lo];
+    if (d < 0.0f) return;
+    externalInput[groupIndices[gid]] = d;
+}

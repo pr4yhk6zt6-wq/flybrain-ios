@@ -1,9 +1,9 @@
 //
 //  Connectome.swift
-//  Zero-copy loader for flybrain.bin.
+//  Zero-copy loader for flybanc.bin.
 //
 //  Every section in the file is 256-byte aligned, which is exactly what
-//  `makeBuffer(bytesNoCopy:)` requires on iOS. So the 21.57 MiB connectome is
+//  `makeBuffer(bytesNoCopy:)` requires on iOS. So the 19.04 MiB connectome is
 //  never parsed, never copied, and never allocated twice: we mmap the bundle
 //  resource and wrap each section in an MTLBuffer that points straight into the
 //  mapped pages. Load time is the cost of one `mmap`, and the memory shows up
@@ -25,33 +25,36 @@ enum ConnectomeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .resourceMissing:
-            return "flybrain.bin is not in the app bundle. Run tools/build_connectome.py."
-        case .mapFailed(let why):      return "Could not map flybrain.bin: \(why)"
-        case .badMagic(let got):       return "flybrain.bin has bad magic '\(got)'"
-        case .unsupportedVersion(let v): return "flybrain.bin version \(v) is not supported"
-        case .truncated(let s):        return "flybrain.bin is truncated in section '\(s)'"
+            return "flybanc.bin is not in the app bundle. Run tools/build_banc.py."
+        case .mapFailed(let why):      return "Could not map flybanc.bin: \(why)"
+        case .badMagic(let got):       return "flybanc.bin has bad magic '\(got)'"
+        case .unsupportedVersion(let v): return "flybanc.bin version \(v) is not supported"
+        case .truncated(let s):        return "flybanc.bin is truncated in section '\(s)'"
         case .bufferCreationFailed(let s): return "Could not wrap section '\(s)' in an MTLBuffer"
         }
     }
 }
 
-/// Section order must match tools/build_connectome.py.
+/// Section order must match tools/build_banc.py (format v2).
+///
+/// v2 dropped the separate retinaIdx/motorIdx sections: every named population
+/// now lives in one concatenated `groupIndices` array, with (start, count)
+/// ranges in the sidecar JSON. The vision group is just one of those ranges.
 enum ConnectomeSection: Int, CaseIterable {
     case rootIDs = 0, positions, neuronMeta, csrRowPtr, csrColIdx,
-         csrWeight, csrDelay, retinaIdx, retinaUV, motorIdx
+         csrWeight, csrDelay, groupIndices, retinaUV
 
     var name: String {
         switch self {
-        case .rootIDs:    return "rootIDs"
-        case .positions:  return "positions"
-        case .neuronMeta: return "neuronMeta"
-        case .csrRowPtr:  return "csrRowPtr"
-        case .csrColIdx:  return "csrColIdx"
-        case .csrWeight:  return "csrWeight"
-        case .csrDelay:   return "csrDelay"
-        case .retinaIdx:  return "retinaIdx"
-        case .retinaUV:   return "retinaUV"
-        case .motorIdx:   return "motorIdx"
+        case .rootIDs:      return "rootIDs"
+        case .positions:    return "positions"
+        case .neuronMeta:   return "neuronMeta"
+        case .csrRowPtr:    return "csrRowPtr"
+        case .csrColIdx:    return "csrColIdx"
+        case .csrWeight:    return "csrWeight"
+        case .csrDelay:     return "csrDelay"
+        case .groupIndices: return "groupIndices"
+        case .retinaUV:     return "retinaUV"
         }
     }
 }
@@ -68,6 +71,12 @@ struct NeuronInfo {
     let isMotor: Bool
     let isAfferent: Bool
     let isEfferent: Bool
+    /// True when the cell body or arbour sits in the ventral nerve cord
+    /// rather than the brain. BANC is the first dataset that can say this.
+    let isVNC: Bool
+    /// True when the position was imputed from a region centroid because the
+    /// neuron had no representative point.
+    let isImputed: Bool
     let side: String
     let position: SIMD3<Float>
 }
@@ -77,8 +86,8 @@ final class Connectome {
     // Geometry of the dataset
     let neuronCount: Int
     let edgeCount: Int
+    let groupIndexCount: Int
     let retinaCount: Int
-    let motorCount: Int
 
     // GPU-resident sections
     let positions: MTLBuffer      // half3  x N
@@ -87,9 +96,11 @@ final class Connectome {
     let csrColIdx: MTLBuffer      // uint32 x E
     let csrWeight: MTLBuffer      // half   x E
     let csrDelay: MTLBuffer       // uint8  x E
-    let retinaIdx: MTLBuffer      // uint32 x R
+    let groupIndices: MTLBuffer   // uint32 x G, every named group concatenated
     let retinaUV: MTLBuffer       // half2  x R
-    let motorIdx: MTLBuffer       // uint32 x M
+    /// The vision slice of `groupIndices`, copied out so the retina kernel can
+    /// bind it at offset zero. 9,733 uints — 39 KB, not worth being clever.
+    let retinaIdx: MTLBuffer      // uint32 x R
 
     // CPU-side, for the neuron inspector
     private let rootIDPointer: UnsafePointer<UInt64>
@@ -108,8 +119,8 @@ final class Connectome {
          binaryURL: URL? = nil,
          metadataURL: URL? = nil) throws {
 
-        let url = try binaryURL ?? Connectome.bundledURL(named: "flybrain", ext: "bin")
-        let metaURL = try metadataURL ?? Connectome.bundledURL(named: "flybrain_meta", ext: "json")
+        let url = try binaryURL ?? Connectome.bundledURL(named: "flybanc", ext: "bin")
+        let metaURL = try metadataURL ?? Connectome.bundledURL(named: "flybanc_meta", ext: "json")
 
         // ---- mmap the whole file ------------------------------------------
         let fd = open(url.path, O_RDONLY)
@@ -132,7 +143,7 @@ final class Connectome {
         let header = base.assumingMemoryBound(to: UInt8.self)
         let magic = String(bytes: UnsafeBufferPointer(start: header, count: 8),
                            encoding: .ascii) ?? "?"
-        guard magic == "FLYBRAIN" else {
+        guard magic == "FLYBANC_" else {
             munmap(base, length)
             throw ConnectomeError.badMagic(magic)
         }
@@ -145,15 +156,15 @@ final class Connectome {
         }
 
         let version = u32(8)
-        guard version == 1 else {
+        guard version == 2 else {
             munmap(base, length)
             throw ConnectomeError.unsupportedVersion(version)
         }
 
-        neuronCount = Int(u32(12))
-        edgeCount   = Int(u32(16))
-        retinaCount = Int(u32(20))
-        motorCount  = Int(u32(24))
+        neuronCount     = Int(u32(12))
+        edgeCount       = Int(u32(16))
+        groupIndexCount = Int(u32(20))
+        retinaCount     = Int(u32(24))
         let sectionCount = Int(u32(28))
 
         // ---- section table ---------------------------------------------------
@@ -196,15 +207,33 @@ final class Connectome {
             return b
         }
 
-        positions  = try makeBuffer(.positions)
-        neuronMeta = try makeBuffer(.neuronMeta)
-        csrRowPtr  = try makeBuffer(.csrRowPtr)
-        csrColIdx  = try makeBuffer(.csrColIdx)
-        csrWeight  = try makeBuffer(.csrWeight)
-        csrDelay   = try makeBuffer(.csrDelay)
-        retinaIdx  = try makeBuffer(.retinaIdx)
-        retinaUV   = try makeBuffer(.retinaUV)
-        motorIdx   = try makeBuffer(.motorIdx)
+        positions    = try makeBuffer(.positions)
+        neuronMeta   = try makeBuffer(.neuronMeta)
+        csrRowPtr    = try makeBuffer(.csrRowPtr)
+        csrColIdx    = try makeBuffer(.csrColIdx)
+        csrWeight    = try makeBuffer(.csrWeight)
+        csrDelay     = try makeBuffer(.csrDelay)
+        groupIndices = try makeBuffer(.groupIndices)
+        retinaUV     = try makeBuffer(.retinaUV)
+
+        let loadedMeta = (try? ConnectomeMetadata.load(from: metaURL)) ?? .fallback
+
+        // Pull the vision group out into its own buffer for the retina kernel.
+        let visionStart = loadedMeta.visionGroup?.start ?? 0
+        let visionCount = loadedMeta.visionGroup?.count ?? retinaCount
+        let gBase = base.advanced(by: offsets[ConnectomeSection.groupIndices.rawValue])
+        if visionCount > 0,
+           let b = device.makeBuffer(bytes: gBase.advanced(by: visionStart * 4),
+                                     length: visionCount * 4,
+                                     options: .storageModeShared) {
+            b.label = "retinaIdx"
+            retinaIdx = b
+        } else {
+            guard let b = device.makeBuffer(length: 4, options: .storageModeShared) else {
+                throw ConnectomeError.bufferCreationFailed(section: "retinaIdx")
+            }
+            retinaIdx = b
+        }
 
         rootIDPointer = UnsafeRawPointer(base.advanced(by: offsets[ConnectomeSection.rootIDs.rawValue]))
             .assumingMemoryBound(to: UInt64.self)
@@ -213,7 +242,7 @@ final class Connectome {
         positionPointer = UnsafeRawPointer(base.advanced(by: offsets[ConnectomeSection.positions.rawValue]))
             .assumingMemoryBound(to: Float16.self)
 
-        metadata = (try? ConnectomeMetadata.load(from: metaURL)) ?? .fallback
+        metadata = loadedMeta
     }
 
     deinit {
@@ -248,6 +277,8 @@ final class Connectome {
             isMotor:    (flags & 0b0000_0010) != 0,
             isAfferent: (flags & 0b0000_0100) != 0,
             isEfferent: (flags & 0b0000_1000) != 0,
+            isVNC:      (flags & 0b0100_0000) != 0,
+            isImputed:  (flags & 0b1000_0000) != 0,
             side: side,
             position: SIMD3<Float>(Float(p[0]), Float(p[1]), Float(p[2]))
         )
@@ -260,7 +291,7 @@ final class Connectome {
         return Int(rows[index + 1]) - Int(rows[index])
     }
 
-    /// Nearest neuron to a ray, for tap-to-inspect. Linear over 139 k points,
+    /// Nearest neuron to a ray, for tap-to-inspect. Linear over 175 k points,
     /// which is about 0.4 ms — not worth a spatial index.
     func pick(rayOrigin o: SIMD3<Float>, rayDirection d: SIMD3<Float>,
               maxDistance: Float = 0.02) -> Int? {
@@ -286,6 +317,12 @@ final class Connectome {
 
 struct ConnectomeMetadata: Decodable {
     struct Range: Decodable { let start: Int; let count: Int }
+    /// A named population: a slice of the concatenated groupIndices array.
+    struct Group: Decodable {
+        let name: String
+        let start: Int
+        let count: Int
+    }
 
     let neurons: Int
     let edges: Int
@@ -294,8 +331,12 @@ struct ConnectomeMetadata: Decodable {
     let systemRanges: [String: Range]
     let superClasses: [String]
     let cellTypes: [String]
-    let retinaCount: Int
-    let motorCount: Int
+    let groups: [Group]
+    let visionGroup: Group?
+
+    var groupsByName: [String: Group] {
+        Dictionary(uniqueKeysWithValues: groups.map { ($0.name, $0) })
+    }
 
     static func load(from url: URL) throws -> ConnectomeMetadata {
         let data = try Data(contentsOf: url)
@@ -308,12 +349,15 @@ struct ConnectomeMetadata: Decodable {
 
     static let fallback = ConnectomeMetadata(
         neurons: 0, edges: 0, synapses: 0,
-        systems: ["optic_lobe", "central_complex", "olfactory", "learning_memory",
-                  "gnathic", "antennal_mechanosensory", "olfactory_lateral",
-                  "central_brain_other", "other", "unassigned"],
+        systems: ["optic_lobe", "central_brain", "visual_projection",
+                  "descending", "ascending",
+                  "vnc_prothoracic", "vnc_mesothoracic", "vnc_metathoracic",
+                  "vnc_abdominal", "sensory", "motor", "other"],
         systemRanges: [:],
-        superClasses: ["optic", "central", "sensory", "visual_projection",
-                       "ascending", "descending", "sensory_ascending",
-                       "visual_centrifugal", "motor", "endocrine", "unknown"],
-        cellTypes: [], retinaCount: 0, motorCount: 0)
+        superClasses: ["optic_lobe_intrinsic", "central_brain_intrinsic", "sensory",
+                       "ventral_nerve_cord_intrinsic", "visual_projection",
+                       "ascending", "descending", "motor", "sensory_ascending",
+                       "visual_centrifugal", "visceral_circulatory",
+                       "sensory_descending", "unknown"],
+        cellTypes: [], groups: [], visionGroup: nil)
 }

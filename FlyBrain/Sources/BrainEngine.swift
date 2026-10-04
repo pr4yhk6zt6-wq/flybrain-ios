@@ -23,7 +23,7 @@ final class BrainEngine: ObservableObject {
     @Published var renderMode: RenderMode = .voltage {
         didSet { renderer?.renderMode = renderMode }
     }
-    @Published var gain: Float = 6.0 {
+    @Published var gain: Float = 12.0 {
         didSet { simulation?.gain = gain }
     }
     @Published var retinalDrive: Float = 1.5 {
@@ -47,10 +47,36 @@ final class BrainEngine: ObservableObject {
         didSet { simulation?.contrastGain = contrastGain }
     }
 
+    /// Orbit the brain, or fly through it.
+    @Published var cameraMode: CameraMode = .orbit {
+        didSet { renderer?.camera.setMode(cameraMode) }
+    }
+    /// Both default to the corrected polarity; these are for the minority who
+    /// want the old inverted feel back.
+    @Published var invertLookX: Bool = false {
+        didSet { renderer?.camera.invertX = invertLookX }
+    }
+    @Published var invertLookY: Bool = false {
+        didSet { renderer?.camera.invertY = invertLookY }
+    }
+
+    /// World mode hands the simulation clock to WorldEngine: the brain view
+    /// becomes a picture-in-picture visualiser and stops stepping.
+    @Published var worldMode: Bool = false {
+        didSet {
+            renderer?.stepsSimulation = !worldMode
+            if worldMode { cameraEnabled = false }
+        }
+    }
+
     let device: MTLDevice
     private(set) var renderer: Renderer?
     private var connectome: Connectome?
-    private var simulation: SimulationEngine?
+    private(set) var simulation: SimulationEngine?
+    private(set) var library: MTLLibrary?
+    private(set) var commandQueue: MTLCommandQueue?
+    /// The embodied world. Built once the connectome is loaded.
+    private(set) var worldEngine: WorldEngine?
     /// Created eagerly: the preview window needs the AVCaptureSession to exist
     /// before capture starts, otherwise the first frames land nowhere visible.
     private(set) lazy var camera: CameraFeed = CameraFeed(device: device)
@@ -59,8 +85,6 @@ final class BrainEngine: ObservableObject {
 
     private var systemMask: UInt32 = 0xFFFF_FFFF
     private var statsTimer: AnyCancellable?
-    private var dragStart: OrbitCamera?
-    private var magnifyStart: Float?
     private var wasPausedByBackground = false
 
     var metadata: ConnectomeMetadata { connectome?.metadata ?? .fallback }
@@ -79,6 +103,8 @@ final class BrainEngine: ObservableObject {
         guard !isReady, loadError == nil else { return }
         do {
             let library = try device.makeDefaultLibrary(bundle: .main)
+            self.library = library
+            self.commandQueue = device.makeCommandQueue()
             let c = try Connectome(device: device)
             let sim = try SimulationEngine(device: device, connectome: c, library: library)
             let r = try Renderer(device: device, connectome: c, simulation: sim,
@@ -116,6 +142,10 @@ final class BrainEngine: ObservableObject {
                 .autoconnect()
                 .sink { [weak self] _ in self?.pollStats() }
 
+            if let q = commandQueue {
+                worldEngine = WorldEngine(device: device, queue: q)
+            }
+
             isReady = true
         } catch {
             loadError = error.localizedDescription
@@ -141,30 +171,23 @@ final class BrainEngine: ObservableObject {
         }
     }
 
-    // MARK: - Gestures
+    // MARK: - Camera
+    //
+    // Deltas arrive already scaled from the gesture recognisers in
+    // MetalViewBridge; the polarity lives in Camera.
 
-    func drag(translation: CGSize) {
-        guard let r = renderer else { return }
-        if dragStart == nil { dragStart = r.camera }
-        guard let start = dragStart else { return }
-        var cam = start
-        cam.rotate(dx: Float(translation.width) * 0.006,
-                   dy: Float(translation.height) * 0.006)
-        r.camera = cam
+    func look(dx: Float, dy: Float) { renderer?.camera.look(dx: dx, dy: dy) }
+    func pan(dx: Float, dy: Float)  { renderer?.camera.pan(dx: dx, dy: dy) }
+    func dolly(scale: Float)        { renderer?.camera.dolly(scale: scale) }
+
+    func glide(amount: Float) {
+        renderer?.camera.move(forwardAmount: amount)
     }
 
-    func endDrag() { dragStart = nil }
-
-    func magnify(_ scale: CGFloat) {
-        guard let r = renderer else { return }
-        if magnifyStart == nil { magnifyStart = r.camera.distance }
-        guard let start = magnifyStart else { return }
-        var cam = r.camera
-        cam.distance = max(0.25, min(8.0, start / Float(scale)))
-        r.camera = cam
+    func resetCamera() {
+        renderer?.camera.reset()
+        renderer?.camera.setMode(cameraMode)
     }
-
-    func endMagnify() { magnifyStart = nil }
 
     func tap(at location: CGPoint) {
         guard let r = renderer, let c = connectome, let v = view else { return }

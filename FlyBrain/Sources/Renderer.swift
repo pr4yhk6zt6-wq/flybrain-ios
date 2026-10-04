@@ -41,53 +41,9 @@ enum RenderMode: UInt32, CaseIterable, Identifiable {
     }
 }
 
-/// Orbit camera driven by gestures.
-struct OrbitCamera {
-    var azimuth: Float = 0.6
-    var elevation: Float = 0.25
-    var distance: Float = 2.2
-    var target: SIMD3<Float> = .zero
-    var fieldOfView: Float = 55 * .pi / 180
-
-    mutating func rotate(dx: Float, dy: Float) {
-        azimuth += dx
-        elevation = max(-1.5, min(1.5, elevation + dy))
-    }
-    mutating func zoom(_ factor: Float) {
-        distance = max(0.25, min(8.0, distance / factor))
-    }
-    mutating func pan(dx: Float, dy: Float) {
-        let right = SIMD3<Float>(cos(azimuth), 0, -sin(azimuth))
-        let up = SIMD3<Float>(0, 1, 0)
-        target += (right * dx + up * dy) * distance * 0.5
-    }
-
-    var eye: SIMD3<Float> {
-        let ce = cos(elevation), se = sin(elevation)
-        return target + SIMD3<Float>(sin(azimuth) * ce, se, cos(azimuth) * ce) * distance
-    }
-
-    func viewProjection(aspect: Float) -> float4x4 {
-        let view = float4x4(lookAt: eye, target: target, up: SIMD3<Float>(0, 1, 0))
-        let proj = float4x4(perspectiveFOV: fieldOfView, aspect: aspect,
-                            near: 0.02, far: 40.0)
-        return proj * view
-    }
-
-    /// Screen point -> world ray, for tap-to-inspect.
-    func ray(atNDC ndc: SIMD2<Float>, aspect: Float) -> (SIMD3<Float>, SIMD3<Float>) {
-        let inv = viewProjection(aspect: aspect).inverse
-        let near = inv * SIMD4<Float>(ndc.x, ndc.y, 0, 1)
-        let far  = inv * SIMD4<Float>(ndc.x, ndc.y, 1, 1)
-        let p0 = SIMD3<Float>(near.x, near.y, near.z) / near.w
-        let p1 = SIMD3<Float>(far.x, far.y, far.z) / far.w
-        return (p0, normalize(p1 - p0))
-    }
-}
-
 final class Renderer: NSObject, MTKViewDelegate {
 
-    var camera = OrbitCamera()
+    var camera = Camera()
     var renderMode: RenderMode = .voltage
     var systemMask: UInt32 = 0xFFFF_FFFF
     var pointScale: Float = 2.5
@@ -115,6 +71,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var frameTimes: [Double] = []
 
     var cameraTextureProvider: (() -> MTLTexture?)?
+
+    /// When the world view is on screen it owns the simulation clock, so the
+    /// brain view demotes itself to a pure visualiser and stops stepping.
+    var stepsSimulation = true
 
     init(device: MTLDevice,
          connectome: Connectome,
@@ -188,7 +148,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         frameMilliseconds = mean * 1000.0
 
         // Simulate first, then draw the state it produced.
-        simulation.step(count: stepsPerFrame, cameraTexture: cameraTextureProvider?())
+        if stepsSimulation {
+            simulation.step(count: stepsPerFrame, cameraTexture: cameraTextureProvider?())
+        }
 
         guard let drawable = view.currentDrawable,
               let pass = view.currentRenderPassDescriptor,
