@@ -4,6 +4,9 @@ options:
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
+  # XcodeGen 2.46 defaults to project format 77, which only Xcode 16 can open.
+  # Pin the classic format so the project builds on any Xcode from 14 onwards.
+  objectVersion: 56
   xcodeVersion: "15.0"
 
 settings:
