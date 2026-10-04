@@ -55,6 +55,43 @@ enum FlyModelError: Error, LocalizedError {
     }
 }
 
+    // MARK: - Measuring
+
+/// Bounds of the assembled model, in the model's own units, at the rest pose.
+/// Each part's vertices are transformed through its full parent chain first, so
+/// what comes back is the size of the animal rather than the size of the
+/// biggest loose box in the file.
+///
+/// A free function, not a method: it runs inside `init`, and Swift will not let
+/// a method touch `self` before every stored property has been set.
+private func restBounds(parts: [FlyPart],
+                        vertices: [Float]) -> (SIMD3<Float>, SIMD3<Float>) {
+    var m = [float4x4](repeating: matrix_identity_float4x4, count: parts.count)
+    for (i, part) in parts.enumerated() {
+        let parentM = part.parent >= 0 ? m[Int(part.parent)] : matrix_identity_float4x4
+        m[i] = parentM * float4x4(translation: part.restTranslation)
+                       * float4x4(quaternion: part.restRotation)
+    }
+
+    var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+    var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+    for (i, part) in parts.enumerated() where part.vertexCount > 0 {
+        let r = m[i]
+        for v in 0..<Int(part.vertexCount) {
+            let b = (Int(part.vertexStart) + v) * 6
+            let p = SIMD3<Float>(vertices[b], vertices[b + 1], vertices[b + 2])
+            let w = SIMD3<Float>(
+                r.columns.0.x * p.x + r.columns.1.x * p.y + r.columns.2.x * p.z + r.columns.3.x,
+                r.columns.0.y * p.x + r.columns.1.y * p.y + r.columns.2.y * p.z + r.columns.3.y,
+                r.columns.0.z * p.x + r.columns.1.z * p.y + r.columns.2.z * p.z + r.columns.3.z)
+            lo = simd_min(lo, w)
+            hi = simd_max(hi, w)
+        }
+    }
+    if parts.isEmpty || lo.x > hi.x { return (.zero, .zero) }
+    return (lo, hi)
+}
+
 final class FlyModel {
 
     private(set) var parts: [FlyPart] = []
@@ -175,31 +212,6 @@ final class FlyModel {
             data.copyBytes(to: dst, from: offs[3]..<(offs[3] + lens[3]))
         }
 
-        // Normalise: centre the model and scale the ANIMAL to 2.5 mm, because
-        // that is the body length every other constant in FlyBody refers to —
-        // the collision radius, the eye offset ahead of the centre of mass, the
-        // walking stride.
-        //
-        // The obvious measurement is wrong, and it is worth saying why in a
-        // comment nobody will read until it bites again. Every part keeps its
-        // vertices in its OWN frame, so the AABB of the raw vertex buffer is
-        // the union of 41 unassembled boxes. Its longest axis is a single wing
-        // held out sideways, not the animal: 0.525 units here against an
-        // assembled body length of 0.301. Normalising by it set the WINGSPAN to
-        // 2.5 mm and left the body 1.43 mm — the fly was drawn at 57 % of life
-        // size while the physics kept treating it as a 2.5 mm animal, so its
-        // collision radius was twice its visible body.
-        //
-        // So: assemble the rest pose first, then measure that.
-        let (alo, ahi) = restBounds(vertices: verts)
-        let assembled = ahi - alo
-        // MJCF is Z-up with the animal facing +X, so X is the body axis.
-        let bodyLength = max(assembled.x, 1e-6)
-        measuredBodyLength = bodyLength
-        measuredWingspan = assembled.y
-        normalisationScale = 0.25 / bodyLength          // 2.5 mm = 0.25 cm
-        normalisationOffset = -(alo + ahi) * 0.5
-
         guard let vb = device.makeBuffer(bytes: verts,
                                          length: MemoryLayout<Float>.stride * verts.count,
                                          options: .storageModeShared) else {
@@ -220,39 +232,33 @@ final class FlyModel {
         ib.label = "flyModelIndices"
         indexBuffer = ib
         triangleCount = indexCount / 3
-    }
 
-    // MARK: - Measuring
-
-    /// Bounds of the assembled model, in the model's own units, at the rest
-    /// pose. Each part's vertices are transformed through its full parent
-    /// chain first, so what comes back is the size of the animal rather than
-    /// the size of the biggest loose box in the file.
-    private func restBounds(vertices: [Float]) -> (SIMD3<Float>, SIMD3<Float>) {
-        var m = [float4x4](repeating: matrix_identity_float4x4, count: parts.count)
-        for (i, part) in parts.enumerated() {
-            let parentM = part.parent >= 0 ? m[Int(part.parent)] : matrix_identity_float4x4
-            m[i] = parentM * float4x4(translation: part.restTranslation)
-                           * float4x4(quaternion: part.restRotation)
-        }
-
-        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        for (i, part) in parts.enumerated() where part.vertexCount > 0 {
-            let r = m[i]
-            for v in 0..<Int(part.vertexCount) {
-                let b = (Int(part.vertexStart) + v) * 6
-                let p = SIMD3<Float>(vertices[b], vertices[b + 1], vertices[b + 2])
-                let w = SIMD3<Float>(
-                    r.columns.0.x * p.x + r.columns.1.x * p.y + r.columns.2.x * p.z + r.columns.3.x,
-                    r.columns.0.y * p.x + r.columns.1.y * p.y + r.columns.2.y * p.z + r.columns.3.y,
-                    r.columns.0.z * p.x + r.columns.1.z * p.y + r.columns.2.z * p.z + r.columns.3.z)
-                lo = simd_min(lo, w)
-                hi = simd_max(hi, w)
-            }
-        }
-        if parts.isEmpty || lo.x > hi.x { return (.zero, .zero) }
-        return (lo, hi)
+        // Normalise: centre the model and scale the ANIMAL to 2.5 mm, because
+        // that is the body length every other constant in FlyBody refers to —
+        // the collision radius, the eye offset ahead of the centre of mass,
+        // the walking stride.
+        //
+        // The obvious measurement is wrong, and it is worth saying why in a
+        // comment nobody reads until it bites again. Every part keeps its
+        // vertices in its OWN frame, so the AABB of the raw vertex buffer is
+        // the union of 41 unassembled boxes. Its longest axis is a single wing
+        // held out sideways, not the animal: 0.525 units here against an
+        // assembled body length of 0.301. Normalising by it set the WINGSPAN to
+        // 2.5 mm and left the body 1.43 mm — the fly was drawn at 57 % of life
+        // size while the physics kept treating it as a 2.5 mm animal, so its
+        // collision radius was nearly twice its visible body.
+        //
+        // So: assemble the rest pose first, then measure that. It happens last
+        // in init because reading `parts` counts as using `self`, and swiftc
+        // will not have that before the buffers above are set.
+        let (alo, ahi) = restBounds(parts: parts, vertices: verts)
+        let assembled = ahi - alo
+        // MJCF is Z-up with the animal facing +X, so X is the body axis.
+        let bodyLength = max(assembled.x, 1e-6)
+        measuredBodyLength = bodyLength
+        measuredWingspan = assembled.y
+        normalisationScale = 0.25 / bodyLength          // 2.5 mm = 0.25 cm
+        normalisationOffset = -(alo + ahi) * 0.5
     }
 
     // MARK: - Posing
