@@ -54,20 +54,6 @@ jobs:
           cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
 
-      - name: Cache the flybody meshes
-        id: flybody-cache
-        uses: actions/cache@v4
-        with:
-          path: data/flybody
-          key: flybody-assets-v1
-
-      - name: Build the anatomical fly model
-        run: |
-          python3 tools/build_flymodel.py --cache data/flybody \
-                                          --out build/flymodel.bin --budget 110000
-          cp build/flymodel.bin FlyBrain/Resources/
-          ls -lh FlyBrain/Resources/
-
       - name: Validate the connectome
         run: python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
 
@@ -135,4 +121,3 @@ jobs:
           path: |
             build/flybanc.bin
             build/flybanc_meta.json
-            build/flymodel.bin

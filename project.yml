@@ -27,8 +27,10 @@ targets:
     sources:
       - path: FlyBrain/Sources
       - path: FlyBrain/Shaders
+      - path: FlyBrain/Resources/Assets.xcassets
       - path: FlyBrain/Resources
         buildPhase: resources
+        excludes: ["Assets.xcassets", "Assets.xcassets/**"]
         optional: true
     settings:
       base:
@@ -39,6 +41,7 @@ targets:
         # Metal needs a real GPU feature set; the brain also needs the memory.
         SUPPORTS_MACCATALYST: NO
         DEVELOPMENT_TEAM: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: FlyBrain/Info.plist
       properties:
@@ -60,3 +63,26 @@ targets:
         NSMicrophoneUsageDescription: >-
           Optionally used as the fly's auditory input, driving the antennal
           mechanosensory neurons. Audio never leaves the device.
+
+  FlyBrainTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: FlyBrainTests
+    dependencies:
+      - target: FlyBrain
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.flywire.demo.flybrain.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  FlyBrain:
+    build:
+      targets:
+        FlyBrain: all
+        FlyBrainTests: [test]
+    test:
+      targets:
+        - FlyBrainTests
+      gatherCoverageData: false

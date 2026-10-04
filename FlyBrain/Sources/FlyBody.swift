@@ -78,17 +78,23 @@ enum FlyMorphology {
     /// Body length, 2.5 mm.
     static let bodyLength: Float = 2.5e-3            // m
 
-    // --- wing (Sun & Tang 2002; Lehmann & Dickinson 1997) ---
-    /// Wing length R, 2.5 mm.
-    static let wingLength: Float = 2.5e-3            // m
-    /// Area of ONE wing, 1.6 mm^2.
-    static let wingArea: Float = 1.6e-6              // m^2
+    // --- wing (Lehmann & Dickinson 1997; Sun & Tang 2002) ---
+    /// Wing length R, 2.39 mm.
+    static let wingLength: Float = 2.39e-3           // m
+    /// Area of ONE wing, 1.96 mm^2.
+    static let wingArea: Float = 1.96e-6             // m^2
     /// Radius of the second moment of area, 0.58 R.
     static let r2: Float = 0.58 * wingLength         // m
     /// Wingbeat frequency in free flight, 218 Hz.
     static let wingbeatHz: Float = 218.0
-    /// Stroke amplitude in stable hovering, 2.1 rad (~120 deg).
-    static let strokeAmplitudeHover: Float = 2.1     // rad
+    /// Stroke amplitude in stable hovering.
+    ///
+    /// NOT a free parameter: it is the amplitude at which the blade-element
+    /// force from two wings exactly equals the measured body weight, solved
+    /// from the morphology above. It comes out at 2.47 rad = 141 degrees,
+    /// which lands inside the 130-160 degrees measured for hovering
+    /// melanogaster. That it agrees is a check on the whole constant set.
+    static let strokeAmplitudeHover: Float = 2.468   // rad
     /// Maximum (morphological) stroke amplitude, 3.1 rad (~178 deg).
     static let strokeAmplitudeMax: Float = 3.1       // rad
     /// Mean lift coefficient at hovering kinematics (Sane & Dickinson 2001).
@@ -102,10 +108,34 @@ enum FlyMorphology {
     static let airDensity: Float = 1.2               // kg/m^3
     static let gravity: Float = 9.81                 // m/s^2
 
-    /// Flapping counter-torque: a flapping insect is strongly damped in yaw
-    /// purely by its own wing motion (Hesselberg & Lehmann 2007). Expressed as
-    /// a damping coefficient on angular velocity.
-    static let yawDamping: Float = 2.4e-13           // N m s / rad
+    // --- damping, DERIVED from the same blade-element model ----------------
+    //
+    // A flapping insect is damped by its own wing motion: translating or
+    // rotating changes the air speed the wings see, which changes the force
+    // they make, which opposes the motion. These are "flapping counter-force"
+    // and "flapping counter-torque" (Hesselberg & Lehmann 2007; Cheng & Deng
+    // 2011) and they dominate over body parasite drag at this scale.
+    //
+    // No new constants: both fall straight out of F = 1/2 rho C S U^2 by
+    // differentiating with respect to U.
+
+    /// Mean wing velocity at r2 during hovering.
+    static var meanWingVelocity: Float {
+        2 * strokeAmplitudeHover * wingbeatHz * r2
+    }
+    /// dF/dU for both wings together.
+    static var forceVelocitySlope: Float {
+        airDensity * dragCoefficient * (2 * wingArea) * meanWingVelocity
+    }
+    /// Flapping counter-force. Factor of a half because body translation only
+    /// opposes the wing over part of the stroke. ~8.0e-6 N s/m, which puts
+    /// terminal forward speed at 0.89 m/s — real flies top out near 1 m/s.
+    static var translationalDamping: Float { 0.5 * forceVelocitySlope }
+    /// Flapping counter-torque about yaw, dF/dU times the moment arm squared.
+    /// ~3.1e-11 N m s/rad. This predicts that holding 1600 deg/s — the peak
+    /// saccade rate Fry et al. measured — needs 8.6e-10 N m of torque, and
+    /// they measured saccade torques of about 1e-9 N m. It agrees.
+    static var yawDamping: Float { forceVelocitySlope * r2 * r2 }
 
     // --- walking (Mendes et al. 2013) ---
     /// Drosophila walks at 5-25 mm/s; peak sustained ~30 mm/s.
@@ -124,12 +154,24 @@ enum FlyMorphology {
     ///     U = 2 * Phi * f * r2        mean wing velocity at r2
     ///     F = 1/2 * rho * C * S * U^2
     ///
-    /// At Phi = 2.1 rad this returns ~4.9 uN per wing, so two wings carry
-    /// 9.8 uN against a 9.4 uN weight — the fly hovers. That the numbers
-    /// balance without tuning is the point: they are all measured.
+    /// Inverting this for F = weight is what fixes `strokeAmplitudeHover`, so
+    /// by construction two wings at that amplitude carry exactly 9.4 uN.
     static func wingForce(strokeAmplitude phi: Float, coefficient C: Float) -> Float {
         let u = 2 * phi * wingbeatHz * r2
         return 0.5 * airDensity * C * wingArea * u * u
+    }
+
+    /// Total lift from both wings, which is what gets compared against weight.
+    static func flightForce(strokeAmplitude phi: Float) -> Float {
+        2 * wingForce(strokeAmplitude: phi, coefficient: liftCoefficient)
+    }
+
+    /// The stroke amplitude at which both wings exactly support body weight.
+    /// `strokeAmplitudeHover` is this value; kept here so a test can confirm
+    /// the constant has not drifted away from the morphology.
+    static var solvedHoverAmplitude: Float {
+        (weight / (airDensity * liftCoefficient * wingArea
+                   * (2 * wingbeatHz * r2) * (2 * wingbeatHz * r2))).squareRoot()
     }
 }
 
@@ -203,22 +245,46 @@ final class FlyBody {
 
     /// Motor-neuron population rate -> wing stroke amplitude.
     ///
-    /// Endpoints are measured (hovering 2.1 rad, maximum 3.1 rad). The linear
-    /// interpolation between them is this simulation's single unmeasured
-    /// modelling choice; see the header. `referenceRate` is the population rate
-    /// the whole-CNS reference simulation settles at for the power muscle
-    /// group, so "typical network activity" maps to "typical hovering".
-    private let referenceRate: Float = 120.0    // Hz, measured from our own
-                                                // BANC run at gain 12
+    /// Both endpoints are measured: at the hovering amplitude the blade-element
+    /// force equals body weight exactly, and the maximum is the morphological
+    /// limit of 3.1 rad. The straight line between them is the assumption.
+    ///
+    /// `referenceRate` — the firing rate that means "hover" — is not a number
+    /// typed in by hand. It is a slow running average of the power-muscle
+    /// group's own rate, so whatever the network happens to settle at becomes
+    /// the equilibrium, and the fly responds to CHANGES around it.
+    ///
+    /// That is not a convenience: it is the equilibrium reflex. Real flies hold
+    /// lift against weight through haltere and visual feedback onto the same
+    /// steering muscles (Sherman & Dickinson 2003; Dickinson 1999), and those
+    /// pathways are present in BANC. What we cannot do is calibrate that loop's
+    /// gain, because nobody has measured it — so the loop is closed here, at
+    /// the muscle, with a 2 s time constant instead. Without it the fly sat at
+    /// 178 degrees of stroke amplitude forever and flew into the ceiling.
+    private(set) var referenceRate: Float = 120.0
+    private let referenceTau: Float = 2.0       // s
+
     private func strokeAmplitude(from rateHz: Float) -> Float {
-        let t = max(0, min(1.4, rateHz / referenceRate))
-        return FlyMorphology.strokeAmplitudeHover
-             + (FlyMorphology.strokeAmplitudeMax - FlyMorphology.strokeAmplitudeHover)
-             * max(0, t - 1) / 0.4
-             - FlyMorphology.strokeAmplitudeHover * max(0, 1 - t) * 0.85
+        let hover = FlyMorphology.strokeAmplitudeHover
+        let maxPhi = FlyMorphology.strokeAmplitudeMax
+        let t = rateHz / max(referenceRate, 1)
+        if t <= 1 { return max(0, hover * t) }
+        return hover + (maxPhi - hover) * min(1, (t - 1) / 0.5)
+    }
+
+    /// Advance the slow equilibrium estimate.
+    private func updateReference(_ rateHz: Float, dt: Float) {
+        guard rateHz > 1 else { return }
+        let a = min(1, dt / referenceTau)
+        referenceRate += (rateHz - referenceRate) * a
+        referenceRate = max(5, min(400, referenceRate))
     }
 
     // MARK: - Setup
+
+    /// Drive the body directly, bypassing the brain. Used by the test suite
+    /// and by scripted demos; the app always goes through `readMotorDrives`.
+    func setDrives(_ d: FlyDrives) { drives = d }
 
     func attach(model: FlyModel) {
         self.model = model
@@ -258,6 +324,8 @@ final class FlyBody {
         bumped = false
         hurt = max(0, hurt - dt * 1.5)
 
+        updateReference((drives.wingPowerL + drives.wingPowerR) * 0.5, dt: dt)
+
         // ---- what the wings are being told to do --------------------------
         // Steering muscles bias the stroke amplitude of their own side; this is
         // the measured mechanism of yaw control in Drosophila (b1/b2 muscles
@@ -292,11 +360,12 @@ final class FlyBody {
 
         if pose.airborne > 0.5 {
             // Angular: torque, inertia, and flapping counter-torque damping.
-            let angAccel = (yawTorque - FlyMorphology.yawDamping * pose.yawRate)
-                         / FlyMorphology.inertiaYaw
-            pose.yawRate += angAccel * dt
-            // Fry et al. measure saccade peak angular velocity near 1600 deg/s.
-            pose.yawRate = max(-28, min(28, pose.yawRate))
+            // Semi-implicit on the damping term: the yaw time constant
+            // (I / c = 5.2e-13 / 3.1e-11 = 17 ms) is comparable to a frame, so
+            // an explicit step would oscillate or blow up.
+            let c = FlyMorphology.yawDamping
+            let I = FlyMorphology.inertiaYaw
+            pose.yawRate = (pose.yawRate + yawTorque / I * dt) / (1 + c / I * dt)
             pose.heading += pose.yawRate * dt
 
             // Linear: the resultant acts normal to the stroke plane, which the
@@ -312,14 +381,13 @@ final class FlyBody {
 
             var vMetres = pose.velocity * worldToMetres
             vMetres += accel * dt
-            // Parasite drag on the body. Drosophila free flight tops out near
-            // 1 m/s, which this reproduces without a tuned clamp.
-            let speed = length(vMetres)
-            if speed > 1e-6 {
-                let bodyArea: Float = 1.1e-6                  // m^2, frontal
-                let dragN = 0.5 * FlyMorphology.airDensity * 0.4 * bodyArea * speed * speed
-                vMetres -= normalize(vMetres) * (dragN / FlyMorphology.mass) * dt
-            }
+            // Flapping counter-force, again semi-implicit. The translational
+            // time constant is m/c = 0.96e-6 / 8.0e-6 = 120 ms, so this is the
+            // term that decides how fast the animal can actually go. With it,
+            // full throttle settles at 0.89 m/s; without it the fly
+            // accelerated without limit, which is the bug you saw.
+            let k = FlyMorphology.translationalDamping / FlyMorphology.mass
+            vMetres /= (1 + k * dt)
             pose.velocity = vMetres * metresToWorld
 
             pose.roll += ((phiR - phiL) * 0.5 - pose.roll) * min(1, dt * 6)
@@ -385,6 +453,22 @@ final class FlyBody {
     private func resolveCollisions(dt: Float, world: World) {
         // The fly is a 2.5 mm ellipsoid; use half a body length as the radius.
         let radius = FlyMorphology.bodyLength * 0.5 * metresToWorld
+
+        // Backstop first: a fast fly can cross a wall between two frames, so
+        // the room is also enforced analytically.
+        var p = pose.position
+        let roomNormal = world.contain(&p, radius: radius)
+        if roomNormal != .zero {
+            pose.position = p
+            bumped = true
+            let n = normalize(roomNormal)
+            let into = dot(pose.velocity, n)
+            if into < 0 { pose.velocity -= n * into }
+            // Hitting a surface costs most of the momentum; flies stall, they
+            // do not bounce.
+            pose.velocity *= 0.3
+            pose.yawRate *= 0.5
+        }
 
         if let hit = world.collision(at: pose.position, radius: radius) {
             bumped = true

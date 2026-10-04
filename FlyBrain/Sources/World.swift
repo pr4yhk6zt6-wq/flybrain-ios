@@ -326,6 +326,24 @@ final class World {
         return best
     }
 
+    /// Hard containment. Wall boxes alone are not enough: a fly at 0.9 m/s
+    /// crosses 1.5 cm in a single 16 ms frame, so a point-in-box test can miss
+    /// a 0.25 cm thick wall entirely and the animal tunnels straight out of
+    /// the room. This clamps the position to the interior as a backstop, and
+    /// reports which axes were hit so the caller can kill that velocity.
+    func contain(_ p: inout SIMD3<Float>, radius: Float) -> SIMD3<Float> {
+        var hitNormal = SIMD3<Float>.zero
+        let limit = bounds - radius
+        if p.x < -limit { p.x = -limit; hitNormal.x =  1 }
+        if p.x >  limit { p.x =  limit; hitNormal.x = -1 }
+        if p.z < -limit { p.z = -limit; hitNormal.z =  1 }
+        if p.z >  limit { p.z =  limit; hitNormal.z = -1 }
+        if p.y < radius { p.y = radius; hitNormal.y =  1 }
+        let top = ceilingHeight - radius
+        if p.y > top { p.y = top; hitNormal.y = -1 }
+        return hitNormal
+    }
+
     func consume(_ id: UUID, amount: Float) {
         guard let i = objects.firstIndex(where: { $0.id == id }) else { return }
         objects[i].amount -= amount

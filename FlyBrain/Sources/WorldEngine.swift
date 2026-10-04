@@ -22,8 +22,11 @@ import simd
 
 /// How the chase camera sits behind the fly.
 struct ChaseCamera {
-    var distance: Float = 1.1
-    var height: Float = 0.45
+    /// World units are centimetres and the fly is 0.25 cm long, so 0.9 cm back
+    /// frames it at roughly three body lengths — close enough to read the
+    /// wingbeat, far enough to see where it is going.
+    var distance: Float = 0.9
+    var height: Float = 0.3
     var yawOffset: Float = 0
     var smoothed = SIMD3<Float>(0, 0.5, 2)
     var lookAt = SIMD3<Float>.zero
@@ -32,14 +35,25 @@ struct ChaseCamera {
         let yaw = heading + yawOffset
         let back = SIMD3<Float>(-sin(yaw), 0, cos(yaw))
         let want = target + back * distance + SIMD3<Float>(0, height, 0)
-        // Damped follow, so the camera lags a fast fly slightly.
-        smoothed += (want - smoothed) * min(1, dt * 7)
-        lookAt += (target - lookAt) * min(1, dt * 10)
+
+        // A fly crosses the room in well under a second. A fixed exponential
+        // follow simply cannot keep up with that, which is why it ended up as
+        // a speck in the distance. Snap whenever we have fallen more than a
+        // few camera-distances behind, and smooth only the small corrections.
+        if length(want - smoothed) > distance * 3 {
+            smoothed = want
+            lookAt = target
+        } else {
+            smoothed += (want - smoothed) * min(1, dt * 12)
+            lookAt += (target - lookAt) * min(1, dt * 18)
+        }
     }
 
     func matrix(aspect: Float) -> (float4x4, SIMD3<Float>) {
+        // Near plane has to be tight: at 0.9 cm from a 0.25 cm animal, a 2 cm
+        // near plane would clip the subject away entirely.
         let proj = float4x4(perspectiveFOV: 55 * .pi / 180, aspect: aspect,
-                            near: 0.02, far: 60)
+                            near: 0.01, far: 80)
         let view = float4x4(lookAt: smoothed, target: lookAt, up: SIMD3<Float>(0, 1, 0))
         return (proj * view, smoothed)
     }
@@ -180,17 +194,17 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
 
     func orbit(dx: Float, dy: Float) {
         chase.yawOffset -= dx * 0.01
-        chase.height = max(0.05, min(2.5, chase.height - dy * 0.004))
+        chase.height = max(-0.4, min(2.5, chase.height - dy * 0.004))
     }
 
     func zoom(_ scale: Float) {
-        chase.distance = max(0.3, min(8, chase.distance / max(scale, 0.01)))
+        chase.distance = max(0.25, min(8, chase.distance / max(scale, 0.01)))
     }
 
     func recentre() {
         chase.yawOffset = 0
-        chase.height = 0.45
-        chase.distance = 1.1
+        chase.height = 0.3
+        chase.distance = 0.9
     }
 
     /// Drop a crumb. The fly has to find it by smell — nothing teleports it.
