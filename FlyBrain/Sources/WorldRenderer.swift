@@ -56,7 +56,7 @@ final class WorldRenderer {
     /// Triple-buffered, so the CPU never writes what the GPU is reading.
     private var instanceBuffers: [MTLBuffer] = []
     private var frameIndex = 0
-    private let maxInstances = 512
+    private let maxInstances = 640
 
     /// The fly's-eye render target, and the ommatidially-blurred version the
     /// photoreceptor kernel actually samples.
@@ -66,6 +66,12 @@ final class WorldRenderer {
     let eyeSize = 128
     /// Each ommatidium covers this many pixels of the 128x128 render.
     var facetSize: UInt32 = 6
+
+    /// The real Drosophila mesh. Optional so the app still runs if the asset
+    /// is missing; it falls back to nothing rather than crashing.
+    private(set) var flyModel: FlyModel?
+    private var partMatrices: [float4x4] = []
+    private var flyInstanceStart = 0
 
     private var instances: [WorldInstance] = []
     private var cubeRange: Range<Int> = 0..<0
@@ -133,6 +139,14 @@ final class WorldRenderer {
             instanceBuffers.append(b)
         }
 
+        // The anatomical fly. 41 parts, 76 joints, from the Janelia/DeepMind
+        // CT reconstruction.
+        flyModel = try? FlyModel(device: device)
+        if let m = flyModel {
+            partMatrices = [float4x4](repeating: matrix_identity_float4x4,
+                                      count: m.parts.count)
+        }
+
         try makeEyeTargets(colorFormat: colorFormat)
     }
 
@@ -198,14 +212,15 @@ final class WorldRenderer {
             cubes.append(inst)
         }
 
-        if showFly {
-            appendFly(body: body, cubes: &cubes, spheres: &spheres, quads: &quads)
-        }
-
         cubeRange = 0..<cubes.count
         sphereRange = cubes.count..<(cubes.count + spheres.count)
         quadRange = (cubes.count + spheres.count)..<(cubes.count + spheres.count + quads.count)
         instances = cubes + spheres + quads
+
+        // The fly's parts come last, each with its own slice of the shared
+        // mesh buffers, so they are drawn one per part rather than instanced.
+        flyInstanceStart = instances.count
+        if showFly { appendFly(body: body, into: &instances) }
         if instances.count > maxInstances {
             instances.removeLast(instances.count - maxInstances)
         }
@@ -218,84 +233,34 @@ final class WorldRenderer {
         }
     }
 
-    /// A fly assembled out of primitives: thorax, abdomen, head, two eyes, two
-    /// wings, six legs. Crude, but it reads as a fly at chase-camera distance
-    /// and costs three draw calls total.
-    private func appendFly(body: FlyBody,
-                           cubes: inout [WorldInstance],
-                           spheres: inout [WorldInstance],
-                           quads: inout [WorldInstance]) {
+    /// Pose the real mesh and append one instance per body part. Falls back
+    /// to nothing when the asset is unavailable.
+    private func appendFly(body: FlyBody, into list: inout [WorldInstance]) {
+        guard let model = flyModel else { return }
         let p = body.pose
+
+        // MJCF has +Z up and the fly facing +X; our world is +Y up with the
+        // fly facing -Z, so the root carries that change of basis.
         let root = float4x4(translation: p.position)
             * float4x4(rotationY: p.heading)
             * float4x4(rotationX: p.pitch)
             * float4x4(rotationZ: p.roll)
-            * float4x4(scale: SIMD3<Float>(repeating: 0.11))
+            * float4x4(rotationX: -Float.pi / 2)
+            * float4x4(rotationZ: Float.pi / 2)
 
-        func add(_ list: inout [WorldInstance], _ local: float4x4,
-                 _ colour: SIMD3<Float>, _ emissive: Float = 0) {
+        model.solve(angles: body.jointAngles, root: root, into: &partMatrices)
+
+        flyInstanceStart = list.count
+        for (i, part) in model.parts.enumerated() {
+            guard part.indexCount > 0 else { continue }
             var inst = WorldInstance()
-            inst.model = root * local
-            inst.colour = SIMD4<Float>(colour, emissive)
+            inst.model = partMatrices[i]
+            // Wings are translucent membrane; everything else is cuticle.
+            let isWing = model.partNames[i].hasPrefix("wing")
+            inst.colour = SIMD4<Float>(part.colour.x, part.colour.y, part.colour.z,
+                                       isWing ? 0.22 : 0.0)
+            inst.params = SIMD4<Float>(0, 1, 0, 0)   // y = 1 marks a mesh part
             list.append(inst)
-        }
-
-        let bodyDark = SIMD3<Float>(0.18, 0.17, 0.16)
-        let eyeRed = SIMD3<Float>(0.72, 0.12, 0.10)
-
-        // thorax and abdomen
-        add(&spheres, float4x4(translation: SIMD3<Float>(0, 0, 0.1))
-                    * float4x4(scale: SIMD3<Float>(0.5, 0.45, 0.6)), bodyDark)
-        add(&spheres, float4x4(translation: SIMD3<Float>(0, -0.02, 0.85))
-                    * float4x4(scale: SIMD3<Float>(0.42, 0.38, 0.85)),
-            SIMD3<Float>(0.22, 0.20, 0.14))
-
-        // head, turned by the neck motor neurons
-        let head = float4x4(translation: SIMD3<Float>(0, 0.05, -0.62))
-                 * float4x4(rotationY: p.headYaw)
-        add(&spheres, head * float4x4(scale: SIMD3<Float>(0.42, 0.40, 0.38)), bodyDark)
-        for s in [Float(-1), Float(1)] {
-            add(&spheres, head * float4x4(translation: SIMD3<Float>(0.24 * s, 0.06, -0.06))
-                               * float4x4(scale: SIMD3<Float>(0.26, 0.30, 0.28)),
-                eyeRed, 0.18)
-        }
-        if p.proboscisExtension > 0.02 {
-            let e = p.proboscisExtension
-            add(&cubes, head * float4x4(translation: SIMD3<Float>(0, -0.2, -0.2 - 0.18 * e))
-                             * float4x4(scale: SIMD3<Float>(0.09, 0.09, 0.4 * e)),
-                SIMD3<Float>(0.35, 0.28, 0.22))
-        }
-
-        // wings — amplitude from the wing power groups, tilt from steering
-        let beat = sin(p.wingPhase)
-        for s in [Float(-1), Float(1)] {
-            let asym = (s < 0) ? -p.wingAsymmetry : p.wingAsymmetry
-            let amp = max(0.12, p.wingAmplitude) * (1 + asym * 0.35)
-            let flap = beat * amp
-            let local = float4x4(translation: SIMD3<Float>(0.18 * s, 0.22, 0.2))
-                      * float4x4(rotationZ: s * (0.5 + flap * 0.8))
-                      * float4x4(rotationY: s * -0.35)
-                      * float4x4(translation: SIMD3<Float>(0.6 * s, 0, 0.35))
-                      * float4x4(scale: SIMD3<Float>(1.3, 1, 0.5))
-            add(&quads, local, SIMD3<Float>(0.75, 0.80, 0.88), 0.05)
-        }
-
-        // six legs, tripod gait: the two groups move half a cycle apart
-        let legZ: [Float] = [-0.25, 0.15, 0.5]
-        for pair in 0..<3 {
-            for s in [Float(-1), Float(1)] {
-                let tripod = (pair + (s < 0 ? 0 : 1)) % 2
-                let phase = p.gaitPhase + (tripod == 0 ? 0 : Float.pi)
-                let grounded = 1 - p.airborne
-                let swing = sin(phase) * grounded * 0.5
-                let lift = max(0, sin(phase)) * grounded * 0.18
-                let local = float4x4(translation: SIMD3<Float>(0.28 * s, -0.1, legZ[pair]))
-                          * float4x4(rotationZ: s * (0.8 + lift))
-                          * float4x4(rotationX: swing)
-                          * float4x4(translation: SIMD3<Float>(0.35 * s, -0.3, 0))
-                          * float4x4(scale: SIMD3<Float>(0.7, 0.07, 0.07))
-                add(&cubes, local, SIMD3<Float>(0.14, 0.13, 0.12))
-            }
         }
     }
 
@@ -331,6 +296,29 @@ final class WorldRenderer {
         draw(cube, cubeRange)
         draw(sphere, sphereRange)
         draw(quad, quadRange)
+
+        // --- the fly -------------------------------------------------------
+        // One draw per body part: each has its own index range and its own
+        // matrix, so they cannot be batched, but 41 calls is nothing.
+        if let model = flyModel, flyInstanceStart < instances.count {
+            encoder.setVertexBuffer(model.vertexBuffer, offset: 0, index: 0)
+            var slot = flyInstanceStart
+            for part in model.parts where part.indexCount > 0 {
+                encoder.setVertexBuffer(buf,
+                    offset: MemoryLayout<WorldInstance>.stride * slot, index: 1)
+                encoder.drawIndexedPrimitives(
+                    type: .triangle,
+                    indexCount: Int(part.indexCount),
+                    indexType: .uint32,
+                    indexBuffer: model.indexBuffer,
+                    indexBufferOffset: Int(part.indexStart) * MemoryLayout<UInt32>.stride,
+                    instanceCount: 1,
+                    baseVertex: Int(part.vertexStart),
+                    baseInstance: 0)
+                slot += 1
+                if slot >= instances.count { break }
+            }
+        }
     }
 
     /// Main third-person pass into the drawable.

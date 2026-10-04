@@ -256,12 +256,15 @@ struct WorldView: View {
 
     private var worldHUD: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
+            HStack(spacing: 11) {
                 stat("FPS", String(format: "%.0f", world.fps))
-                stat("SPEED", String(format: "%.2f", world.speed))
-                stat(world.pose.airborne > 0.5 ? "FLYING" : "WALKING",
-                     String(format: "%.0f Hz",
-                            (world.drives.wingPowerL + world.drives.wingPowerR) / 2))
+                stat(world.pose.airborne > 0.5 ? "FLIGHT" : "WALK",
+                     String(format: "%.0f mm/s", world.speed * 10))
+                // Measured quasi-steady lift against measured body weight.
+                stat("LIFT/W", String(format: "%.2f",
+                                      world.weightUN > 0 ? world.liftUN / world.weightUN : 0))
+                stat("STROKE", String(format: "%.0f°", world.strokeAmplitudeDeg))
+                stat("YAW", String(format: "%.0f°/s", world.yawRateDegPerSec))
                 stat("ODOUR", String(format: "%.2f", world.odourStrength))
             }
             // The motor channels actually steering the animal.
@@ -311,10 +314,28 @@ struct WorldView: View {
 
     private var worldControls: some View {
         VStack(spacing: 8) {
-            Picker("", selection: $world.environment) {
-                ForEach(Environment.allCases) { e in Text(e.label).tag(e) }
+            // Plain buttons rather than a Picker: the segmented control was
+            // being rebuilt ~10x a second by the live telemetry and never
+            // committed a selection.
+            HStack(spacing: 6) {
+                ForEach(Environment.allCases) { e in
+                    Button {
+                        world.setEnvironment(e)
+                    } label: {
+                        Text(e.label)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(world.environment == e
+                                        ? Color.accentColor.opacity(0.85)
+                                        : Color.white.opacity(0.10),
+                                        in: RoundedRectangle(cornerRadius: 8,
+                                                             style: .continuous))
+                            .foregroundColor(.white)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .pickerStyle(.segmented)
 
             HStack(spacing: 8) {
                 actionButton("Food", "circle.hexagongrid.fill") { world.dropFood() }

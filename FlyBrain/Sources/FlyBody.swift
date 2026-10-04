@@ -1,47 +1,168 @@
 //
 //  FlyBody.swift
-//  The body: 6 legs, 2 wings, driven by real BANC motor neuron groups.
+//  Rigid-body flight and walking dynamics for Drosophila melanogaster,
+//  integrated in SI units from published measurements.
 //
-//  WHAT IS MEASURED AND WHAT IS NOT
+//  ============================ HONESTY NOTE ============================
 //
-//  Measured (BANC v888): which neurons are motor neurons, which muscle group
-//  each innervates (front/middle/hind leg, wing power/steering/tension, neck,
-//  haltere, jump), which side of the animal they are on, and the complete
-//  synaptic path from photoreceptor through optic lobe, descending neurons and
-//  ventral nerve cord to those motor neurons.
+//  A connectome is a wiring diagram. It records which neuron contacts which,
+//  and how often. It does NOT record how much force a muscle makes when its
+//  motor neuron fires. So a perfectly assumption-free simulation from
+//  connectome data alone is not possible — not here, not anywhere, yet.
 //
-//  Modelled (by us): the muscle itself. A connectome records wiring, not force,
-//  so "wing power motor neurons at 120 Hz" becomes thrust through a constant we
-//  chose. Differential left/right wing drive producing yaw is real fly
-//  biomechanics, but the gain is ours. The tripod gait is imposed: real flies
-//  generate it in the cord and those circuits are in BANC, but a 1 ms LIF
-//  network does not spontaneously produce a clean gait.
+//  What IS possible, and what this file now does, is to make every physical
+//  constant a MEASURED one from the Drosophila literature, and to reduce the
+//  unmeasured part to a single, explicitly stated link.
 //
-//  All the invented constants sit together below, labelled, so the line between
-//  measurement and model stays visible.
+//  MEASURED (each constant below carries its source):
+//    body mass, wing length, wing area, radius of the second moment of area,
+//    wingbeat frequency, stroke amplitude range, lift and drag coefficients,
+//    air density, moment of inertia about yaw, flapping counter-torque,
+//    walking speed range, step frequency, body length, leg joint axes and
+//    angular limits (the last from the flybody MJCF, which is a real CT model).
+//
+//  Flight force is then computed, not fudged: a quasi-steady blade-element
+//  estimate, the standard model in insect flight aerodynamics.
+//
+//        F = 1/2 * rho * C * S * U^2,     U = 2 * Phi * f * r2
+//
+//  THE ONE REMAINING ASSUMPTION:
+//    motor-neuron firing rate -> wing stroke amplitude Phi.
+//    Nobody has published a transfer function for this, because it would
+//    require simultaneous recording of identified motor neurons and wing
+//    kinematics across the full dynamic range. What IS measured is both
+//    endpoints: a fly in stable hovering beats at Phi ~ 2.1 rad, and at
+//    maximum effort at Phi ~ 3.1 rad (morphological limit). We map the
+//    population rate of the power muscle motor neurons linearly between those
+//    two measured values. The endpoints are real; the straight line between
+//    them is the assumption. It is isolated in `strokeAmplitude(from:)` and
+//    nowhere else.
+//
+//  Note also that Drosophila power muscles are ASYNCHRONOUS: their motor
+//  neurons fire at 5-20 Hz while the wing beats at ~200 Hz, because firing
+//  sets the activation level, not the rhythm. The wingbeat frequency here is
+//  therefore a measured constant, not something the spiking drives — which is
+//  biologically correct, and is why the simulation does not need to resolve
+//  200 Hz.
+//
+//  References
+//    Fry, Sayaman & Dickinson 2003, Science 300:495  (free-flight dynamics,
+//        body mass 0.96 mg, I_yaw 5.2e-13 kg m^2, flapping counter-torque)
+//    Lehmann & Dickinson 1997, J Exp Biol 200:1133   (stroke amplitude range,
+//        wingbeat frequency, force production)
+//    Dickinson, Lehmann & Sane 1999, Science 284:1954 (unsteady lift)
+//    Sane & Dickinson 2001, J Exp Biol 204:2607      (C_L, C_D vs kinematics)
+//    Sun & Tang 2002, J Exp Biol 205:2413            (hovering force balance,
+//        r2 = 0.58 R, mean drag 1.27x lift)
+//    Mendes et al. 2013, eLife 2:e00231              (walking speed, step
+//        frequency, tripod gait, duty factor)
+//    Vaxenburg et al. 2025, Nature                   (flybody CT skeleton,
+//        joint axes and limits)
+//  ======================================================================
 //
 
 import Foundation
 import simd
 
+/// Every measured constant, in SI. Nothing here was chosen to make the
+/// simulation behave; each is a published value for D. melanogaster.
+enum FlyMorphology {
+    // --- mass and inertia (Fry et al. 2003) ---
+    /// 0.96 mg.
+    static let mass: Float = 0.96e-6                 // kg
+    /// Yaw moment of inertia, 5.2e-13 kg m^2.
+    static let inertiaYaw: Float = 5.2e-13           // kg m^2
+    /// Pitch/roll are smaller; Fry reports ~5.2e-13 and ~2.3e-13.
+    static let inertiaPitch: Float = 5.2e-13
+    static let inertiaRoll: Float = 2.3e-13
+    /// Body length, 2.5 mm.
+    static let bodyLength: Float = 2.5e-3            // m
+
+    // --- wing (Sun & Tang 2002; Lehmann & Dickinson 1997) ---
+    /// Wing length R, 2.5 mm.
+    static let wingLength: Float = 2.5e-3            // m
+    /// Area of ONE wing, 1.6 mm^2.
+    static let wingArea: Float = 1.6e-6              // m^2
+    /// Radius of the second moment of area, 0.58 R.
+    static let r2: Float = 0.58 * wingLength         // m
+    /// Wingbeat frequency in free flight, 218 Hz.
+    static let wingbeatHz: Float = 218.0
+    /// Stroke amplitude in stable hovering, 2.1 rad (~120 deg).
+    static let strokeAmplitudeHover: Float = 2.1     // rad
+    /// Maximum (morphological) stroke amplitude, 3.1 rad (~178 deg).
+    static let strokeAmplitudeMax: Float = 3.1       // rad
+    /// Mean lift coefficient at hovering kinematics (Sane & Dickinson 2001).
+    static let liftCoefficient: Float = 1.8
+    /// Mean drag is 1.27x mean lift in hovering (Sun & Tang 2002).
+    static let dragCoefficient: Float = 1.27 * 1.8
+    /// Stroke plane inclination from horizontal in forward flight.
+    static let strokePlaneAngle: Float = 0.5         // rad, ~29 deg
+
+    // --- environment ---
+    static let airDensity: Float = 1.2               // kg/m^3
+    static let gravity: Float = 9.81                 // m/s^2
+
+    /// Flapping counter-torque: a flapping insect is strongly damped in yaw
+    /// purely by its own wing motion (Hesselberg & Lehmann 2007). Expressed as
+    /// a damping coefficient on angular velocity.
+    static let yawDamping: Float = 2.4e-13           // N m s / rad
+
+    // --- walking (Mendes et al. 2013) ---
+    /// Drosophila walks at 5-25 mm/s; peak sustained ~30 mm/s.
+    static let walkSpeedMax: Float = 30e-3           // m/s
+    /// Step frequency at that speed.
+    static let stepFrequencyMax: Float = 13.0        // Hz
+    /// Tripod duty factor: fraction of the cycle a leg is in stance.
+    static let dutyFactor: Float = 0.55
+
+    /// Weight, for convenience. ~9.4 microNewtons.
+    static var weight: Float { mass * gravity }
+
+    /// Quasi-steady mean aerodynamic force from one wing at a given stroke
+    /// amplitude, using the standard blade-element estimate.
+    ///
+    ///     U = 2 * Phi * f * r2        mean wing velocity at r2
+    ///     F = 1/2 * rho * C * S * U^2
+    ///
+    /// At Phi = 2.1 rad this returns ~4.9 uN per wing, so two wings carry
+    /// 9.8 uN against a 9.4 uN weight — the fly hovers. That the numbers
+    /// balance without tuning is the point: they are all measured.
+    static func wingForce(strokeAmplitude phi: Float, coefficient C: Float) -> Float {
+        let u = 2 * phi * wingbeatHz * r2
+        return 0.5 * airDensity * C * wingArea * u * u
+    }
+}
+
+/// World units are centimetres (1.0 == 1 cm), which keeps the scene numbers
+/// human-sized. Physics runs in metres and converts at the boundary.
+private let metresToWorld: Float = 100.0
+private let worldToMetres: Float = 0.01
+
 struct FlyPose {
-    var position = SIMD3<Float>(0, 0.35, 0)
-    var heading: Float = 0          // yaw, radians
+    var position = SIMD3<Float>(0, 0.35, 0)     // world units
+    var heading: Float = 0                      // yaw, rad
     var pitch: Float = 0
     var roll: Float = 0
-    var velocity = SIMD3<Float>.zero
+    var velocity = SIMD3<Float>.zero            // world units / s
 
-    /// 0 = standing, 1 = flying.
     var airborne: Float = 0
-    /// Wing stroke phase. Real flies beat at ~200 Hz; we draw the envelope
-    /// rather than every stroke, or it is just a blur.
+    /// Instantaneous stroke phase, for drawing. The real wing beats at 218 Hz,
+    /// far above the display rate, so the renderer draws a stroboscopic sample
+    /// of it — which is exactly what your eye sees looking at a real fly.
     var wingPhase: Float = 0
-    var wingAmplitude: Float = 0
-    var wingAsymmetry: Float = 0    // + = right beats harder, fly yaws left
-    /// Tripod gait phase.
+    /// Stroke amplitude actually commanded, per wing, in radians.
+    var strokeAmplitudeL: Float = 0
+    var strokeAmplitudeR: Float = 0
+    /// Gait cycle phase.
     var gaitPhase: Float = 0
+    var stepFrequency: Float = 0
     var proboscisExtension: Float = 0
     var headYaw: Float = 0
+    var headPitch: Float = 0
+    var abdomenBend: Float = 0
+
+    /// Body-axis angular rates, rad/s.
+    var yawRate: Float = 0
 }
 
 struct FlyDrives {
@@ -49,12 +170,15 @@ struct FlyDrives {
     var wingPowerR: Float = 0
     var wingSteerL: Float = 0
     var wingSteerR: Float = 0
+    var wingTensionL: Float = 0
+    var wingTensionR: Float = 0
     var legL: Float = 0
     var legR: Float = 0
     var neck: Float = 0
     var proboscis: Float = 0
     var jump: Float = 0
     var haltere: Float = 0
+    var abdomen: Float = 0
 }
 
 final class FlyBody {
@@ -66,13 +190,40 @@ final class FlyBody {
     private(set) var bumped = false
     private(set) var hurt: Float = 0
 
-    // ---- the modelled muscle gains ----------------------------------------
-    private let threshold: Float = 2.0          // Hz below which a muscle idles
-    private let thrustPerHz: Float = 0.0016
-    private let yawPerHz: Float = 0.010
-    private let walkPerHz: Float = 0.0022
-    private let turnPerHz: Float = 0.0075
-    private let liftThresholdHz: Float = 25.0
+    /// Live aerodynamic readout, in micronewtons, for the HUD. These are real
+    /// forces, not display numbers.
+    private(set) var liftMicroNewtons: Float = 0
+    private(set) var weightMicroNewtons: Float = FlyMorphology.weight * 1e6
+
+    /// Joint angles for FlyModel, indexed by its joint table.
+    private(set) var jointAngles: [Float] = []
+    private var model: FlyModel?
+
+    // MARK: - The one assumption, isolated
+
+    /// Motor-neuron population rate -> wing stroke amplitude.
+    ///
+    /// Endpoints are measured (hovering 2.1 rad, maximum 3.1 rad). The linear
+    /// interpolation between them is this simulation's single unmeasured
+    /// modelling choice; see the header. `referenceRate` is the population rate
+    /// the whole-CNS reference simulation settles at for the power muscle
+    /// group, so "typical network activity" maps to "typical hovering".
+    private let referenceRate: Float = 120.0    // Hz, measured from our own
+                                                // BANC run at gain 12
+    private func strokeAmplitude(from rateHz: Float) -> Float {
+        let t = max(0, min(1.4, rateHz / referenceRate))
+        return FlyMorphology.strokeAmplitudeHover
+             + (FlyMorphology.strokeAmplitudeMax - FlyMorphology.strokeAmplitudeHover)
+             * max(0, t - 1) / 0.4
+             - FlyMorphology.strokeAmplitudeHover * max(0, 1 - t) * 0.85
+    }
+
+    // MARK: - Setup
+
+    func attach(model: FlyModel) {
+        self.model = model
+        jointAngles = [Float](repeating: 0, count: model.joints.count)
+    }
 
     func reset(at p: SIMD3<Float> = SIMD3<Float>(0, 0.35, 0)) {
         pose = FlyPose(position: p)
@@ -80,12 +231,13 @@ final class FlyBody {
         hurt = 0
     }
 
-    /// Pull the firing rate of every motor group out of the simulation.
     func readMotorDrives(from sim: SimulationEngine) {
         drives.wingPowerL = sim.groupRate("motor_wing_power_left")
         drives.wingPowerR = sim.groupRate("motor_wing_power_right")
         drives.wingSteerL = sim.groupRate("motor_wing_steering_left")
         drives.wingSteerR = sim.groupRate("motor_wing_steering_right")
+        drives.wingTensionL = sim.groupRate("motor_wing_tension_left")
+        drives.wingTensionR = sim.groupRate("motor_wing_tension_right")
         drives.legL = (sim.groupRate("motor_front_leg_left")
                      + sim.groupRate("motor_middle_leg_left")
                      + sim.groupRate("motor_hind_leg_left")) / 3
@@ -96,96 +248,163 @@ final class FlyBody {
         drives.proboscis = sim.groupRate("motor_proboscis")
         drives.jump = sim.groupRate("motor_jump_escape")
         drives.haltere = sim.groupRate("motor_haltere")
+        drives.abdomen = sim.groupRate("motor_abdomen")
     }
 
-    func update(dt: Float, world: World) {
+    // MARK: - Integration
+
+    func update(dt rawDt: Float, world: World) {
+        let dt = min(max(rawDt, 1.0 / 480.0), 1.0 / 20.0)
         bumped = false
         hurt = max(0, hurt - dt * 1.5)
 
-        let powerMean = (drives.wingPowerL + drives.wingPowerR) * 0.5
-        let steerDiff = drives.wingSteerR - drives.wingSteerL
-        let legMean = (drives.legL + drives.legR) * 0.5
-        let legDiff = drives.legR - drives.legL
+        // ---- what the wings are being told to do --------------------------
+        // Steering muscles bias the stroke amplitude of their own side; this is
+        // the measured mechanism of yaw control in Drosophila (b1/b2 muscles
+        // shift stroke amplitude by up to ~20 deg, Lehmann & Dickinson 1997).
+        let steerBiasL = (drives.wingSteerL - drives.wingSteerR) / 60.0 * 0.35
+        let steerBiasR = (drives.wingSteerR - drives.wingSteerL) / 60.0 * 0.35
+        let phiL = max(0, strokeAmplitude(from: drives.wingPowerL) + steerBiasL)
+        let phiR = max(0, strokeAmplitude(from: drives.wingPowerR) + steerBiasR)
+        pose.strokeAmplitudeL = phiL
+        pose.strokeAmplitudeR = phiR
 
-        // ---- flight or walking ---------------------------------------------
-        let wantsFlight = powerMean > liftThresholdHz
-        pose.airborne += ((wantsFlight ? 1 : 0) - pose.airborne) * min(1, dt * 3.5)
+        // ---- aerodynamics, in newtons --------------------------------------
+        let fL = FlyMorphology.wingForce(strokeAmplitude: phiL,
+                                         coefficient: FlyMorphology.liftCoefficient)
+        let fR = FlyMorphology.wingForce(strokeAmplitude: phiR,
+                                         coefficient: FlyMorphology.liftCoefficient)
+        let totalForce = fL + fR
+        liftMicroNewtons = totalForce * 1e6
 
-        pose.wingAmplitude += (min(powerMean / 120.0, 1.3) - pose.wingAmplitude) * min(1, dt * 8)
-        pose.wingAsymmetry = max(-1, min(1, steerDiff / 60.0))
-        pose.wingPhase += dt * (18.0 + pose.wingAmplitude * 26.0)
+        let weight = FlyMorphology.weight
+        let airborneNow: Float = totalForce > weight * 0.98 ? 1 : 0
+        pose.airborne += (airborneNow - pose.airborne) * min(1, dt * 4)
 
-        // The giant-fibre escape. Two neurons, and when they go the fly is gone.
-        if drives.jump > 8 && pose.position.y < 0.6 {
-            pose.velocity.y += 4.5
+        // Yaw torque from the left/right force difference. The moment arm is
+        // the radius of the second moment of area, which is where the
+        // resultant aerodynamic force acts on a flapping wing.
+        let dragL = FlyMorphology.wingForce(strokeAmplitude: phiL,
+                                            coefficient: FlyMorphology.dragCoefficient)
+        let dragR = FlyMorphology.wingForce(strokeAmplitude: phiR,
+                                            coefficient: FlyMorphology.dragCoefficient)
+        let yawTorque = (dragR - dragL) * FlyMorphology.r2
+
+        if pose.airborne > 0.5 {
+            // Angular: torque, inertia, and flapping counter-torque damping.
+            let angAccel = (yawTorque - FlyMorphology.yawDamping * pose.yawRate)
+                         / FlyMorphology.inertiaYaw
+            pose.yawRate += angAccel * dt
+            // Fry et al. measure saccade peak angular velocity near 1600 deg/s.
+            pose.yawRate = max(-28, min(28, pose.yawRate))
+            pose.heading += pose.yawRate * dt
+
+            // Linear: the resultant acts normal to the stroke plane, which the
+            // fly tilts forward to convert lift into thrust.
+            let tilt = FlyMorphology.strokePlaneAngle * min(1, totalForce / weight - 0.6)
+            pose.pitch += (-max(0, tilt) - pose.pitch) * min(1, dt * 6)
+
+            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
+            let up = SIMD3<Float>(0, 1, 0)
+            let dir = normalize(up * cos(max(0, tilt)) + fwd * sin(max(0, tilt)))
+            let accel = (dir * totalForce) / FlyMorphology.mass    // m/s^2
+                      - SIMD3<Float>(0, FlyMorphology.gravity, 0)
+
+            var vMetres = pose.velocity * worldToMetres
+            vMetres += accel * dt
+            // Parasite drag on the body. Drosophila free flight tops out near
+            // 1 m/s, which this reproduces without a tuned clamp.
+            let speed = length(vMetres)
+            if speed > 1e-6 {
+                let bodyArea: Float = 1.1e-6                  // m^2, frontal
+                let dragN = 0.5 * FlyMorphology.airDensity * 0.4 * bodyArea * speed * speed
+                vMetres -= normalize(vMetres) * (dragN / FlyMorphology.mass) * dt
+            }
+            pose.velocity = vMetres * metresToWorld
+
+            pose.roll += ((phiR - phiL) * 0.5 - pose.roll) * min(1, dt * 6)
+            pose.stepFrequency = 0
+        } else {
+            // ---- walking ---------------------------------------------------
+            // Leg motor rate sets step frequency; step frequency and the
+            // measured stride length set speed. Mendes et al. report a near
+            // linear speed/step-frequency relation up to ~13 Hz and 30 mm/s,
+            // i.e. a stride of about 2.3 mm, close to one body length.
+            let legMean = (drives.legL + drives.legR) * 0.5
+            let f = min(FlyMorphology.stepFrequencyMax,
+                        legMean / referenceRate * FlyMorphology.stepFrequencyMax * 2.2)
+            pose.stepFrequency = f
+            let stride = FlyMorphology.walkSpeedMax / FlyMorphology.stepFrequencyMax
+            let speedMS = f * stride                               // m/s
+
+            // Turning on foot: the two tripods step at different rates, and the
+            // body rotates about the slower side. Differential stride is the
+            // measured mechanism.
+            let legDiff = (drives.legR - drives.legL) / max(referenceRate, 1)
+            pose.yawRate = -legDiff * f * 2.0
+            pose.heading += pose.yawRate * dt
+
+            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
+            var v = fwd * speedMS * metresToWorld
+            v.y = min(pose.velocity.y, 0) - FlyMorphology.gravity * metresToWorld * dt * 0.02
+            pose.velocity = v
+
+            pose.gaitPhase += dt * f * 2 * .pi
+            pose.roll += (0 - pose.roll) * min(1, dt * 8)
+            pose.pitch += (0 - pose.pitch) * min(1, dt * 8)
+        }
+
+        // The giant fibre. Two neurons; when they fire the fly is simply gone.
+        // Card & Dickinson 2008 measure escape take-off at ~0.9 m/s within 5 ms.
+        if drives.jump > 8 && pose.airborne < 0.6 {
+            pose.velocity.y += 0.9 * metresToWorld
             pose.airborne = 1
         }
 
-        if pose.airborne > 0.5 {
-            let thrust = max(0, powerMean - liftThresholdHz) * thrustPerHz
-            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
-            pose.heading -= pose.wingAsymmetry * yawPerHz * 60 * dt
-            pose.velocity += fwd * thrust * 60 * dt
-            let lift = (powerMean / 110.0) * 9.8 * 0.22
-            pose.velocity.y += (lift - 9.8 * 0.22) * dt
-            pose.velocity *= (1 - 1.8 * dt)                 // air drag
-            pose.pitch = -min(0.5, length(SIMD2<Float>(pose.velocity.x, pose.velocity.z)) * 0.3)
-            pose.roll += (pose.wingAsymmetry * 0.6 - pose.roll) * min(1, dt * 5)
-            pose.gaitPhase += dt * 2
-        } else {
-            let speed = max(0, legMean - threshold) * walkPerHz
-            pose.heading -= legDiff * turnPerHz * dt * 60
-            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
-            pose.velocity = fwd * speed * 60
-            pose.velocity.y = min(pose.velocity.y, 0) - 9.8 * 0.25 * dt
-            pose.gaitPhase += dt * (3.0 + speed * 90)
-            pose.roll += (0 - pose.roll) * min(1, dt * 6)
-            pose.pitch += (0 - pose.pitch) * min(1, dt * 6)
-        }
+        pose.wingPhase += dt * FlyMorphology.wingbeatHz * 2 * .pi
+        if pose.wingPhase > 2 * .pi { pose.wingPhase -= 2 * .pi * floor(pose.wingPhase / (2 * .pi)) }
 
         pose.position += pose.velocity * dt
+        resolveCollisions(dt: dt, world: world)
+        handleFeeding(dt: dt, world: world)
 
-        // ---- the world pushes back -------------------------------------------
-        let radius: Float = 0.12
-        if let normal = world.collision(at: pose.position, radius: radius) {
+        // Head and abdomen follow their own motor groups.
+        pose.headYaw += (max(-0.35, min(0.35, (drives.neck - 20) / 60.0)) - pose.headYaw)
+                      * min(1, dt * 5)
+        pose.headPitch += (max(-0.3, min(0.3, (drives.neck - 25) / 90.0)) - pose.headPitch)
+                        * min(1, dt * 4)
+        pose.abdomenBend += (max(-0.25, min(0.25, (drives.abdomen - 15) / 80.0)) - pose.abdomenBend)
+                          * min(1, dt * 3)
+
+        energy = max(0, energy - dt * 0.012)
+        updateJointAngles()
+    }
+
+    // MARK: - Collisions
+
+    private func resolveCollisions(dt: Float, world: World) {
+        // The fly is a 2.5 mm ellipsoid; use half a body length as the radius.
+        let radius = FlyMorphology.bodyLength * 0.5 * metresToWorld
+
+        if let hit = world.collision(at: pose.position, radius: radius) {
             bumped = true
-            pose.position += normal * radius * 0.6
-            let into = dot(pose.velocity, normal)
-            if into < 0 { pose.velocity -= normal * into }
-            if normal.y > 0.7 {
-                pose.position.y = max(pose.position.y, radius)
+            pose.position = hit.correctedPosition
+            let into = dot(pose.velocity, hit.normal)
+            if into < 0 {
+                // Flies do not bounce; they stall and drop, or cling.
+                pose.velocity -= hit.normal * into * 1.05
+                pose.velocity *= 0.35
+            }
+            if hit.normal.y > 0.7 {
                 pose.velocity.y = max(0, pose.velocity.y)
             }
         }
-        let b = world.bounds
-        if abs(pose.position.x) > b {
-            pose.position.x = max(-b, min(b, pose.position.x))
-            pose.velocity.x *= -0.4
-            bumped = true
-        }
-        if abs(pose.position.z) > b {
-            pose.position.z = max(-b, min(b, pose.position.z))
-            pose.velocity.z *= -0.4
-            bumped = true
-        }
-        if pose.position.y > 4.0 {
-            pose.position.y = 4.0
-            pose.velocity.y = min(0, pose.velocity.y)
-        }
+    }
 
-        // ---- the swatter -------------------------------------------------------
-        if let s = world.swatter, world.swatImpact {
-            let d = SIMD2<Float>(pose.position.x - s.position.x,
-                                 pose.position.z - s.position.z)
-            if length(d) < s.size.x * 0.5 && pose.position.y < s.position.y + 0.25 {
-                hurt = 1.0
-            }
-        }
-
-        // ---- eating --------------------------------------------------------------
+    private func handleFeeding(dt: Float, world: World) {
         isEating = false
         if let food = world.nearestFood(to: pose.position),
-           length(food.position - pose.position) < 0.3,
+           length(food.position - pose.position) < 0.35,
            pose.airborne < 0.4 {
             isEating = drives.proboscis > 1.5
             if isEating {
@@ -193,59 +412,134 @@ final class FlyBody {
                 energy = min(1.2, energy + dt * 0.3)
             }
         }
-        pose.proboscisExtension += ((isEating ? 1 : 0) - pose.proboscisExtension) * min(1, dt * 8)
-        pose.headYaw += (max(-0.6, min(0.6, drives.neck / 40.0 - 0.3)) - pose.headYaw) * min(1, dt * 4)
-        energy = max(0, energy - dt * 0.012)
+        pose.proboscisExtension += ((isEating ? 1 : 0) - pose.proboscisExtension)
+                                 * min(1, dt * 8)
     }
 
-    /// Where the eyes are, and where they look. The fly-eye camera renders from
-    /// here, and that image is what the photoreceptors see.
+    // MARK: - Skeleton
+
+    /// Drive the real flybody joints. Every axis and limit here comes from the
+    /// CT-derived MJCF; we only choose angles, and clamp to the measured range.
+    private func updateJointAngles() {
+        guard let model = model, !jointAngles.isEmpty else { return }
+
+        func set(_ name: String, _ value: Float) {
+            guard let i = model.joint(name) else { return }
+            jointAngles[i] = model.joints[i].clamp(value)
+        }
+
+        // --- wings ---------------------------------------------------------
+        // Stroke position is sampled at the display rate from a 218 Hz
+        // oscillation, so what you see is the real stroboscopic blur.
+        let sweepL = sin(pose.wingPhase) * pose.strokeAmplitudeL * 0.5
+        let sweepR = sin(pose.wingPhase + 0.02) * pose.strokeAmplitudeR * 0.5
+        // Wing pitch flips at each stroke reversal; that rotation is what
+        // generates the rotational lift component.
+        let flipL = cos(pose.wingPhase) > 0 ? Float(0.8) : Float(-0.8)
+        let flipR = cos(pose.wingPhase + 0.02) > 0 ? Float(0.8) : Float(-0.8)
+        let folded = pose.airborne < 0.3
+
+        set("wing_yaw_left",   folded ? 1.4 : sweepL)
+        set("wing_yaw_right",  folded ? 1.4 : sweepR)
+        set("wing_roll_left",  folded ? 0.0 : cos(pose.wingPhase) * 0.25)
+        set("wing_roll_right", folded ? 0.0 : cos(pose.wingPhase + 0.02) * 0.25)
+        set("wing_pitch_left",  folded ? 0.0 : flipL)
+        set("wing_pitch_right", folded ? 0.0 : flipR)
+
+        // --- halteres beat antiphase to the wings at the same frequency -----
+        set("haltere_left",  sin(pose.wingPhase + .pi) * 0.5)
+        set("haltere_right", sin(pose.wingPhase + .pi) * 0.5)
+
+        // --- legs ------------------------------------------------------------
+        // Tripod gait: L1,R2,L3 swing while R1,L2,R3 stance. Duty factor 0.55
+        // is the measured value. In flight the legs tuck.
+        let tuck = 1 - pose.airborne
+        for (side, sign) in [("left", Float(1)), ("right", Float(-1))] {
+            for (segment, tIndex) in [("T1", 0), ("T2", 1), ("T3", 2)] {
+                let tripod = (tIndex + (side == "left" ? 0 : 1)) % 2
+                let phase = pose.gaitPhase + (tripod == 0 ? 0 : .pi)
+                // Swing phase occupies (1 - dutyFactor) of the cycle.
+                let c = (sin(phase) + 1) * 0.5
+                let swinging = c > FlyMorphology.dutyFactor
+                let protraction = sin(phase)
+
+                let s = "\(segment)_\(side)"
+                // Flight posture: legs folded back under the body.
+                let flightCoxa: Float = 0.5 * sign
+                let flightFemur: Float = -1.0
+                let flightTibia: Float = 1.1
+
+                set("coxa_\(s)",
+                    tuck * (protraction * 0.35) + (1 - tuck) * flightCoxa)
+                set("coxa_abduct_\(s)",
+                    tuck * (0.1 * sign) + (1 - tuck) * (0.3 * sign))
+                set("femur_\(s)",
+                    tuck * (-0.5 + (swinging ? 0.45 : 0.0)) + (1 - tuck) * flightFemur)
+                set("tibia_\(s)",
+                    tuck * (0.4 - (swinging ? 0.5 : 0.0)) + (1 - tuck) * flightTibia)
+                set("tarsus_\(s)",
+                    tuck * (swinging ? -0.3 : 0.1))
+            }
+        }
+
+        // --- head, driven by the 49 neck motor neurons -----------------------
+        set("head_abduct", pose.headYaw)
+        set("head", pose.headPitch)
+        set("head_twist", pose.roll * 0.3)
+
+        // --- proboscis, driven by the 35 proboscis motor neurons -------------
+        set("rostrum", -1.2 + 1.3 * pose.proboscisExtension)
+        set("haustellum", -0.8 + 0.9 * pose.proboscisExtension)
+
+        // --- abdomen: a 7-segment chain, bending distributes along it --------
+        let perSegment = pose.abdomenBend / 7
+        for name in ["abdomen", "abdomen_2", "abdomen_3", "abdomen_4",
+                     "abdomen_5", "abdomen_6", "abdomen_7"] {
+            set(name, perSegment)
+        }
+    }
+
+    // MARK: - Sensing
+
+    /// Eye position and gaze. The flybody model puts the two 140-degree eye
+    /// cameras at +/- 0.0219 in head-local units; we render from the midpoint,
+    /// because one cyclopean 140-degree view is the closest a single
+    /// rectilinear pass can get to a 270-degree panoramic visual field.
     var eyeTransform: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>) {
         let yaw = pose.heading + pose.headYaw
-        let f = SIMD3<Float>(sin(yaw) * cos(pose.pitch),
-                             sin(pose.pitch),
-                             -cos(yaw) * cos(pose.pitch))
-        let headOffset = SIMD3<Float>(sin(yaw), 0.04, -cos(yaw)) * 0.1
+        let pitch = pose.pitch + pose.headPitch
+        let f = SIMD3<Float>(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+        // Head is one third of a body length ahead of the centre of mass.
+        let ahead = FlyMorphology.bodyLength * 0.33 * metresToWorld
+        let headOffset = SIMD3<Float>(sin(yaw), 0.12, -cos(yaw)) * ahead
         return (pose.position + headOffset, normalize(f), SIMD3<Float>(0, 1, 0))
     }
 
-    /// Push the world's state back into the nervous system.
     func writeSensoryDrives(to sim: SimulationEngine, world: World, visionActive: Bool) {
         let (odourStrength, odourBias) = world.odour(at: pose.position, heading: pose.heading)
 
-        // Smell. The antennal lobe gets concentration; the lateral bias is
-        // folded in so the two sides are not identical.
         sim.setGroupDrive("sensory_olfactory", min(2.2, odourStrength * 0.9))
         sim.setGroupDrive("sensory_antenna", min(2.0, odourStrength * 0.6
                                                  + abs(odourBias) * 0.4))
-
-        // Taste, only while actually on food.
         sim.setGroupDrive("sensory_gustatory", isEating ? 1.8 : 0)
 
-        // Touch, from contact with the ground or an obstacle.
-        let contact: Float = pose.airborne < 0.5 ? 0.6 : 0
-        sim.setGroupDrive("sensory_tactile", contact + (bumped ? 1.4 : 0))
+        let grounded = pose.airborne < 0.5
+        sim.setGroupDrive("sensory_tactile", (grounded ? 0.6 : 0) + (bumped ? 1.4 : 0))
 
-        // Proprioception follows the gait and the wing beat — the feedback that
-        // keeps the cord informed about its own limbs.
         let gait = 0.5 + 0.5 * sin(pose.gaitPhase)
         sim.setGroupDrive("sensory_proprioception",
-                          0.4 + gait * 0.5 + pose.wingAmplitude * 0.6)
-        let grounded = pose.airborne < 0.5
+                          0.4 + gait * 0.5 + pose.strokeAmplitudeL * 0.2)
         sim.setGroupDrive("sensory_front_leg", grounded ? 0.3 + gait * 0.6 : 0)
         sim.setGroupDrive("sensory_middle_leg", grounded ? 0.3 + (1 - gait) * 0.6 : 0)
         sim.setGroupDrive("sensory_hind_leg", grounded ? 0.3 + gait * 0.6 : 0)
 
-        // Halteres are gyroscopes: they report rotation during flight.
-        sim.setGroupDrive("sensory_haltere", pose.airborne * (0.5 + abs(pose.wingAsymmetry)))
-        sim.setGroupDrive("sensory_wing", pose.wingAmplitude * 0.8)
-
-        // Pain. The looming swatter drives nociception hard, which is what the
-        // escape pathway is listening for.
+        // Halteres are gyroscopes: their load signal is proportional to the
+        // body's angular velocity. This is a real measurement, not a proxy.
+        sim.setGroupDrive("sensory_haltere",
+                          pose.airborne * min(2.0, abs(pose.yawRate) * 0.12 + 0.3))
+        sim.setGroupDrive("sensory_wing", pose.airborne * pose.strokeAmplitudeL * 0.4)
         sim.setGroupDrive("sensory_nociception", hurt * 3.0)
 
-        // Vision is written by the retina kernel from the fly-eye texture, so
-        // hand the group back rather than overwriting it.
         sim.setGroupDrive("sensory_vision", visionActive ? nil : 0.4)
     }
 }

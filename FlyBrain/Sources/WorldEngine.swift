@@ -48,11 +48,17 @@ struct ChaseCamera {
 @MainActor
 final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
 
-    @Published var environment: Environment = .kitchen {
-        didSet {
-            world.environment = environment
-            body.reset()
-        }
+    @Published private(set) var environment: Environment = .kitchen
+
+    /// Switching worlds rebuilds the scene and drops the fly back in the
+    /// middle of it. Called straight from the buttons — no two-way binding to
+    /// get out of step with the model.
+    func setEnvironment(_ e: Environment) {
+        guard e != environment else { return }
+        environment = e
+        world.environment = e
+        body.reset()
+        chase.smoothed = SIMD3<Float>(0, 0.6, 2)
     }
     @Published private(set) var fps: Double = 0
     @Published private(set) var pose = FlyPose()
@@ -60,6 +66,11 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
     @Published private(set) var energy: Float = 1
     @Published private(set) var odourStrength: Float = 0
     @Published private(set) var speed: Float = 0
+    /// Real aerodynamic numbers, in micronewtons.
+    @Published private(set) var liftUN: Float = 0
+    @Published private(set) var weightUN: Float = 0
+    @Published private(set) var strokeAmplitudeDeg: Float = 0
+    @Published private(set) var yawRateDegPerSec: Float = 0
     @Published var showBrainPiP = true
     @Published var showEyePiP = true
 
@@ -97,6 +108,7 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
                                          library: library,
                                          colorFormat: view.colorPixelFormat)
         }
+        if let m = renderer?.flyModel { body.attach(model: m) }
         view.delegate = self
         body.reset()
         world.environment = environment
@@ -156,6 +168,11 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
             speed = length(body.pose.velocity)
             odourStrength = world.odour(at: body.pose.position,
                                         heading: body.pose.heading).strength
+            liftUN = body.liftMicroNewtons
+            weightUN = body.weightMicroNewtons
+            strokeAmplitudeDeg = (body.pose.strokeAmplitudeL
+                                + body.pose.strokeAmplitudeR) * 0.5 * 180 / .pi
+            yawRateDegPerSec = body.pose.yawRate * 180 / .pi
         }
     }
 

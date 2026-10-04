@@ -55,7 +55,7 @@ enum Environment: String, CaseIterable, Identifiable {
 }
 
 enum ObjectKind: String {
-    case food, fruit, cube, pillar, swatter
+    case food, fruit, cube, pillar, swatter, wall, ceiling
 
     var isEdible: Bool { self == .food || self == .fruit }
 
@@ -75,6 +75,8 @@ enum ObjectKind: String {
         case .cube:    return SIMD3<Float>(0.45, 0.50, 0.62)
         case .pillar:  return SIMD3<Float>(0.60, 0.58, 0.52)
         case .swatter: return SIMD3<Float>(0.12, 0.12, 0.14)
+        case .wall:    return SIMD3<Float>(0.52, 0.47, 0.42)
+        case .ceiling: return SIMD3<Float>(0.30, 0.29, 0.28)
         }
     }
 
@@ -84,6 +86,10 @@ enum ObjectKind: String {
         default:            return .cube
         }
     }
+
+    /// Scenery the fly can see but that is not worth listing as an obstacle
+    /// twice; walls get their own collision path.
+    var isStructure: Bool { self == .wall || self == .ceiling }
 }
 
 enum MeshKind: Int { case cube = 0, sphere = 1, quad = 2 }
@@ -97,6 +103,13 @@ struct WorldObject: Identifiable {
     var spin: Float = 0
     /// Food shrinks as the fly eats it.
     var amount: Float = 1.0
+}
+
+/// Result of a collision query: where the body should be pushed back to, and
+/// the surface normal it hit.
+struct Contact {
+    var correctedPosition: SIMD3<Float>
+    var normal: SIMD3<Float>
 }
 
 // MARK: - The world
@@ -113,11 +126,22 @@ final class World {
     private(set) var swatImpact = false
 
     let bounds: Float = 6.0
+    /// Garden is open above; indoors the fly can hit the ceiling, which is
+    /// where real flies spend an irritating amount of their time.
+    var ceilingHeight: Float { environment == .garden ? 8.0 : 3.2 }
 
     init() { rebuild() }
 
     func rebuild() {
         objects.removeAll()
+
+        // The room. Previously the arena was bounded by an INVISIBLE limit,
+        // so the fly would stop dead in mid-air for no reason the player — or
+        // the fly's own eyes — could see. Real walls fix both: they are drawn,
+        // so the optic flow has something to collide with visually, and the
+        // visual system gets the looming cue that makes avoidance possible.
+        buildRoom()
+
         switch environment {
         case .kitchen:
             addScenery(count: 5, kind: .cube, sizeRange: 0.25...0.8)
@@ -132,6 +156,30 @@ final class World {
         }
         swatter = nil
         swatImpact = false
+    }
+
+    /// Four walls and, indoors, a ceiling. Wall thickness is deliberate: a
+    /// solid slab reads correctly from both sides and gives the fly's eye a
+    /// real surface rather than a zero-width plane that vanishes edge-on.
+    private func buildRoom() {
+        let t: Float = 0.25               // wall thickness
+        let h: Float = ceilingHeight
+        let b = bounds
+        let span = b * 2 + t * 2
+
+        func wall(_ pos: SIMD3<Float>, _ size: SIMD3<Float>) {
+            objects.append(WorldObject(kind: .wall, position: pos, size: size))
+        }
+        wall(SIMD3<Float>(0, h / 2, -b - t / 2), SIMD3<Float>(span, h, t))
+        wall(SIMD3<Float>(0, h / 2,  b + t / 2), SIMD3<Float>(span, h, t))
+        wall(SIMD3<Float>(-b - t / 2, h / 2, 0), SIMD3<Float>(t, h, span))
+        wall(SIMD3<Float>( b + t / 2, h / 2, 0), SIMD3<Float>(t, h, span))
+
+        if environment != .garden {
+            objects.append(WorldObject(kind: .ceiling,
+                                       position: SIMD3<Float>(0, h + t / 2, 0),
+                                       size: SIMD3<Float>(span, t, span)))
+        }
     }
 
     private func addScenery(count: Int, kind: ObjectKind,
@@ -170,6 +218,8 @@ final class World {
 
     func update(dt: Float) {
         for i in objects.indices {
+            // Walls and the ceiling are fixed; only loose objects fall.
+            if objects[i].kind.isStructure { continue }
             let restY = objects[i].size.y * 0.5
             if objects[i].position.y > restY {
                 objects[i].velocity.y -= 9.8 * dt * 0.2      // gentle, fly-scale
@@ -220,19 +270,60 @@ final class World {
                .min { length($0.position - p) < length($1.position - p) }
     }
 
-    /// Anything solid within `radius` of the point; returns the escape normal.
-    func collision(at p: SIMD3<Float>, radius: Float) -> SIMD3<Float>? {
+    /// Anything solid within `radius` of the point.
+    ///
+    /// Returns a corrected position as well as a normal, so the caller cannot
+    /// end up tunnelling or sticking: we push the body exactly to the surface
+    /// rather than nudging it by a fraction and hoping.
+    func collision(at p: SIMD3<Float>, radius: Float) -> Contact? {
+        var best: Contact?
+        var deepest: Float = 0
+
         for o in objects where !o.kind.isEdible {
             let half = o.size * 0.5
-            let closest = simd_clamp(p, o.position - half, o.position + half)
+            let lo = o.position - half
+            let hi = o.position + half
+            let closest = simd_clamp(p, lo, hi)
             let d = p - closest
             let dist = length(d)
-            if dist < radius {
-                return dist > 1e-4 ? normalize(d) : SIMD3<Float>(0, 1, 0)
+
+            if dist > 1e-5 {
+                guard dist < radius else { continue }
+                let n = d / dist
+                let depth = radius - dist
+                if depth > deepest {
+                    deepest = depth
+                    best = Contact(correctedPosition: closest + n * radius, normal: n)
+                }
+            } else {
+                // Centre is inside the box: escape along the shallowest face.
+                let toLo = p - lo
+                let toHi = hi - p
+                var n = SIMD3<Float>(0, 1, 0)
+                var push: Float = .greatestFiniteMagnitude
+                let faces: [(Float, SIMD3<Float>)] = [
+                    (toLo.x, SIMD3<Float>(-1, 0, 0)), (toHi.x, SIMD3<Float>(1, 0, 0)),
+                    (toLo.y, SIMD3<Float>(0, -1, 0)), (toHi.y, SIMD3<Float>(0, 1, 0)),
+                    (toLo.z, SIMD3<Float>(0, 0, -1)), (toHi.z, SIMD3<Float>(0, 0, 1)),
+                ]
+                for (dpt, nn) in faces where dpt < push { push = dpt; n = nn }
+                let depth = push + radius
+                if depth > deepest {
+                    deepest = depth
+                    best = Contact(correctedPosition: p + n * depth, normal: n)
+                }
             }
         }
-        if p.y < radius { return SIMD3<Float>(0, 1, 0) }    // the ground
-        return nil
+
+        // The ground.
+        if p.y < radius {
+            let depth = radius - p.y
+            if depth > deepest {
+                best = Contact(correctedPosition: SIMD3<Float>(p.x, radius, p.z),
+                               normal: SIMD3<Float>(0, 1, 0))
+            }
+        }
+        return best
     }
 
     func consume(_ id: UUID, amount: Float) {
