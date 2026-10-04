@@ -12,6 +12,7 @@
 
 import Foundation
 import Metal
+import simd
 
 enum ConnectomeError: Error, LocalizedError {
     case resourceMissing
