@@ -44,9 +44,8 @@ struct ContentView: View {
             } else if engine.isReady {
                 BrainView(engine: engine)
                     .ignoresSafeArea()
-                    .gesture(dragGesture)
+                    .gesture(dragOrTapGesture)
                     .simultaneousGesture(magnifyGesture)
-                    .onTapGesture { location in engine.tap(at: location) }
 
                 VStack {
                     HUDView(stats: engine.stats,
@@ -102,10 +101,24 @@ struct ContentView: View {
         }
     }
 
-    private var dragGesture: some Gesture {
-        DragGesture()
-            .onChanged { value in engine.drag(translation: value.translation) }
-            .onEnded { _ in engine.endDrag() }
+    // One gesture handles both orbiting and tap-to-inspect. SwiftUI's
+    // `onTapGesture(perform:)` with a location argument is iOS 17 only, and the
+    // deployment target here is iOS 15, so the tap is recognised manually: a
+    // drag that ends having moved less than ~10 points is a tap.
+    private var dragOrTapGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if hypot(value.translation.width, value.translation.height) > 10 {
+                    engine.drag(translation: value.translation)
+                }
+            }
+            .onEnded { value in
+                let moved = hypot(value.translation.width, value.translation.height)
+                if moved <= 10 {
+                    engine.tap(at: value.location)
+                }
+                engine.endDrag()
+            }
     }
 
     private var magnifyGesture: some Gesture {

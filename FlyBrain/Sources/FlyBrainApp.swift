@@ -10,7 +10,6 @@ struct FlyBrainApp: App {
         WindowGroup {
             ContentView()
                 .statusBarHidden(true)
-                .persistentSystemOverlays(.hidden)
         }
     }
 }
