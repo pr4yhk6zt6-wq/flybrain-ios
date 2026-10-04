@@ -45,6 +45,13 @@ jobs:
         if: steps.banc-cache.outputs.cache-hit != 'true'
         run: bash tools/download_banc.sh
 
+      - name: Cache the flybody assets
+        id: flybody-cache
+        uses: actions/cache@v4
+        with:
+          path: data/flybody
+          key: flybody-assets-v1
+
       - name: Build the connectome binary
         run: |
           python3 -m pip install --quiet numpy pandas pyarrow
@@ -52,6 +59,14 @@ jobs:
                                       --min-syn 3 --conduction-speed 0.25
           mkdir -p FlyBrain/Resources
           cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
+          ls -lh FlyBrain/Resources/
+
+      - name: Build the fly body mesh
+        run: |
+          python3 tools/build_flymodel.py --cache data/flybody \
+                                          --out build/flymodel.bin \
+                                          --budget 110000
+          cp build/flymodel.bin FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
 
       - name: Validate the connectome
@@ -82,6 +97,22 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Run the test suite
+        run: |
+          set -o pipefail
+          xcrun simctl list devices available
+          DEST=$(xcrun simctl list devices available | grep -Eo '[0-9A-F-]{36}' | head -1)
+          test -n "$DEST" || { echo "no simulator available"; exit 1; }
+          echo "testing on simulator $DEST"
+          xcodebuild \
+            -project FlyBrain.xcodeproj \
+            -scheme FlyBrain \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination "id=$DEST" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
 
       - name: Build unsigned for device
         run: |
@@ -121,3 +152,5 @@ jobs:
           path: |
             build/flybanc.bin
             build/flybanc_meta.json
+            build/flymodel.bin
+            build/flymodel_meta.json
