@@ -166,8 +166,11 @@ class FlyBody:
         self.habitGate = 1.0
         self.wasAirborne = False
         self.wasBumped = False
+        self.arousal = 1.0
         self.rngState = 0x9E3779B9
 
+    arousalTau = 15.0
+    arousalSigma = 0.16      # stationary sd ~0.44
     referenceTau = 10.0
     turnBiasTau = 1.5
     yawBiasTau = 1.5
@@ -199,15 +202,23 @@ class FlyBody:
         self.habit = h
         u = max(self.habit_random(), 0.02)
         if h == "walk":
-            self.habitTimer = min(8.0, -math.log(u) * 3.0)
+            self.habitTimer = min(8.0, -math.log(u) * 3.0 * self.arousal)
         elif h == "stop":
-            self.habitTimer = min(6.0, max(0.3, -math.log(u) / 0.29))
+            self.habitTimer = min(6.0, max(0.3, -math.log(u) / (0.29 * self.arousal)))
         else:
             self.habitTimer = min(4.0, max(0.4, -math.log(u) * 1.0))
             self.groomDuration = self.habitTimer
             self.groomElapsed = 0.0
 
     def update_habit(self, dt):
+        # Ornstein-Uhlenbeck arousal: four uniform draws per frame, same
+        # consumption order as the Swift port.
+        g = (self.habit_random() + self.habit_random()
+             + self.habit_random() + self.habit_random()) * 0.5 - 1.0
+        self.arousal += ((1.0 - self.arousal) * min(1.0, dt / self.arousalTau)
+                         + self.arousalSigma * math.sqrt(dt) * g)
+        self.arousal = min(1.5, max(0.5, self.arousal))
+
         if self.airborne >= 0.5:
             self.wasAirborne = True
             self.habit = "walk"
@@ -303,7 +314,7 @@ class FlyBody:
             fg = f * self.habitGate            # stop-and-go gate
             self.stepFrequency = fg
             stride = walkSpeedMax / stepFrequencyMax
-            speedMS = fg * stride
+            speedMS = min(fg * stride * self.arousal, walkSpeedMax)
             legDiff = (self.d.legR - self.d.legL) / max(self.referenceRate, 1.0)
             self.turnBias += (legDiff - self.turnBias) * min(1.0, dt / self.turnBiasTau)
             # pivot not gated: stopped flies still reorient in place
@@ -603,6 +614,47 @@ check("testWalkBoutsAlternateWithStops",
       f"min stop {min(durs['stop']):.2f} s")
 check("testGroomingOccupiesAboutThirteenPercentOfActiveTime",
       0.08 < share_g < 0.20, f"groom share {share_g:.1%}")
+
+# 20 NEW arousal drifts on its own, slowly, and stays bounded
+# (Cohn et al. 2019 Cell; Nat Commun 2023 14:5420 — arousal-like signals
+# with time constants from <4 s to >20 s, tens-of-seconds vigour drift)
+w, b = make()
+b.reset((0.0, 0.02, 0.0))
+b.d = Drives(legL=60, legR=60)
+samples = []
+for _ in range(60 * 300):
+    b.update(1 / 60, w)
+    samples.append(b.arousal)
+lo, hi = min(samples), max(samples)
+mean = sum(samples) / len(samples)
+slow = all(abs(samples[i + 60] - samples[i]) < 0.35 for i in range(0, len(samples) - 60, 60))
+check("testArousalDriftsSpontaneouslyAndStaysBounded",
+      0.5 <= lo and hi <= 1.5 and hi - lo > 0.1 and abs(mean - 1.0) < 0.2 and slow,
+      f"range [{lo:.2f}, {hi:.2f}] mean {mean:.2f}")
+
+# 21 NEW arousal modulates the walk/stop statistics: walk bouts sampled at
+# high arousal must come out longer (the * arousal term). Zero leg drive on
+# purpose — the habit machine is drive-independent, and a walking fly would
+# bump into scenery, and bump-evoked grooming would truncate the bouts.
+w, b = make()
+b.reset((0.0, 0.02, 0.0))
+b.d = Drives()
+bout_arousal, bout_len = [], []
+cur, t0, a0 = b.habit, 0.0, b.arousal
+for i in range(60 * 300):
+    b.update(1 / 60, w)
+    if b.habit != cur:
+        if cur == "walk":
+            bout_arousal.append(a0)
+            bout_len.append(i / 60 - t0)
+        cur, t0, a0 = b.habit, i / 60, b.arousal
+ma = sum(bout_arousal) / len(bout_arousal)
+mb = sum(bout_len) / len(bout_len)
+cov = sum((a - ma) * (l - mb) for a, l in zip(bout_arousal, bout_len))
+var = sum((a - ma) ** 2 for a in bout_arousal)
+slope = cov / var if var > 0 else 0.0
+check("testArousalStretchesWalkBouts", slope > 0,
+      f"walk bout length vs arousal slope {slope:.2f} s per unit arousal")
 
 print()
 bad = [r for r in results if not r[1]]

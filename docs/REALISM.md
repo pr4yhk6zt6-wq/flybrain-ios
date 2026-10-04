@@ -124,6 +124,13 @@ of the loose objects.
 
 Being complete about it:
 
+- the **arousal tone**. Vigour drifts through states over tens of seconds
+  in real flies (Cohn et al. 2019, Cell 176:254; Nat Commun 2023, 14:5420 —
+  arousal-like time constants from <4 s to >20 s), and the walk/stop
+  statistics only close with such a state term (Demir et al. 2020). The
+  *existence* and the *timescale* are measured; the Ornstein-Uhlenbeck
+  process (tau 15 s, bounded [0.5, 1.5]) that stands in for the
+  neuromodulator soup is ours.
 - the **walk/stop/groom bout structure**. Real walking is bout-structured
   (walk/stop transitions are Poisson-like with λ₀ ≈ 0.29 s⁻¹, Demir et al.
   2020, eLife 5:e57524) and ~13% of waking time is grooming in 0.15–2 s

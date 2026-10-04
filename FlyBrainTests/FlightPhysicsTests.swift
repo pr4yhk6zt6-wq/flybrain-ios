@@ -426,4 +426,82 @@ final class WorldContainmentTests: XCTestCase {
         XCTAssertGreaterThan(share, 0.08, "fly almost never grooms")
         XCTAssertLessThan(share, 0.20, "fly grooms far more than measured")
     }
+
+    // MARK: - endogenous arousal
+
+    /// Vigour is not constant: spontaneous walking/flight drifts through
+    /// arousal states over tens of seconds (Cohn et al. 2019, Cell 176:254;
+    /// brain-wide imaging Nat Commun 2023, 14:5420 — arousal-like time
+    /// constants from <4 s to >20 s). The fly's own arousal must therefore
+    /// move on its own, stay bounded, and stay slow (an Ornstein-Uhlenbeck
+    /// process, not per-frame white noise).
+    func testArousalDriftsSpontaneouslyAndStaysBounded() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        var d = FlyDrives()
+        d.legL = 60; d.legR = 60
+        body.setDrives(d)
+
+        var samples: [Float] = []
+        samples.reserveCapacity(60 * 300)
+        for _ in 0..<(60 * 300) {
+            body.update(dt: 1.0 / 60, world: world)
+            samples.append(body.arousal)
+        }
+        let lo = samples.min() ?? 0
+        let hi = samples.max() ?? 0
+        let mean = samples.reduce(0, +) / Float(samples.count)
+        // Slow: a one-second lag difference must stay far smaller than the
+        // full drift range (white noise would jump the whole range per frame).
+        var maxOneSecJump: Float = 0
+        for i in 0..<(samples.count - 60) {
+            maxOneSecJump = max(maxOneSecJump, abs(samples[i + 60] - samples[i]))
+        }
+        XCTAssertGreaterThanOrEqual(lo, 0.5, "arousal left its physiological floor")
+        XCTAssertLessThanOrEqual(hi, 1.5, "arousal left its physiological ceiling")
+        XCTAssertGreaterThan(hi - lo, 0.1, "arousal never moved on its own")
+        XCTAssertEqual(mean, 1.0, accuracy: 0.25, "arousal drifts away from its mean")
+        XCTAssertLessThan(maxOneSecJump, 0.9, "arousal jumps like white noise")
+    }
+
+    /// Aroused walking must come out in longer bouts: the walk timer is
+    /// scaled by arousal, the state term that closes the measured walk/stop
+    /// statistics (Demir et al. 2020). Zero leg drive on purpose — the habit
+    /// machine is drive-independent, and a walking fly would bump scenery,
+    /// and bump-evoked grooming would truncate the bouts.
+    func testArousalStretchesWalkBouts() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        body.setDrives(FlyDrives())
+
+        var boutArousal: [Float] = []
+        var boutLength: [Float] = []
+        var current = body.habit
+        var start = 0
+        var startArousal = body.arousal
+        for i in 0..<(60 * 300) {
+            body.update(dt: 1.0 / 60, world: world)
+            if body.habit != current {
+                if current == .walk {
+                    boutArousal.append(startArousal)
+                    boutLength.append(Float(i - start) / 60)
+                }
+                current = body.habit
+                start = i
+                startArousal = body.arousal
+            }
+        }
+        XCTAssertGreaterThan(boutArousal.count, 20, "too few walk bouts to fit")
+        let ma = boutArousal.reduce(0, +) / Float(boutArousal.count)
+        let mb = boutLength.reduce(0, +) / Float(boutLength.count)
+        var cov: Float = 0, va: Float = 0
+        for (a, l) in zip(boutArousal, boutLength) {
+            cov += (a - ma) * (l - mb)
+            va += (a - ma) * (a - ma)
+        }
+        let slope = va > 0 ? cov / va : 0
+        XCTAssertGreaterThan(slope, 0, "arousal does not lengthen walk bouts")
+    }
 }

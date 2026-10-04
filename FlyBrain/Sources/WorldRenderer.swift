@@ -396,7 +396,8 @@ final class WorldRenderer {
 
     // MARK: - Drawing
 
-    private func encode(_ encoder: MTLRenderCommandEncoder, params p: WorldParams) {
+    private func encode(_ encoder: MTLRenderCommandEncoder, params p: WorldParams,
+                        drawFly: Bool = true) {
         var pp = p
         let buf = instanceBuffers[frameIndex]
 
@@ -430,7 +431,11 @@ final class WorldRenderer {
         // --- the fly -------------------------------------------------------
         // One draw per body part: each has its own index range and its own
         // matrix, so they cannot be batched, but 41 calls is nothing.
-        if let model = flyModel, flyInstanceStart < instances.count {
+        // The eye pass opts out: the eye cameras sit inside the head mesh,
+        // so including it put the animal's own head in its field of view —
+        // a real compound eye cannot see the head it grows on. FlyVision and
+        // CompoundRay likewise render the fly's view of the world only.
+        if drawFly, let model = flyModel, flyInstanceStart < instances.count {
             encoder.setVertexBuffer(model.vertexBuffer, offset: 0, index: 0)
             var slot = flyInstanceStart
             for part in model.parts where part.indexCount > 0 {
@@ -516,7 +521,7 @@ final class WorldRenderer {
 
         if let e = cb.makeRenderCommandEncoder(descriptor: rpd) {
             e.label = "flyEye"
-            encode(e, params: p)
+            encode(e, params: p, drawFly: false)
             e.endEncoding()
         }
     }
@@ -529,6 +534,10 @@ final class WorldRenderer {
         e.setTexture(dst, index: 1)
         var f = facetSize
         e.setBytes(&f, length: MemoryLayout<UInt32>.stride, index: 0)
+        // Equirectangular reprojection: tan(fov/2) and the full field in rad.
+        var reproj = SIMD2<Float>(tan(FlyMorphology.eyeFieldOfView * 0.5),
+                                  FlyMorphology.eyeFieldOfView)
+        e.setBytes(&reproj, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         let w = min(blur.threadExecutionWidth, 16)
         let h = max(1, min(blur.maxTotalThreadsPerThreadgroup / w, 16))
         e.dispatchThreadgroups(

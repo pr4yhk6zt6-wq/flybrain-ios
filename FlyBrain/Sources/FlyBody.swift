@@ -342,6 +342,20 @@ final class FlyBody {
     private var wasBumped = false
     private var rngState: UInt32 = 0x9E3779B9
 
+    /// Endogenous arousal tone. A real fly's vigour is not constant: the
+    /// propensity to move drifts on its own over tens of seconds (Cohn et al.
+    /// 2019, Cell 176:254 — spontaneous walking and flight in 3-D), brain-wide
+    /// imaging finds arousal-like signals with time constants from under 4 s
+    /// to over 20 s (Nat Commun 2023, 14:5420), and the walk/stop statistics
+    /// themselves only close when a slowly varying internal state modulates
+    /// the transition rates (Demir et al. 2020). The brain page's Synaptic
+    /// gain slider is the *experimenter's* knob; this is the animal's own
+    /// state, imposed as an Ornstein-Uhlenbeck process (tau 15 s, bounded to
+    /// [0.5, 1.5]) on the same deterministic rng, so tests stay exact.
+    private(set) var arousal: Float = 1.0
+    private let arousalTau: Float = 15.0
+    private let arousalSigma: Float = 0.16      // stationary sd ~0.44
+
     private func habitRandom() -> Float {
         rngState ^= rngState << 13
         rngState ^= rngState >> 17
@@ -352,9 +366,13 @@ final class FlyBody {
     private func enterHabit(_ h: Habit) {
         habit = h
         let u = max(habitRandom(), 0.02)
+        // Arousal stretches walk bouts and shortens stops — the slowly
+        // varying state term that closes the walk/stop statistics
+        // (Demir et al. 2020: transitions are modulated, not memoryless
+        // at a fixed rate).
         switch h {
-        case .walk:  habitTimer = min(8, -log(u) * 3.0)                  // ~3 s bouts
-        case .stop:  habitTimer = min(6, max(0.3, -log(u) / 0.29))       // lambda0 = 0.29/s
+        case .walk:  habitTimer = min(8, -log(u) * 3.0 * arousal)        // ~3 s bouts
+        case .stop:  habitTimer = min(6, max(0.3, -log(u) / (0.29 * arousal)))  // lambda0 = 0.29/s
         case .groom:
             habitTimer = min(4, max(0.4, -log(u) * 1.0))                 // 0.15-2 s+ bouts
             groomDuration = habitTimer
@@ -363,6 +381,13 @@ final class FlyBody {
     }
 
     private func updateHabit(dt: Float) {
+        // Ornstein-Uhlenbeck arousal: mean-reverting drift on the seconds-to-
+        // tens-of-seconds scale. Four uniform draws sum to a crude gaussian,
+        // keeping the port bit-compatible with the Python simcheck.
+        let g = (habitRandom() + habitRandom() + habitRandom() + habitRandom()) * 0.5 - 1
+        arousal += (1 - arousal) * min(1, dt / arousalTau) + arousalSigma * sqrt(dt) * g
+        arousal = min(1.5, max(0.5, arousal))
+
         let grounded = pose.airborne < 0.5
         if !grounded {
             wasAirborne = true
@@ -442,6 +467,7 @@ final class FlyBody {
         habitGate = 1
         wasAirborne = false
         wasBumped = false
+        arousal = 1.0
         rngState = 0x9E3779B9     // deterministic habit sequences after reset
     }
 
@@ -582,7 +608,8 @@ final class FlyBody {
             let fg = f * habitGate
             pose.stepFrequency = fg
             let stride = FlyMorphology.walkSpeedMax / FlyMorphology.stepFrequencyMax
-            let speedMS = fg * stride                              // m/s
+            // Arousal scales walking vigour, capped at the measured 30 mm/s.
+            let speedMS = min(fg * stride * arousal, FlyMorphology.walkSpeedMax)  // m/s
 
             // Turning on foot: the two tripods step at different rates, and the
             // body rotates about the slower side. Differential stride is the

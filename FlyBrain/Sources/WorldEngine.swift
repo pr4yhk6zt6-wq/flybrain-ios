@@ -87,6 +87,8 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
     @Published private(set) var yawRateDegPerSec: Float = 0
     /// Raw value of the ethology state: 0 walk, 1 stop, 2 groom.
     @Published private(set) var habit: Int = 0
+    /// Endogenous arousal tone (drifts on its own over tens of seconds).
+    @Published private(set) var arousal: Float = 1
     @Published var showBrainPiP = true
     @Published var showEyePiP = true
 
@@ -209,6 +211,7 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
                                 + body.pose.strokeAmplitudeR) * 0.5 * 180 / .pi
             yawRateDegPerSec = body.pose.yawRate * 180 / .pi
             habit = body.habit.rawValue
+            arousal = body.arousal
         }
     }
 

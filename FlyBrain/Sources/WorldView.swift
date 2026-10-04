@@ -281,6 +281,7 @@ struct WorldView: View {
                                       world.weightUN > 0 ? world.liftUN / world.weightUN : 0))
                 stat("STROKE", String(format: "%.0f°", world.strokeAmplitudeDeg))
                 stat("YAW", String(format: "%.0f°/s", world.yawRateDegPerSec))
+                stat("AROUSAL", String(format: "%.2f", world.arousal))
                 stat("ODOUR", String(format: "%.2f", world.odourStrength))
             }
             // The motor channels actually steering the animal.

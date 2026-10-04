@@ -127,23 +127,41 @@ fragment float4 skyFragment(SkyOut in [[stage_in]],
 
 kernel void ommatidiaBlur(texture2d<float, access::read>  src [[texture(0)]],
                           texture2d<float, access::write> dst [[texture(1)]],
-                          constant uint &facetSize [[buffer(0)]],
+                          constant uint   &facetSize [[buffer(0)]],
+                          constant float2 &reproj    [[buffer(1)]],   // tan(fov/2), fov in rad
                           uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
 
     uint f = max(facetSize, 1u);
-    uint2 cell = (gid / f) * f;
+    uint2 cell = (gid / f) * f + f / 2;
+
+    // The capture frustum is rectilinear: a direction theta off-axis lands at
+    // tan(theta)/tan(fov/2) of the half-width, which stretches the periphery
+    // ~2.7x at 140 degrees and reads as a warped lens. A compound eye samples
+    // the sphere uniformly, so each facet is re-projected here through the
+    // frustum from equirectangular angles — the mapping CompoundRay uses for
+    // compound-eye renderings — and the view comes out straight.
+    float2 o = (float2(cell) + 0.5) / float2(src.get_width(), src.get_height());
+    float lon = (o.x - 0.5) * reproj.y;
+    float lat = (0.5 - o.y) * reproj.y;
+    float2 s = float2(0.5 + 0.5 * tan(lon) / reproj.x,
+                      0.5 - 0.5 * tan(lat) / (cos(lon) * reproj.x));
+    s = clamp(s, float2(0.0), float2(1.0));
+
     uint2 limit = uint2(src.get_width() - 1, src.get_height() - 1);
+    int2 c0 = int2(s * float2(src.get_width(), src.get_height()));
+    int r = int(f / 2);
     float3 sum = float3(0.0);
     float  n = 0.0;
-    for (uint y = 0; y < f; ++y) {
-        for (uint x = 0; x < f; ++x) {
-            sum += src.read(min(cell + uint2(x, y), limit)).rgb;
+    for (int y = -r; y <= r; ++y) {
+        for (int x = -r; x <= r; ++x) {
+            int2 q = clamp(c0 + int2(x, y), int2(0, 0), int2(limit));
+            sum += src.read(uint2(q)).rgb;
             n += 1.0;
         }
     }
-    float3 avg = sum / max(n, 1.0);
+    float3 avg = sum / n;
 
     // Fly photoreceptors are green-dominant with a strong UV channel we do not
     // have; approximate with a green-weighted luminance.

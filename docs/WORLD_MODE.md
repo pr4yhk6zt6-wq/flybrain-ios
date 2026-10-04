@@ -19,10 +19,21 @@ buffer plus one readback:
    preview showed a one-eyed animal. Now the left texture feeds the left
    hemisphere's retina cells and the right texture the right's (the split is
    by the side flag in `neuronMeta`, done once at load in `Connectome`), and
-   the PiP shows both eyes side by side.
+   the PiP shows both eyes side by side. The eye pass renders the world
+   *without* the fly's own mesh (`encode(..., drawFly: false)`): the eye
+   cameras sit inside the head, so drawing the animal put its own head in
+   its field of view. A compound eye cannot see the head it grows on, and
+   neither FlyVision nor CompoundRay render the observer into the view.
 2. **Blur each eye to ommatidial acuity.** A real fly has ~700 facets per
    eye, about 1.5° apart, so a sharp render is far too good. `ommatidiaBlur`
    box-filters 6×6 pixel cells and collapses to a green-weighted luminance.
+   It also re-projects each facet from **equirectangular angles through the
+   capture frustum** — the mapping CompoundRay uses for compound-eye
+   renderings. The raw frustum is rectilinear, so at 140° a direction 60°
+   off-axis lands at tan(60°)/tan(70°) ≈ 0.63 of the half-width: the
+   periphery is stretched ~2.7× and the view reads as a warped lens. A
+   compound eye samples the sphere uniformly, so each facet is now sampled
+   at its true angle and the periphery comes out straight.
 3. **Step the brain** 4 × 1 ms with that texture as the photoreceptor input —
    the same `sampleRetina` kernel the phone camera used.
 4. **Read the motor group rates back.** `reduceGroupSpikes` counts, on the GPU,
@@ -88,6 +99,24 @@ shows the state (`WALK` / `STOP` / `GROOM`).
 
 The same determinism is what makes `testWalkBoutsAlternateWithStops` and
 `testGroomingOccupiesAboutThirteenPercentOfActiveTime` assertable in CI.
+
+### Arousal moves on its own
+
+Vigour is not a constant, and it is not the experimenter's Synaptic gain
+slider either — that one is the apparatus. The animal's own arousal state
+drifts endogenously: spontaneous walking and flight wander through
+high/low-vigour states over tens of seconds (Cohn et al. 2019, Cell 176:254),
+brain-wide imaging finds arousal-like signals with time constants from under
+4 s to over 20 s (Nat Commun 2023, 14:5420), and the walk/stop statistics
+only close when a slowly varying internal state modulates the transition
+rates (Demir et al. 2020). `FlyBody` therefore carries an
+Ornstein–Uhlenbeck `arousal` (mean 1, tau 15 s, bounded [0.5, 1.5]) on the
+same deterministic rng. It stretches walk bouts, shortens stops, and scales
+walking speed (capped at the measured 30 mm/s). The HUD shows it as
+`AROUSAL`, so you can watch the animal get restless and settle on its own.
+`testArousalDriftsSpontaneouslyAndStaysBounded` pins the drift, the bounds
+and the slowness; `testArousalStretchesWalkBouts` pins the sign of its
+effect on bout structure.
 
 ## The lift trim, and why its time constant is 10 s
 
