@@ -284,7 +284,7 @@ final class Connectome {
                   let bu = device.makeBuffer(bytes: uv,
                                              length: uv.count * MemoryLayout<UInt16>.stride,
                                              options: .storageModeShared) else {
-                throw ConnectomeError.bufferCreationFailed(li)
+                throw ConnectomeError.bufferCreationFailed(section: li)
             }
             bi.label = li
             bu.label = lu
