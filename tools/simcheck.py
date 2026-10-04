@@ -157,8 +157,18 @@ class FlyBody:
         self.isEating = False
         self.bumped = False
         self.proboscisExtension = 0.0
+        # habits (deterministic xorshift32, bit-identical to the Swift side)
+        self.habit = "walk"
+        self.habitTimer = 0.0
+        self.groomDuration = 0.0
+        self.groomElapsed = 0.0
+        self.groomPhase = 0.0
+        self.habitGate = 1.0
+        self.wasAirborne = False
+        self.wasBumped = False
+        self.rngState = 0x9E3779B9
 
-    referenceTau = 2.0
+    referenceTau = 10.0
     turnBiasTau = 1.5
     yawBiasTau = 1.5
 
@@ -175,6 +185,58 @@ class FlyBody:
         a = min(1.0, dt / self.referenceTau)
         self.referenceRate += (rate - self.referenceRate) * a
         self.referenceRate = max(5.0, min(400.0, self.referenceRate))
+
+    # ---- habits: xorshift32, bit-identical to FlyBody.habitRandom --------
+    def habit_random(self):
+        s = self.rngState
+        s ^= (s << 13) & 0xFFFFFFFF
+        s ^= s >> 17
+        s ^= (s << 5) & 0xFFFFFFFF
+        self.rngState = s & 0xFFFFFFFF
+        return (self.rngState >> 8) / float(1 << 24)
+
+    def enter_habit(self, h):
+        self.habit = h
+        u = max(self.habit_random(), 0.02)
+        if h == "walk":
+            self.habitTimer = min(8.0, -math.log(u) * 3.0)
+        elif h == "stop":
+            self.habitTimer = min(6.0, max(0.3, -math.log(u) / 0.29))
+        else:
+            self.habitTimer = min(4.0, max(0.4, -math.log(u) * 1.0))
+            self.groomDuration = self.habitTimer
+            self.groomElapsed = 0.0
+
+    def update_habit(self, dt):
+        if self.airborne >= 0.5:
+            self.wasAirborne = True
+            self.habit = "walk"
+            self.habitGate = 1.0
+            return
+        if self.wasAirborne:
+            self.wasAirborne = False
+            if self.habit_random() < 0.5:
+                self.enter_habit("groom")
+        if self.bumped and not self.wasBumped and self.habit != "groom" \
+                and self.habit_random() < 0.4:
+            self.enter_habit("groom")
+        self.wasBumped = self.bumped
+        self.habitTimer -= dt
+        if self.isEating:
+            if self.habit != "stop":
+                self.enter_habit("stop")
+            self.habitTimer = max(self.habitTimer, 0.2)
+        elif self.habitTimer <= 0.0:
+            if self.habit == "walk":
+                self.enter_habit("groom" if self.habit_random() < 0.5 else "stop")
+            elif self.habit == "stop":
+                self.enter_habit("groom" if self.habit_random() < 0.45 else "walk")
+            else:
+                self.enter_habit("walk")
+        self.habitGate = 1.0 if self.habit == "walk" else 0.0
+        if self.habit == "groom":
+            self.groomElapsed += dt
+            self.groomPhase += dt * 2 * math.pi * 6.5
 
     def update(self, dt, world):
         dt = clamp(dt, 1.0 / 480.0, 1.0 / 20.0)
@@ -238,18 +300,20 @@ class FlyBody:
             legMean = (self.d.legL + self.d.legR) * 0.5
             f = min(stepFrequencyMax,
                     legMean / self.referenceRate * stepFrequencyMax * 2.2)
-            self.stepFrequency = f
+            fg = f * self.habitGate            # stop-and-go gate
+            self.stepFrequency = fg
             stride = walkSpeedMax / stepFrequencyMax
-            speedMS = f * stride
+            speedMS = fg * stride
             legDiff = (self.d.legR - self.d.legL) / max(self.referenceRate, 1.0)
             self.turnBias += (legDiff - self.turnBias) * min(1.0, dt / self.turnBiasTau)
+            # pivot not gated: stopped flies still reorient in place
             self.yawRate = -(legDiff - self.turnBias) * f * 2.0
             self.heading += self.yawRate * dt
             fwd = [math.sin(self.heading), 0.0, -math.cos(self.heading)]
             v = [fwd[i] * speedMS * METRES_TO_WORLD for i in range(3)]
             v[1] = min(self.velocity[1], 0.0) - gravity * METRES_TO_WORLD * dt * 0.02
             self.velocity = v
-            self.gaitPhase += dt * f * 2 * math.pi
+            self.gaitPhase += dt * fg * 2 * math.pi
             self.roll += (0.0 - self.roll) * min(1.0, dt * 8)
             self.pitch += (0.0 - self.pitch) * min(1.0, dt * 8)
 
@@ -264,6 +328,8 @@ class FlyBody:
         self.position = [self.position[i] + self.velocity[i] * dt for i in range(3)]
         self.resolve_collisions(dt, world)
         self.handle_feeding(dt, world)
+        # last, so the habit machine sees this frame's bump/feeding flags
+        self.update_habit(dt)
         self.energy = max(0.0, self.energy - dt * 0.012)
 
     def resolve_collisions(self, dt, world):
@@ -488,6 +554,55 @@ for _ in range(30):
 dps = abs(b.yawRate) * 180 / math.pi
 check("testFlightSteeringStillResponds", dps > 200,
       f"yaw {dps:.0f} deg/s right after the change")
+
+# 18 NEW a sustained climb command must actually raise the fly
+# (the user's video: the wings beat harder and harder but the eye view
+# never rose; a 2 s trim renormalised the command before it could lift)
+w, b = make()
+b.reset((0.0, 0.35, 0.0))
+b.d = Drives(wingPowerL=240, wingPowerR=240)
+for _ in range(60 * 3):
+    b.update(1 / 60, w)
+y3 = b.position[1]
+for _ in range(60 * 2):
+    b.update(1 / 60, w)
+check("testSustainedClimbCommandRaisesTheFly",
+      y3 > 10 and b.position[1] > y3 + 10,
+      f"y={y3:.1f} cm at 3 s -> {b.position[1]:.1f} cm at 5 s")
+
+# 18b ...and the equilibrium reflex still re-trims afterwards (the reason
+# the trim exists at all: without it the fly pinned 178 deg and glued to
+# the ceiling forever)
+for _ in range(60 * 45):
+    b.update(1 / 60, w)
+ratio = b.liftUN * 1e-6 / (mass * gravity)
+check("testLiftRetrimsAfterASustainedClimb", abs(ratio - 1) < 0.05,
+      f"lift/weight = {ratio:.3f} after 50 s of constant 240 Hz drive")
+
+# 19 NEW the ethology layer: a walking fly must stop and groom sometimes,
+# in measured proportions (walk bouts ~3 s, stops >= 0.3 s ~lambda0 0.29/s,
+# grooming ~13% of active time), deterministically.
+w, b = make()
+b.reset((0.0, 0.02, 0.0))
+b.d = Drives(legL=60, legR=60)
+frames = {"walk": 0, "stop": 0, "groom": 0}
+durs = {"walk": [], "stop": [], "groom": []}
+cur, t0 = b.habit, 0.0
+for i in range(60 * 300):
+    b.update(1 / 60, w)
+    frames[b.habit] += 1
+    if b.habit != cur:
+        durs[cur].append(i / 60 - t0)
+        cur, t0 = b.habit, i / 60
+tot = sum(frames.values())
+share_g = frames["groom"] / tot
+check("testWalkBoutsAlternateWithStops",
+      frames["stop"] > 0 and 1.5 < sum(durs["walk"]) / max(len(durs["walk"]), 1) < 5.0
+      and min(durs["stop"]) >= 0.3,
+      f"walk mean {sum(durs['walk'])/len(durs['walk']):.2f} s, "
+      f"min stop {min(durs['stop']):.2f} s")
+check("testGroomingOccupiesAboutThirteenPercentOfActiveTime",
+      0.08 < share_g < 0.20, f"groom share {share_g:.1%}")
 
 print()
 bad = [r for r in results if not r[1]]

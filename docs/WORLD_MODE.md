@@ -41,6 +41,10 @@ buffer plus one readback:
 | Yaw in flight | `motor_wing_steering_right` − `_left`, minus a slowly adapted baseline | 12 + 12 |
 | Walking speed | mean of front/middle/hind `motor_*_leg_*` | 391 |
 | Turning on foot | right-side leg rate − left-side, minus a slowly adapted baseline | — |
+| Walk/stop/groom bouts | not driven — imposed ethology layer (`FlyBody.Habit`) | — |
+| Escape jump | `motor_jump_escape` (the giant fibre target) | 2 |
+| Head turn | `motor_neck` | 49 |
+| Feeding | `motor_proboscis` | 35 |
 
 The adapted baseline (`turnBias`, tau 1.5 s) matters: the two leg populations
 never fire perfectly evenly, and raw differential drive turned the animal in
@@ -57,9 +61,56 @@ carried fog ≈ 1, interpolating the whole ground into the sky colour — the
 frame read as "the map vanished". `tools/softrender.py` reproduces the GPU
 pass (near-plane clip, no winding cull, perspective-correct depth) and is the
 fastest way to see what the world pass will look like.
-| Escape jump | `motor_jump_escape` (the giant fibre target) | 2 |
-| Head turn | `motor_neck` | 49 |
-| Feeding | `motor_proboscis` | 35 |
+
+## The habits layer (imposed ethology)
+
+A real fly does not walk continuously and it is not always locomoting:
+
+| Behaviour | Measured value | Source |
+|---|---|---|
+| Walk/stop transitions | Poisson-like; baseline walk-initiation λ₀ ≈ 0.29 s⁻¹ | Demir, Kadakia, Anderson, Clark & Carey 2020, eLife 5:e57524 |
+| Stop durations | ~exponential, floor at 300 ms | Demir et al. 2020 |
+| Grooming share of waking time | ~13% | Lazopulo & Syed 2018, eLife 7:e34497 |
+| Grooming bout structure | 0.15–2 s bouts, ~150 ms leg-sweep cycles, anterior→posterior | Seeds et al. 2014, eLife 3:e02951; Ray et al. 2019, PLOS Comput Biol 15:e1007105 |
+| Grooming triggers | dusting / tactile bump strongly evokes it | Seeds et al. 2014 |
+
+Like the tripod gait, a 1 ms LIF connectome does not spontaneously emit this
+bout structure, so `FlyBody` imposes it: a three-state machine
+(`walk` / `stop` / `groom`) driven by a **deterministic** xorshift32 rng
+(reseeded on reset, so the physics tests reproduce exactly). Exponentially
+distributed bout lengths — walk ~3 s, stops at the measured λ₀, grooming
+~1 s — with landing and bumping evoking grooming, the 50% walk-exit split
+tuned so grooming lands at the measured ~13% of active time. While stopped or
+grooming, step frequency is gated to zero (the fly stands still); pivoting in
+place is *not* gated, because stopped flies still reorient. The grooming pose
+rubbing head then abdomen is posed, like the walking joint angles. The HUD
+shows the state (`WALK` / `STOP` / `GROOM`).
+
+The same determinism is what makes `testWalkBoutsAlternateWithStops` and
+`testGroomingOccupiesAboutThirteenPercentOfActiveTime` assertable in CI.
+
+## The lift trim, and why its time constant is 10 s
+
+Lift is held against weight by an equilibrium reflex: a reference wing rate
+(`referenceRate`) chases the commanded rate, and stroke amplitude is read off
+the *ratio*. The time constant of that chase is the whole story:
+
+- **No trim** (the original bug): a saturating motor population pins stroke at
+  178°, lift stays above weight forever, and the fly glues itself to the
+  ceiling.
+- **tau = 2 s** (the second bug, from the user's video): the trim chased the
+  fly's *own* climb command so tightly that lift was renormalised within a
+  couple of seconds of any sustained power change. The wings visibly beat
+  harder while the eye view never rose — the animal could hover at any height
+  but could not climb to a new one.
+- **tau = 10 s** (current): a seconds-long climb command raises the fly
+  (240 Hz drive: 0 → 150 cm in ~5 s), while a stuck saturation is still
+  re-trimmed on the ~10 s scale, so the ceiling-glue bug cannot return.
+  `testSustainedClimbCommandRaisesTheFly` and
+  `testLiftRetrimsAfterASustainedClimb` pin both halves of that behaviour.
+
+Nobody has measured the real trim's time constant; 10 s is the value that
+makes both failure modes impossible, and it is labelled as modelled.
 
 Sensory, the other direction:
 

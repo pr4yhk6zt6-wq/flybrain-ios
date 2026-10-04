@@ -85,6 +85,8 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
     @Published private(set) var weightUN: Float = 0
     @Published private(set) var strokeAmplitudeDeg: Float = 0
     @Published private(set) var yawRateDegPerSec: Float = 0
+    /// Raw value of the ethology state: 0 walk, 1 stop, 2 groom.
+    @Published private(set) var habit: Int = 0
     @Published var showBrainPiP = true
     @Published var showEyePiP = true
 
@@ -206,6 +208,7 @@ final class WorldEngine: NSObject, ObservableObject, MTKViewDelegate {
             strokeAmplitudeDeg = (body.pose.strokeAmplitudeL
                                 + body.pose.strokeAmplitudeR) * 0.5 * 180 / .pi
             yawRateDegPerSec = body.pose.yawRate * 180 / .pi
+            habit = body.habit.rawValue
         }
     }
 

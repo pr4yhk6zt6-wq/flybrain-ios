@@ -124,6 +124,15 @@ of the loose objects.
 
 Being complete about it:
 
+- the **walk/stop/groom bout structure**. Real walking is bout-structured
+  (walk/stop transitions are Poisson-like with λ₀ ≈ 0.29 s⁻¹, Demir et al.
+  2020, eLife 5:e57524) and ~13% of waking time is grooming in 0.15–2 s
+  bouts sweeping anterior→posterior (Lazopulo & Syed 2018, eLife 7:e34497;
+  Seeds et al. 2014, eLife 3:e02951; Ray et al. 2019, PLOS Comput Biol).
+  A 1 ms LIF connectome does not spontaneously emit that structure, so
+  `FlyBody` imposes it with a deterministic state machine tuned to those
+  measurements — same status as the imposed tripod oscillator. The leg
+  *angles* during the grooming rub are posed.
 - the **leg joint angles** during walking. The gait timing is measured (duty
   factor 0.55, tripod phase), and the joint limits are anatomical, but the
   specific angle each of the 24 leg joints takes through the cycle is posed,

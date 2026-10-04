@@ -272,7 +272,9 @@ struct WorldView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 11) {
                 stat("FPS", String(format: "%.0f", world.fps))
-                stat(world.pose.airborne > 0.5 ? "FLIGHT" : "WALK",
+                stat(world.pose.airborne > 0.5 ? "FLIGHT"
+                         : (world.habit == 2 ? "GROOM"
+                         : world.habit == 1 ? "STOP" : "WALK"),
                      String(format: "%.0f mm/s", world.speed * 10))
                 // Measured quasi-steady lift against measured body weight.
                 stat("LIFT/W", String(format: "%.2f",

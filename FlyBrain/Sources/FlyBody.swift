@@ -282,10 +282,16 @@ final class FlyBody {
     /// steering muscles (Sherman & Dickinson 2003; Dickinson 1999), and those
     /// pathways are present in BANC. What we cannot do is calibrate that loop's
     /// gain, because nobody has measured it — so the loop is closed here, at
-    /// the muscle, with a 2 s time constant instead. Without it the fly sat at
-    /// 178 degrees of stroke amplitude forever and flew into the ceiling.
+    /// the muscle, instead.
+    ///
+    /// The time constant is a behaviour choice, and 2 s turned out wrong: the
+    /// trim chased the fly's own climb command so tightly that lift stayed
+    /// glued to weight — on the phone the animal beat its wings harder and
+    /// harder yet its eye view never rose. At 10 s a sustained (seconds-long)
+    /// power change still moves the fly up or down, while a stuck saturation
+    /// still re-trims instead of holding 178 degrees forever.
     private(set) var referenceRate: Float = 120.0
-    private let referenceTau: Float = 2.0       // s
+    private let referenceTau: Float = 10.0      // s
 
     /// Adapted baseline of the left/right leg-rate asymmetry while walking.
     ///
@@ -307,6 +313,93 @@ final class FlyBody {
     /// straightening a real fly gets) leaves genuine saccades intact.
     private(set) var yawBias: Float = 0
     private let yawBiasTau: Float = 1.5
+
+    // MARK: - Habits (measured ethology, imposed at the body) ---------------
+    //
+    // A real fly does not walk continuously: walking is organised in bouts
+    // separated by stops — walk/stop transitions behave like Poisson events
+    // with a baseline walk-initiation rate of ~0.29/s (Demir, Kadakia,
+    // Anderson, Clark & Carey 2020, eLife 5:e57524) — and ~13% of waking time
+    // is grooming in bouts of a few tenths of a second to a couple of seconds,
+    // sweeping anterior-to-posterior (Seeds et al. 2014, eLife 3:e02951;
+    // Lazopulo & Syed 2018, eLife 7:e34497; leg-sweep cycles ~150 ms, Ray et
+    // al. 2019, PLOS Comput Biol 15:e1007105). Dusting or a bump triggers
+    // grooming strongly. A 1 ms LIF connectome does not spontaneously emit
+    // that bout structure, so — like the tripod gait oscillator — it is
+    // imposed here and labelled as modelled. The rng is deterministic so the
+    // physics tests reproduce exactly.
+
+    enum Habit: Int { case walk = 0, stop, groom }
+    private(set) var habit: Habit = .walk
+    private var habitTimer: Float = 0
+    private var groomDuration: Float = 0
+    private var groomElapsed: Float = 0
+    private(set) var groomPhase: Float = 0
+    /// 1 when the legs may carry the body, 0 during stops and grooming (and
+    /// while feeding — a drinking fly stands still).
+    private(set) var habitGate: Float = 1
+    private var wasAirborne = false
+    private var wasBumped = false
+    private var rngState: UInt32 = 0x9E3779B9
+
+    private func habitRandom() -> Float {
+        rngState ^= rngState << 13
+        rngState ^= rngState >> 17
+        rngState ^= rngState << 5
+        return Float(rngState >> 8) / Float(1 << 24)
+    }
+
+    private func enterHabit(_ h: Habit) {
+        habit = h
+        let u = max(habitRandom(), 0.02)
+        switch h {
+        case .walk:  habitTimer = min(8, -log(u) * 3.0)                  // ~3 s bouts
+        case .stop:  habitTimer = min(6, max(0.3, -log(u) / 0.29))       // lambda0 = 0.29/s
+        case .groom:
+            habitTimer = min(4, max(0.4, -log(u) * 1.0))                 // 0.15-2 s+ bouts
+            groomDuration = habitTimer
+            groomElapsed = 0
+        }
+    }
+
+    private func updateHabit(dt: Float) {
+        let grounded = pose.airborne < 0.5
+        if !grounded {
+            wasAirborne = true
+            habit = .walk
+            habitGate = 1
+            return
+        }
+        if wasAirborne {
+            // Landing kicks up dust: a strong grooming urge, the virtual
+            // version of the dusting assays.
+            wasAirborne = false
+            if habitRandom() < 0.5 { enterHabit(.groom) }
+        }
+        if bumped, !wasBumped, habit != .groom, habitRandom() < 0.4 { enterHabit(.groom) }
+        wasBumped = bumped
+
+        habitTimer -= dt
+        if isEating {
+            if habit != .stop { enterHabit(.stop) }
+            habitTimer = max(habitTimer, 0.2)
+        } else if habitTimer <= 0 {
+            switch habit {
+            // Probabilities tuned so grooming lands at ~13% of active time,
+            // the share Lazopulo & Syed 2018 measured in undisturbed flies.
+            case .walk: enterHabit(habitRandom() < 0.5 ? .groom : .stop)
+            case .stop:
+                if habitRandom() < 0.45 { enterHabit(.groom) }
+                else { enterHabit(.walk) }
+            case .groom: enterHabit(.walk)
+            }
+        }
+        habitGate = habit == .walk ? 1 : 0
+        if habit == .groom {
+            groomElapsed += dt
+            groomPhase += dt * 2 * .pi * 6.5        // ~150 ms per leg sweep
+        }
+    }
 
     private func strokeAmplitude(from rateHz: Float) -> Float {
         let hover = FlyMorphology.strokeAmplitudeHover
@@ -341,6 +434,15 @@ final class FlyBody {
         hurt = 0
         turnBias = 0
         yawBias = 0
+        habit = .walk
+        habitTimer = 0
+        groomDuration = 0
+        groomElapsed = 0
+        groomPhase = 0
+        habitGate = 1
+        wasAirborne = false
+        wasBumped = false
+        rngState = 0x9E3779B9     // deterministic habit sequences after reset
     }
 
     func readMotorDrives(from sim: SimulationEngine) {
@@ -475,9 +577,12 @@ final class FlyBody {
             let legMean = (drives.legL + drives.legR) * 0.5
             let f = min(FlyMorphology.stepFrequencyMax,
                         legMean / referenceRate * FlyMorphology.stepFrequencyMax * 2.2)
-            pose.stepFrequency = f
+            // Stop-and-go: the habit gate zeroes step frequency while the fly
+            // stands still or grooms, exactly like a real walking bout ending.
+            let fg = f * habitGate
+            pose.stepFrequency = fg
             let stride = FlyMorphology.walkSpeedMax / FlyMorphology.stepFrequencyMax
-            let speedMS = f * stride                               // m/s
+            let speedMS = fg * stride                              // m/s
 
             // Turning on foot: the two tripods step at different rates, and the
             // body rotates about the slower side. Differential stride is the
@@ -485,6 +590,9 @@ final class FlyBody {
             // constant left/right bias from circling the animal forever.
             let legDiff = (drives.legR - drives.legL) / max(referenceRate, 1)
             turnBias += (legDiff - turnBias) * min(1, dt / turnBiasTau)
+            // The pivot is NOT gated by the habit: stopped flies still perform
+            // reorientation turns in place (measured behaviour), they just do
+            // not advance.
             pose.yawRate = -(legDiff - turnBias) * f * 2.0
             pose.heading += pose.yawRate * dt
 
@@ -493,7 +601,7 @@ final class FlyBody {
             v.y = min(pose.velocity.y, 0) - FlyMorphology.gravity * metresToWorld * dt * 0.02
             pose.velocity = v
 
-            pose.gaitPhase += dt * f * 2 * .pi
+            pose.gaitPhase += dt * fg * 2 * .pi
             pose.roll += (0 - pose.roll) * min(1, dt * 8)
             pose.pitch += (0 - pose.pitch) * min(1, dt * 8)
         }
@@ -511,6 +619,9 @@ final class FlyBody {
         pose.position += pose.velocity * dt
         resolveCollisions(dt: dt, world: world)
         handleFeeding(dt: dt, world: world)
+        // Runs last so the habit machine sees this frame's bump and feeding
+        // flags; the gate it sets takes effect on next frame's walking.
+        updateHabit(dt: dt)
 
         // Head and abdomen follow their own motor groups.
         pose.headYaw += (max(-0.35, min(0.35, (drives.neck - 20) / 60.0)) - pose.headYaw)
@@ -646,6 +757,35 @@ final class FlyBody {
         set("head_abduct", pose.headYaw)
         set("head", pose.headPitch)
         set("head_twist", pose.roll * 0.3)
+
+        // --- grooming (Seeds et al. 2014): anterior-to-posterior leg sweeps --
+        // The first half of a bout rubs the head and eyes with the front legs,
+        // the second half sweeps the abdomen with the hind legs; each sweep
+        // cycle runs ~150 ms (Ray et al. 2019). Placed last so it overrides
+        // the walking gait and the default head posture above.
+        if habit == .groom, pose.airborne < 0.5 {
+            let sweep = sin(groomPhase)
+            let anterior = groomElapsed < groomDuration * 0.5
+            for side in ["left", "right"] {
+                if anterior {
+                    set("coxa_T1_\(side)",   0.55 + sweep * 0.25)
+                    set("femur_T1_\(side)", -0.10 + sweep * 0.40)
+                    set("tibia_T1_\(side)",  1.00 - sweep * 0.35)
+                    set("coxa_T3_\(side)",  -0.25)
+                    set("femur_T3_\(side)", -0.60)
+                    set("tibia_T3_\(side)",  0.50)
+                } else {
+                    set("coxa_T1_\(side)",   0.15)
+                    set("femur_T1_\(side)", -0.55)
+                    set("tibia_T1_\(side)",  0.35)
+                    set("coxa_T3_\(side)",  -0.45 + sweep * 0.30)
+                    set("femur_T3_\(side)",  0.30 + sweep * 0.35)
+                    set("tibia_T3_\(side)", -0.40 - sweep * 0.30)
+                }
+            }
+            set("head_twist", sweep * 0.22)
+            set("head_abduct", anterior ? sweep * 0.15 : pose.headYaw)
+        }
 
         // --- proboscis, driven by the 35 proboscis motor neurons -------------
         set("rostrum", -1.2 + 1.3 * pose.proboscisExtension)

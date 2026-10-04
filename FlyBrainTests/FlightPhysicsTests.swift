@@ -320,4 +320,107 @@ final class WorldContainmentTests: XCTestCase {
         let far  = world.odour(at: SIMD3<Float>(-5, 0.2, 0), heading: 0).strength
         XCTAssertGreaterThan(near, far, "odour does not fall off with distance")
     }
+
+    // MARK: - the climb bug (user video: wings beat harder, view never rose)
+
+    /// A sustained above-hover wing command must raise the animal within
+    /// seconds. The 2 s equilibrium trim used to renormalise the command
+    /// before it could lift: the fly flapped harder and harder while the
+    /// eye view stayed put. With the 10 s trim a seconds-long climb works.
+    func testSustainedClimbCommandRaisesTheFly() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.35, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 240; d.wingPowerR = 240
+        body.setDrives(d)
+        for _ in 0..<(60 * 3) { body.update(dt: 1.0 / 60, world: world) }
+        let y3 = body.pose.position.y
+        for _ in 0..<(60 * 2) { body.update(dt: 1.0 / 60, world: world) }
+        XCTAssertGreaterThan(y3, 10, "no climb in the first 3 s of a climb command")
+        XCTAssertGreaterThan(body.pose.position.y, y3 + 10,
+                             "climb command stalled: the trim ate it")
+    }
+
+    /// ...but the equilibrium reflex must still exist: after the trim has
+    /// caught up, lift returns to one body weight. Removing the trim
+    /// altogether is the other historical bug (178 deg stroke, ceiling glue).
+    func testLiftRetrimsAfterASustainedClimb() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.35, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 240; d.wingPowerR = 240
+        body.setDrives(d)
+        for _ in 0..<(60 * 50) { body.update(dt: 1.0 / 60, world: world) }
+        let lift = FlyMorphology.flightForce(strokeAmplitude: body.pose.strokeAmplitudeL)
+                 + FlyMorphology.flightForce(strokeAmplitude: body.pose.strokeAmplitudeR)
+        let ratio = lift / (FlyMorphology.mass * FlyMorphology.gravity)
+        XCTAssertEqual(ratio, 1.0, accuracy: 0.05,
+                       "trim never re-caught the climb command")
+    }
+
+    // MARK: - ethology: the habits layer
+
+    /// Real walking is bout-structured: walk/stop transitions behave like
+    /// Poisson events (Demir et al. 2020, eLife 5:e57524: baseline walk
+    /// initiation ~0.29/s, stops at least 300 ms). A fly that walked without
+    /// ever stopping would not be a fly.
+    func testWalkBoutsAlternateWithStops() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        var d = FlyDrives()
+        d.legL = 60; d.legR = 60
+        body.setDrives(d)
+
+        var walkDurations: [Float] = []
+        var stopDurations: [Float] = []
+        var current = body.habit
+        var start: Float = 0
+        for i in 0..<(60 * 300) {
+            body.update(dt: 1.0 / 60, world: world)
+            if body.habit != current {
+                let t = Float(i) / 60
+                switch current {
+                case .walk:  walkDurations.append(t - start)
+                case .stop:  stopDurations.append(t - start)
+                case .groom: break
+                }
+                current = body.habit
+                start = t
+            }
+        }
+        XCTAssertFalse(walkDurations.isEmpty, "the fly never walked")
+        XCTAssertFalse(stopDurations.isEmpty, "the fly never stopped")
+        let meanWalk = walkDurations.reduce(0, +) / Float(walkDurations.count)
+        XCTAssertGreaterThan(meanWalk, 1.5, "walk bouts shorter than measured")
+        XCTAssertLessThan(meanWalk, 5.0, "walk bouts longer than measured")
+        XCTAssertGreaterThanOrEqual(stopDurations.min() ?? 0, 0.3,
+                                    "stop shorter than the 300 ms floor")
+    }
+
+    /// Grooming occupies ~13% of waking time (Lazopulo & Syed 2018, eLife
+    /// 7:e34497), in bouts of a few tenths of a second to a couple of
+    /// seconds sweeping anterior-to-posterior (Seeds et al. 2014; Ray et al.
+    /// 2019). The layer is deterministic, so this share is exact.
+    func testGroomingOccupiesAboutThirteenPercentOfActiveTime() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.02, 0))
+        var d = FlyDrives()
+        d.legL = 60; d.legR = 60
+        body.setDrives(d)
+
+        var groomFrames = 0
+        var totalFrames = 0
+        for _ in 0..<(60 * 300) {
+            body.update(dt: 1.0 / 60, world: world)
+            totalFrames += 1
+            if body.habit == .groom { groomFrames += 1 }
+        }
+        let share = Float(groomFrames) / Float(totalFrames)
+        XCTAssertGreaterThan(share, 0.08, "fly almost never grooms")
+        XCTAssertLessThan(share, 0.20, "fly grooms far more than measured")
+    }
 }
