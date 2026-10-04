@@ -9,3 +9,6 @@ DerivedData/
 *.xcarchive
 .cache/
 .local/
+FlyBrain.xcodeproj/
+FlyBrain/Resources/flybrain.bin
+FlyBrain/Resources/flybrain_meta.json

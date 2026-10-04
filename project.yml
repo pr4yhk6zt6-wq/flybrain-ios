@@ -1,0 +1,59 @@
+name: FlyBrain
+options:
+  bundleIdPrefix: ai.flywire.demo
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Unsigned build: the .ipa is meant for sideloading, which re-signs anyway.
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_IDENTITY: ""
+    MTL_FAST_MATH: YES
+
+targets:
+  FlyBrain:
+    type: application
+    platform: iOS
+    sources:
+      - path: FlyBrain/Sources
+      - path: FlyBrain/Shaders
+      - path: FlyBrain/Resources
+        buildPhase: resources
+        optional: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.flywire.demo.flybrain
+        PRODUCT_NAME: FlyBrain
+        INFOPLIST_FILE: FlyBrain/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Metal needs a real GPU feature set; the brain also needs the memory.
+        SUPPORTS_MACCATALYST: NO
+        DEVELOPMENT_TEAM: ""
+    info:
+      path: FlyBrain/Info.plist
+      properties:
+        CFBundleDisplayName: FlyBrain
+        CFBundleShortVersionString: "0.3"
+        CFBundleVersion: "3"
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UIStatusBarHidden: true
+        UIUserInterfaceStyle: Dark
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: >-
+          FlyBrain uses the rear camera as the fruit fly's eyes. Each frame is
+          sampled directly into 10,647 simulated photoreceptor neurons. Video
+          never leaves the device and is never recorded.
+        NSMicrophoneUsageDescription: >-
+          Optionally used as the fly's auditory input, driving the antennal
+          mechanosensory neurons. Audio never leaves the device.

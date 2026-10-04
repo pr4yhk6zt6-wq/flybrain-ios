@@ -1,0 +1,114 @@
+name: Build FlyBrain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (macOS, Xcode)
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache the FlyWire download
+        id: flywire-cache
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: flywire-fafb-783-v1
+
+      - name: Download FlyWire FAFB v783
+        if: steps.flywire-cache.outputs.cache-hit != 'true'
+        run: bash tools/download_flywire.sh
+
+      - name: Build the connectome binary
+        run: |
+          python3 -m pip install --quiet numpy pandas pyarrow
+          python3 tools/build_connectome.py --out build/flybrain.bin
+          mkdir -p FlyBrain/Resources
+          cp build/flybrain.bin build/flybrain_meta.json FlyBrain/Resources/
+          ls -lh FlyBrain/Resources/
+
+      - name: Validate the connectome
+        run: python3 tools/verify_and_simulate.py --ms 120 --gain 6.0 --drive 1.5
+
+      - name: Generate the Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FlyBrain.xcodeproj \
+            -scheme FlyBrain \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | xcpretty || \
+          xcodebuild \
+            -project FlyBrain.xcodeproj \
+            -scheme FlyBrain \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build unsigned for device
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FlyBrain.xcodeproj \
+            -scheme FlyBrain \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package the .ipa
+        run: |
+          APP="build/dd/Build/Products/Release-iphoneos/FlyBrain.app"
+          test -d "$APP" || { echo "no .app at $APP"; find build/dd -name '*.app'; exit 1; }
+          rm -rf build/Payload && mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          cd build && zip -qry FlyBrain-unsigned.ipa Payload
+          ls -lh FlyBrain-unsigned.ipa
+          unzip -l FlyBrain-unsigned.ipa | tail -5
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlyBrain-unsigned-ipa
+          path: build/FlyBrain-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload the connectome binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flybrain-connectome
+          path: |
+            build/flybrain.bin
+            build/flybrain_meta.json
