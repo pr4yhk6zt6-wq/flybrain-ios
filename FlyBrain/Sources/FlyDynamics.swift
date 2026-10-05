@@ -1021,7 +1021,15 @@ final class FlyDynamics {
                 }
                 let Si = S[i]
                 let Ui = IA[i] * Si
-                let cii = crm(v[i]) * (Si * qd[j])
+                // `v x (S qd)`, with the joint's own contribution worked out
+                // first. As one expression — `crm(v[i]) * (Si * qd[j])` — the
+                // type checker has to solve a `SMat6 * (SVec6 * Double)`
+                // against every `*` declared in this file and gives up on it
+                // ("binary operator '*' cannot be applied to two 'SMat6'
+                // operands"), which is a parsing complaint and not a maths
+                // one. The product is identical; only the nesting is gone.
+                let Siqd = Si * qd[j]
+                let cii = crm(v[i]) * Siqd
                 ci[i] = cii
                 let Di = dot(Si, Ui) + armature[j] + damping[j] * dt
                 let Ia = IA[i] - (outer(Ui) * (-1 / Di))
@@ -1031,7 +1039,10 @@ final class FlyDynamics {
                 D[i] = Di
                 u[i] = ui
                 IA[par] += Xi.transpose * Ia * Xi
-                pA[par] += Xi.transpose * (pAe + U[i] * (ui / Di))
+                // same reason as `Siqd` above: the scaled joint vector comes
+                // out of the nested expression before it is added in
+                let correction = U[i] * (ui / Di)
+                pA[par] += Xi.transpose * (pAe + correction)
             }
         }
 
