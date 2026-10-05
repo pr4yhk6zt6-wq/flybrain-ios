@@ -131,6 +131,13 @@ final class WorldRig {
 // MARK: - Playback
 
 /// Owns the world and the clock that advances the animal in it.
+///
+/// Main-actor, because that is what it is: a `CADisplayLink` ticks it on the
+/// main thread, it publishes to SwiftUI, and since step 6 it also talks to
+/// `BrainEngine`, which is itself main-actor. The compiler is right to insist;
+/// an actor-agnostic `WorldModel` would have been a claim that it is used off
+/// the main thread, which it is not.
+@MainActor
 final class WorldModel: ObservableObject {
     /// Running, or paused mid-stance.
     @Published var running: Bool = true
@@ -363,6 +370,7 @@ struct WorldContainer: View {
 /// LayoutBand.swift: the Map screen floats a window over the same two bars, and
 /// the two screens clamp their floating windows the same way rather than each
 /// keeping its own guess.
+@MainActor
 struct WorldScreen: View {
     @StateObject private var model: WorldModel
     @State private var leftOffset = CGSize(width: -104, height: 120)
