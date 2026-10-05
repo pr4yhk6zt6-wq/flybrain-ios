@@ -396,6 +396,18 @@ jobs:
       # the check they are actually in the built file belongs here, next to the
       # build that puts them there -- not in the app, where a missing pool is
       # an animal that does nothing.
+      # The Shader file is the one place in the app that CI can read but not
+      # run, so the two numbers the kernel's own header claims are checked by
+      # name: external input is added raw, and the retina scales the camera path
+      # only. Both are also measured against the Python reference by
+      # tools/pool_probe.py (docs/ASSUMPTIONS.md #25).
+      - name: Step 6 — the LIF kernel's external-input convention must match the reference
+        run: |
+          grep -q 'iSyn \* P.gain + externalInput\[gid\] + noise' FlyBrain/Shaders/LIF.metal \
+            || { echo "lifIntegrate is not adding the external drive raw (ASSUMPTIONS #25)"; exit 1; }
+          grep -q 'clamp(P.cameraBias + contrast, 0.0f, 4.0f)' FlyBrain/Shaders/LIF.metal \
+            || { echo "the retina's documented [0,4] clamp is gone (ASSUMPTIONS #15)"; exit 1; }
+
       - name: Step 6 — the motor pools must be in the connectome
         run: python3 tools/verify_pools.py
 

@@ -66,6 +66,7 @@ no series elasticity. The body's actuators are the affine position actuators
 | `flybody/fruitfly/assets/fruitfruit.xml` | the body: 67 parts, 102 DOF, masses, joint axes and limits, the 8 adhesion actuators | Apache-2.0 |
 | `banc_888_meta.feather` | the nerves: which cell is a motor neuron, which muscle it innervates, which side it is on, where the soma sits, and the predicted transmitter that assumption #2 rests on | CC BY 4.0 |
 | `connections_princeton.csv.gz` | the synapses: who contacts whom, and how many release sites | CC BY 4.0 |
+| 25 | external input | a population's drive is a current in threshold units, added to `I = iSyn·gain + I_ext + noise` exactly as given; `externalDrive` (the retinal amplitude, 1.5) pre-multiplies the camera path only | it is the reference's own convention (`tools/verify_banc.py`), and the app's kernel claims to reproduce that reference — an extra factor of 1.5 on every drive is a different operating point wearing the same number | `tools/pool_probe.py` reports both readings side by side (app vs app ×1.5); CI asserts the kernel adds the input raw |
 
 ## Removed, and why
 

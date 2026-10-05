@@ -110,7 +110,16 @@ kernel void lifIntegrate(
     float noise = gaussian(rs) * P.noiseSigma;
     rngState[gid] = rs;
 
-    float I = iSyn * P.gain + externalInput[gid] * P.externalDrive + noise;
+    // External input is a current, added raw — one convention for every
+    // population the body drives and for the photoreceptors, which is the
+    // convention of the reference this kernel reproduces
+    // (`tools/verify_banc.py`: `I = I_syn * gain + I_ext + noise`, and
+    // `I_ext[vision] = args.drive`). Multiplying it by `externalDrive` here
+    // instead made a group's tone arrive 1.5x stronger than the tone the Python
+    // experiments were measured at (tools/pool_probe.py's "app" and "app x1.5"
+    // rows are that difference). The retinal *amplitude* now scales the camera
+    // path where it belongs — see sampleRetina.
+    float I = iSyn * P.gain + externalInput[gid] + noise;
 
     int  refr   = refractory[gid];
     float v     = vMembrane[gid];
@@ -247,7 +256,13 @@ kernel void sampleRetina(
     // encode. The gain is the measured LMC:photoreceptor slope ratio,
     // 8-10x (Laughlin & Hardie 1978).
     const float contrast = (lum - aNext) * P.contrastGain;
-    externalIn[retinaIdx[gid]] = clamp(P.cameraBias + contrast, 0.0f, 4.0f);
+    // The clamp is the documented drive range of the contrast channel
+    // (docs/ASSUMPTIONS.md #15: the bias is the midpoint of [0, 4]); the
+    // amplitude slider scales the *retinal current* and nothing else, so the
+    // camera path is unchanged by the fix above while a group drive is now the
+    // current it says it is.
+    externalIn[retinaIdx[gid]] = clamp(P.cameraBias + contrast, 0.0f, 4.0f)
+                                 * P.externalDrive;
 }
 
 // ============================================================================
