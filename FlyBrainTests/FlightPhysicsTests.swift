@@ -412,17 +412,15 @@ final class FlightPhysicsTests: XCTestCase {
         let verts = model.vertexBuffer.contents()
             .bindMemory(to: Float.self, capacity: Int(part.vertexCount) * 6)
 
-        // Fixed material point: the tarsus tip, chosen ONCE as the vertex
-        // farthest from the thorax origin in the assembled walking pose.
-        var mats = [float4x4]()
-        model.solve(angles: body.jointAngles, root: matrix_identity_float4x4, into: &mats)
-        let M0 = mats[pi]
+        // Fixed material point: the tarsus tip, defined exactly as
+        // tools/gait_geometry.py defines it — the mesh vertex farthest from
+        // the thorax origin in the REST pose (part-local coordinates),
+        // chosen once, never re-selected per frame.
         var vert = 0
         var best: Float = -1
         for k in 0..<Int(part.vertexCount) {
-            let v = SIMD3<Float>(verts[k * 6], verts[k * 6 + 1], verts[k * 6 + 2])
-            let w = M0 * SIMD4<Float>(v, 1)
-            let n = w.x * w.x + w.y * w.y + w.z * w.z
+            let x = verts[k * 6], y = verts[k * 6 + 1], z = verts[k * 6 + 2]
+            let n = x * x + y * y + z * z
             if n > best { best = n; vert = k }
         }
         let tip = SIMD3<Float>(verts[vert * 6], verts[vert * 6 + 1], verts[vert * 6 + 2])

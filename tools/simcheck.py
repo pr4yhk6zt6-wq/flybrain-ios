@@ -738,12 +738,12 @@ b.reset((0.0, 0.0125, 0.0))
 b.d = Drives(legL=120, legR=120)
 for _ in range(60 * 3):
     b.update(1 / 60, w)
-# fixed tarsus-tip vertex: farthest from the thorax origin at the neutral pose
-_M0 = _assemble(b.leg_angles())
+# fixed tarsus-tip vertex, defined exactly as tools/gait_geometry.py defines
+# it: the mesh vertex farthest from the thorax origin in the REST pose
+# (part-local coordinates), chosen once, never re-selected per frame.
 _p = _parts[_nidx["tarsus_T3_left"]]
-_wv = (_V[_p["vstart"]:_p["vstart"] + _p["vcount"], :3] @ _M0[_nidx["tarsus_T3_left"]][:3, :3].T
-       + _M0[_nidx["tarsus_T3_left"]][:3, 3])
-_vert = int(_np.argmax(_np.linalg.norm(_wv, axis=1)))
+_vert = int(_np.argmax(_np.linalg.norm(
+    _V[_p["vstart"]:_p["vstart"] + _p["vcount"], :3], axis=1)))
 samples = []
 prev_x, prev_u = None, None
 dt = 1 / 60
