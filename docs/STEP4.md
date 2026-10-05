@@ -185,6 +185,19 @@ The cameras are aimed with a quaternion built from an up vector of **+z**,
 not by `SCNLookAtConstraint`, which assumes y is up and would roll every
 camera onto its side in a world where the fly walks on the xy plane.
 
+### One caveat about the numbers
+
+The committed `reports/step4_world.md` was generated on the machine that
+wrote it. CI runs the *same command* with the *same seed* and gets the same
+animal — it stands, it does not walk, five or six feet down, no fall — but
+not the same trajectory: the Linux run travelled 0.5588 units (2.07 body
+lengths) and the macOS runner travels 0.3141 (1.16 body lengths). The
+recording is therefore not bit-reproducible across MuJoCo builds, and the
+authoritative copy of the report is the one in the `step4-world` artifact of
+the run that built the `.ipa`, not the one committed. Nothing in the
+conclusion depends on which of the two it is: both are an animal that
+stands and gets pushed.
+
 An `.ipa` built without the recording is not a broken app: the world screen
 opens, explains which file is missing and tells you the command that makes it.
 CI checks the three files are inside `FlyBrain.app` before the `.ipa` is
