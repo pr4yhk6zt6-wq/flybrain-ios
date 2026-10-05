@@ -242,9 +242,15 @@ jobs:
       # the animal walks: with six independent cords and no coordination
       # between them, the honest expectation is that it stands, and finding
       # out is the point of publishing the recording rather than a test.
+      # The long recording, not a short one: reports/step4_world.md is
+      # committed, and the world packed into the .ipa has to be the animal
+      # the report describes — seven seconds, two pushes, 0.56 units of
+      # travel — rather than a shorter run that quietly rewrites it.
       - name: Step 4 — the whole animal, six legs, in a world
         run: |
-          python3 tools/step4_world.py --ms 1500 --pre-ms 300 --nudge 700
+          python3 tools/step4_world.py --ms 7000 --pre-ms 600 \
+            --nudge 2600 --nudge 5600 --nudge-force 0.6 --nudge-ms 120 \
+            --seed 7
 
       - name: Step 4 — the recording must exist, and the animal must be in it
         run: |
