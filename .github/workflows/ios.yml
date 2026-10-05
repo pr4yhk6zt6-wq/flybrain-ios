@@ -422,6 +422,9 @@ jobs:
           DEST=$(xcrun simctl list devices available | grep -Eo '[0-9A-F-]{36}' | head -1)
           test -n "$DEST" || { echo "no simulator available"; exit 1; }
           echo "testing on simulator $DEST"
+          # `tee` and then read the result: a test that cannot find its asset
+          # calls XCTSkip, and a suite of skips is a green tick over nothing.
+          set -o pipefail
           xcodebuild \
             -project FlyBrain.xcodeproj \
             -scheme FlyBrain \
@@ -429,7 +432,8 @@ jobs:
             -configuration Debug \
             -destination "id=$DEST" \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test 2>&1 | tee build/tests.log
+          python3 tools/check_tests.py build/tests.log
 
       - name: Build unsigned for device
         run: |
@@ -460,6 +464,16 @@ jobs:
           for f in flybanc.bin flybanc_meta.json fly_anatomy.json; do
             unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" \
               || { echo "$f is NOT in the .ipa"; exit 1; }
+          done
+          # The body asset, and the golden trace that pins the Swift solver to
+          # the MuJoCo-verified Python one. Both are written into World/ by
+          # tools/pack_body.py; a packer that deleted them again made a green
+          # build whose Body screen had no skeleton and whose solver tests
+          # skipped themselves, so they are demanded here, by name.
+          for f in World/fly_body.json World/fly_golden.json; do
+            unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" \
+              || { echo "$f is NOT in the .ipa - the Body screen and the solver \
+tests need it"; exit 1; }
           done
           # The world is what the Map button opens; an .ipa without it would
           # install and then explain itself instead of showing a fly.

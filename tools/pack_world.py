@@ -135,16 +135,24 @@ def main() -> int:
     args.dest.mkdir(parents=True, exist_ok=True)
     for name in NEEDED:
         shutil.copy2(args.src / name, args.dest / name)
-    # A folder reference is copied whole, so anything stale in it would ship.
-    # That is also what keeps the recording out of the app: if a previous build
-    # left a frames.bin here, it goes now. The Map screen would not read it,
-    # and the point of this step is that no build can quietly play one back.
-    kept = {p.name for p in args.dest.iterdir() if p.is_file()} - set(NEEDED)
-    for name in sorted(kept):
-        (args.dest / name).unlink()
-        print(f"  removed stale {name}"
-              + (" (the app runs the solver; a recording is not shipped)"
-                 if name == RECORDING else ""))
+    # This step owns the recording and nothing else in the folder.
+    #
+    # The folder is a whole-directory reference, so whatever sits here ships.
+    # That is what keeps a recording out of the app: if a previous build left a
+    # frames.bin here, it goes now — the Map screen draws the *animal*, and no
+    # build may quietly play one back.
+    #
+    # It is also, until this fix, what kept the animal's own body asset out of
+    # the app: `tools/pack_body.py` writes `fly_body.json` into this same
+    # folder, and the version of this function that deleted everything not in
+    # NEEDED deleted it again, four seconds later, in every CI run. The app
+    # shipped without a skeleton (its Body screen reports a missing asset) and
+    # the solver tests skipped themselves — a green build over an empty seat.
+    # A packer deletes the files it owns and leaves other packers' files alone.
+    if (args.dest / RECORDING).exists():
+        (args.dest / RECORDING).unlink()
+        print(f"  removed stale {RECORDING} "
+              "(the app runs the solver; a recording is not shipped)")
 
     for name in NEEDED:
         p = args.dest / name

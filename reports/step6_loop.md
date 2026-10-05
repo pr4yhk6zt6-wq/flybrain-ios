@@ -58,3 +58,50 @@ disagree again. This is assumption #22.
 2. The real-time factor of the phone's cord, measured (the HUD reports it; no
    measurement has been taken on hardware).
 3. Whether the loop walks. It does not yet, and that is the next measurement.
+
+## The second bug, found while checking the .ipa
+
+Run 49 (`4954e15`) was the first green build since step 5, and it produced an
+`.ipa`. Opening it showed two things the CI gate did not:
+
+```
+  YES world.json      YES fly.bin      no frames.bin      YES flybanc.bin
+  no  fly_body.json                    no fly_golden.json
+```
+
+**The app shipped without its skeleton.** `tools/pack_body.py` writes
+`FlyBrain/World/fly_body.json`; `tools/pack_world.py` then deleted every file in
+that folder that was not `world.json`/`fly.bin` — including that one, 4.3
+seconds later, in every CI run:
+
+```
+14:39:23  -> FlyBrain/World/fly_body.json (0.23 MB)
+14:39:28  removed stale fly_body.json
+14:39:35  xcodegen / build
+```
+
+So the Body screen on the phone had no body asset to load, and — worse, because
+it is silent — the entire solver suite **skipped itself** in CI. The log from run
+49 says it plainly:
+
+```
+Executed 7 tests, with 3 tests skipped and 0 failures
+  testGoldenTraceIsReproduced ................... skipped
+  testTheAnimalStandsWithMuscleToneOnly ......... skipped
+  testTheMuscleModelIsForceBasedAndBraked ....... skipped
+```
+
+The three tests that pin the Swift solver to the MuJoCo-verified Python one had
+never run in CI. `XCTSkip` is the right default for a developer without the
+41 MB model; in CI it is a green tick over an empty seat.
+
+Three fixes, all of them gates rather than promises:
+
+1. `pack_world.py` now deletes **only the recording it owns** and leaves other
+   packers' files alone.
+2. The `.ipa` gate demands `World/fly_body.json` and `World/fly_golden.json` by
+   name, beside the connectome and the world.
+3. `tools/check_tests.py` (new, run in CI on the `xcodebuild test` log) fails the
+   build if any test is skipped, and if any test in `REQUIRED` did not run. It
+   was checked against run 49's own log: it fails on it, and passes on a log
+   where the suite ran.
