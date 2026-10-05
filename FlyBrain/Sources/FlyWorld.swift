@@ -111,8 +111,6 @@ final class FlyWorld: @unchecked Sendable {
     /// One node per mesh-bearing part, in the order they appear in the
     /// recording, so a frame index can pose them directly.
     private(set) var nodes: [SCNNode] = []
-    /// The same parts' descriptions, index-aligned with `nodes`.
-    private var parts: [WorldManifest.WorldGeom] = []
     /// Which row of the recorded pose track each node reads, index-aligned
     /// with `nodes`. The manifest's `part`, or — for a manifest written
     /// before that field existed — the same count this file used to keep.
@@ -185,6 +183,10 @@ final class FlyWorld: @unchecked Sendable {
             guard let m = geom.mesh, m < geometries.count else { continue }
             let node = SCNNode(geometry: geometries[m])
             node.name = geom.name
+            // The mesh vertices are in model centimetres; the geom's world
+            // transform comes from the pose. Any non-unit scale here would be
+            // the geom_size bug in docs/AUDIT.md §0, so pin it to 1.
+            node.scale = SCNVector3(1, 1, 1)
             // The colour is on the part's material, not on the geom: flybody
             // names its materials — body, red, ocelli, black, brown,
             // membrane — and the geom's own rgba is left at default grey.
@@ -205,7 +207,6 @@ final class FlyWorld: @unchecked Sendable {
             node.geometry?.materials = [material]
             animal.addChildNode(node)
             nodes.append(node)
-            parts.append(geom)
             partOf.append(geom.part ?? nodes.count - 1)
         }
 
@@ -372,23 +373,15 @@ final class FlyWorld: @unchecked Sendable {
                     (s[q + 3], s[q + 4], s[q + 5], s[q + 6]), t)
                 node.orientation = SCNVector4(orient.1, orient.2, orient.3,
                                               orient.0)
-                setScale(node, k)
+                // No scale here, and that is deliberate: geom_size is the
+                // mesh's bounding box half-extent, not a scale factor (the
+                // thorax reports [0.0439, 0.0584, 0.0601] against a mesh of
+                // 0.088 x 0.105 x 0.116 — the same numbers, halved), and
+                // `fly.bin` is packed from the compiled model at life size.
+                // Multiplying by it draws the animal at 4–9 % of itself;
+                // see docs/AUDIT.md §0 for the projection that proves it.
             }
         }
-    }
-
-    /// The mesh, sized the way the model sizes it.
-    ///
-    /// The scanned meshes are stored about twenty times life size — the thorax
-    /// is 1.16 units long before it is scaled by 0.060 — and the geom's `size`
-    /// is the factor that makes it a fly. SceneKit has no such factor of its
-    /// own, so a node that is posed without it draws a mesh that is twenty
-    /// times too big, which puts the camera inside the animal.
-    private func setScale(_ node: SCNNode, _ k: Int) {
-        guard k < parts.count else { return }
-        let sz = parts[k].size
-        guard sz.count >= 3 else { return }
-        node.scale = SCNVector3(Float(sz[0]), Float(sz[1]), Float(sz[2]))
     }
 
     /// Pose the animal from the live solver.
@@ -416,10 +409,8 @@ final class FlyWorld: @unchecked Sendable {
             node.position = SCNVector3(Float(p.x), Float(p.y), Float(p.z))
             let q = quaternion(rotations[i])
             node.orientation = SCNVector4(q.x, q.y, q.z, q.w)
-            // The same sizing the recorded path uses, from the same geoms:
-            // the solver gives a pose, not a size, and a mesh drawn without
-            // its factor is twenty times life size.
-            setScale(node, k)
+            // Scale stays what node creation pinned it to (1): the solver
+            // gives a pose, and the vertices are already life size.
         }
     }
 

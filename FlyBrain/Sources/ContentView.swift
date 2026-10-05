@@ -102,7 +102,6 @@ struct ContentView: View {
             HUDView(stats: engine.stats,
                     fps: engine.fps,
                     simulatedMs: engine.stats.simulatedMilliseconds)
-                .layoutPriority(1)
             Spacer(minLength: 6)
             buttons
         }
@@ -163,6 +162,9 @@ struct ContentView: View {
             }
             .accessibilityLabel(showControls ? "hide the controls" : "show the controls")
         }
+        // The buttons keep their size and the readouts give way, never the
+        // other way round: the controls must always be reachable.
+        .fixedSize()
     }
 }
 
@@ -173,18 +175,24 @@ struct HUDView: View {
     let fps: Double
     let simulatedMs: Int
 
+    /// Two rows of three, so the card stays narrower than a phone is wide:
+    /// one row of six plus the buttons cannot fit on a 390 pt screen — the
+    /// card would eat the row and the Map pill would sit on the ≈power
+    /// readout again. Two rows fit with room to spare.
     var body: some View {
-        HStack(spacing: 12) {
-            metric("FPS", String(format: "%.0f", fps),
-                   colour: fps >= 55 ? .green : fps >= 28 ? .yellow : .orange)
-            metric("spikes/s", compact(stats.spikesPerSecond))
-            metric("active", compact(Double(stats.activeNeurons)))
-            metric("rate", String(format: "%.1f Hz", stats.populationRateHz))
-            metric("brain t", String(format: "%.0fs", Double(simulatedMs) / 1000))
-            metric("power", String(format: "%.0f mW", stats.estimatedMilliwatts))
+        VStack(spacing: 4) {
+            HStack(spacing: 12) {
+                metric("FPS", String(format: "%.0f", fps),
+                       colour: fps >= 55 ? .green : fps >= 28 ? .yellow : .orange)
+                metric("spikes/s", compact(stats.spikesPerSecond))
+                metric("rate", String(format: "%.1f Hz", stats.populationRateHz))
+            }
+            HStack(spacing: 12) {
+                metric("active", compact(Double(stats.activeNeurons)))
+                metric("brain t", String(format: "%.0fs", Double(simulatedMs) / 1000))
+                metric("power", String(format: "%.0f mW", stats.estimatedMilliwatts))
+            }
         }
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
         .font(.system(size: 11, weight: .medium, design: .monospaced))
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -194,10 +202,16 @@ struct HUDView: View {
 
     private func metric(_ label: String, _ value: String,
                         colour: Color = .white) -> some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             Text(value).foregroundStyle(colour)
-            Text(label).foregroundStyle(.secondary).font(.system(size: 9))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(label).foregroundStyle(.secondary)
+                .font(.system(size: 9))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
+        .frame(minWidth: 48)
     }
 
     private func compact(_ v: Double) -> String {

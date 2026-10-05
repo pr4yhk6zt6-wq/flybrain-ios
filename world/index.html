@@ -204,7 +204,8 @@ async function getArrayBuffer(u, onProgress) {
     });
     const mesh = new THREE.Mesh(geoms[gm.mesh], mat);
     mesh.matrixAutoUpdate = false;
-    mesh.userData.size = new THREE.Vector3(gm.size[0], gm.size[1], gm.size[2]);
+    // No userData.size: geom_size for a mesh geom is the AABB half-extent,
+    // and the packed vertices are life size (docs/AUDIT.md §0).
     // Which row of the recorded part axis this mesh reads. It is written into
     // the manifest by tools/step4_world.py (`part`) rather than counted here,
     // because this loop skips the floor — part 0 — and a counter of our own
@@ -274,6 +275,7 @@ async function getArrayBuffer(u, onProgress) {
                           $("#play").textContent = "play"; apply(); };
 
   const q = new THREE.Quaternion(), p = new THREE.Vector3();
+  const ONE = new THREE.Vector3(1, 1, 1);
 
   function apply() {
     const base = Math.min(NFRAME - 1, Math.max(0, Math.floor(frame))) * STRIDE;
@@ -281,7 +283,8 @@ async function getArrayBuffer(u, onProgress) {
       const o = base + parts[i].userData.part * 7;
       p.set(FR[o], FR[o + 1], FR[o + 2]);
       q.set(FR[o + 4], FR[o + 5], FR[o + 6], FR[o + 3]);   // x,y,z,w  ← stored w,x,y,z
-      parts[i].matrix.compose(p, q, parts[i].userData.size);
+      // unit scale: geom_size is an AABB half-extent, not a scale (AUDIT §0)
+      parts[i].matrix.compose(p, q, ONE);
       parts[i].matrixWorldNeedsUpdate = true;
     }
     if (series) {

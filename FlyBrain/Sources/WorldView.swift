@@ -140,7 +140,10 @@ final class WorldModel: ObservableObject {
 
     @Published var azimuth: Double = 2.2
     @Published var elevation: Double = 0.42
-    @Published var distance: Double = 0.60
+    /// At the model's true scale (docs/AUDIT.md §0) the animal spans most of
+    /// a phone at the old 0.60; start where the whole fly is in frame and let
+    /// the pinch do the rest.
+    @Published var distance: Double = 1.0
     /// Magnification while a pinch is in flight; committed into `distance`
     /// when the pinch ends. Not published: only the renderer reads it.
     var liveZoom: Double = 1.0
@@ -363,6 +366,9 @@ struct WorldScreen: View {
                     }
                 }
             }
+            // Close and panes are the only way off this screen: they never
+            // shrink and never sit under a readout.
+            .fixedSize()
         }
     }
 
@@ -548,10 +554,11 @@ struct WorldHUD: View {
                 .lineLimit(1)
         }
         // The readouts give way before they push the buttons, and never
-        // overlap them: they are one row.
+        // overlap them: they are one row, and the text scales down inside it
+        // (no layout priority — priority here would let the card push the
+        // buttons off the edge on a narrow phone).
         .lineLimit(1)
         .minimumScaleFactor(0.72)
-        .layoutPriority(1)
         .foregroundStyle(.primary)
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
