@@ -14,11 +14,13 @@ Step 1 introduces no constants of its own: everything `tools/step1_anatomy.py`
 prints is read out of the MJCF or out of BANC, and everything `tools/step1_sim.py`
 does is MuJoCo integrating the model as shipped.
 
-**Current total: 14.** Six arrive with step 2, the first step that simulates
+**Current total: 17.** Six arrive with step 2, the first step that simulates
 the nerve cord rather than measuring it. Eight more arrive with step 3, the
 first step that joins that cord to a body — which means joining two vocabularies
 (BANC's muscles, flybody's joints) and inventing a transducer between what the
-body does and what the organ reports.
+body does and what the organ reports. Three more arrive with step 4, which
+drives six legs at once and then has to admit what it had to leave out to do
+it.
 
 | # | assumption | value | why | test that catches it |
 |---|---|---|---|---|
@@ -36,10 +38,16 @@ body does and what the organ reports.
 | 12 | campaniform transduction | `drive = tone × (this leg's normal ground-reaction force ÷ the force it carries standing)` | that is what a strain gauge is; there is no free gain in it | the load conditions (0 and 2 body weights) test it directly, and the measured force is reported at every condition |
 | 13 | which organ sees what | chordotonal ← femur–tibia angle; campaniform ← this leg's ground reaction force | the FeCO spans that joint; campaniform sensilla report cuticular strain from load | single-channel conditions run each on its own, and both are reported |
 | 14 | scope of the body | one front leg's three proximal joints are driven by the cord; the other five legs, the tarsus and the claw stay at the rest command step 1 used | the loop has to close somewhere, and a leg is the natural unit | the standing test, and the pools that are left out are listed rather than dropped |
+| 15 | the six cords are built independently | step 4 builds one cord per leg: each leg's ≤3-hop subgraph is extracted and stepped separately, so an interneuron that belongs to two legs' circuits exists twice, once in each cord | the ventral nerve cord is one cord; splitting it by leg is how six of them fit in memory at once, and it is the honest description of what this does | step 3's N* sweep shows the readout does not depend on the synaptic scale, and the standing test shows six independent cords can still agree on a thorax. **The consequence is not tested away: six cords that cannot talk to each other is the reason the animal does not walk.** |
+| 16 | what pushes the animal | the world applies an external force to the thorax, at a time and for a duration stated in the JSON; nothing in the controller knows the time | a stimulus belongs to the world, like gravity and the floor do; a behaviour is not something you schedule | the pushes are listed in `reports/step4_world.json` under `model.nudges_ms`, and the viewer's HUD is on the same clock |
+| 17 | what the viewer shows | `world/` is a playback of a simulation that has already been run, not a live one | six cords at 1 ms and physics at 100 µs do not run in real time on hardware this repository can assume; a recording is honest about being a recording | the frame rate, the number of frames and the command that made them are all in `world/world.json` |
 
 **Not modelled at all, and therefore not claimed:** gap junctions (electrical
 synapses), neuromodulation, synaptic plasticity, and any per-connection weight
-that is not the synapse count. Muscle *dynamics* is modelled as the one-pole
+that is not the synapse count. Step 4 additionally does not model the
+connections *between* the legs: each leg's cord is separate, so whatever
+coordination a real tripod gait needs has to come out of the body, the floor
+and the shared descending tone — and, as the recording shows, it does not. Muscle *dynamics* is modelled as the one-pole
 filter of assumption #7 and nothing more — no force–length, no force–velocity,
 no series elasticity. The body's actuators are the affine position actuators
 `flybody` ships, so the model inherits their stiffness as if it were muscle.

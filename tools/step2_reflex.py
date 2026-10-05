@@ -177,8 +177,12 @@ class CordNetwork:
     def __init__(self, N, e_pre, e_post, w_sign, w_mag, delay, rng_seed=42):
         order = np.argsort(e_pre, kind="stable")
         self.N = N
-        self.e_pre, self.e_post = e_pre[order], e_post[order]
-        self.w_mag, self.delay = w_mag[order], delay[order]
+        # int32: more neuron indices than any connectome will have, and half
+        # the memory, which is what lets step 4 hold six of these at once
+        self.e_pre = e_pre[order].astype(np.int32)
+        self.e_post = e_post[order].astype(np.int32)
+        self.w_mag = w_mag[order].astype(np.float32)
+        self.delay = delay[order].astype(np.int32)
         self.is_exc = (w_sign[order] > 0)
 
         e_row = np.zeros(N + 1, dtype=np.int64)
@@ -301,14 +305,54 @@ def simulate(N, e_pre, e_post, w_sign, w_mag, delay, ms, drivers,
 
 
 # --------------------------------------------------------------------------
-def leg_anatomy(a):
+def _cluster_profiles(Mn, k):
+    """
+    Split an organ's cells by which targets they innervate.
+
+    `correlation` is undefined for a row with no variance — a cell whose
+    outgoing synapses did not survive the threshold, or one that contacts a
+    single target — and scipy answers that with a NaN and then refuses to
+    cluster anything at all. The front legs never hit it and the middle and
+    hind legs do, which is only visible once something asks for a leg other
+    than the one step 2 reports on. Such a cell is given a group of its own
+    instead of being allowed to take the leg apart.
+    """
+    from scipy.cluster.hierarchy import linkage, fcluster
+
+    finite = np.isfinite(Mn).all(axis=1)
+    varied = (Mn.max(axis=1) - Mn.min(axis=1)) > 1e-12
+    usable = finite & varied
+    labels = np.ones(len(Mn), dtype=np.int64)
+    if usable.sum() < 2:
+        return labels
+    try:
+        sub = fcluster(linkage(Mn[usable], method="average",
+                               metric="correlation"), t=k, criterion="maxclust")
+    except Exception as exc:                                   # pragma: no cover
+        log(f"  the organ's subtypes could not be clustered ({exc}); "
+            f"reporting them as one group")
+        return labels
+    labels[usable] = np.asarray(sub, dtype=np.int64)
+    if (~usable).any():
+        labels[~usable] = int(labels[usable].max()) + 1
+        log(f"  {(~usable).sum()} organ cell(s) had no variance in their "
+            f"target profile and were put in a group of their own")
+    return labels
+
+
+def leg_anatomy(a, loaded=None):
     """
     The leg's wiring, before anything is simulated: which cells are the sense
     organs, which are the motor pools, and how the organ splits by its own
     target profile. Step 3 imports this so that the body it closes the loop
     with is driven by exactly the pools step 2 measured.
+
+    `loaded` is the tuple `load()` returns, for a caller that wants several
+    legs: reading the connectome is the expensive part and it does not depend
+    on which leg you are asking about.
     """
-    meta, pre, post, syn = load(a.banc, a.min_syn)
+    meta, pre, post, syn = (load(a.banc, a.min_syn) if loaded is None
+                            else loaded)
     n = len(meta)
     ct = text(meta, "cell_type")
     nt = np.array([v.split()[0].lower() if v else "" for v in
@@ -425,8 +469,6 @@ def leg_anatomy(a):
               f"interneurons, net {d['net_weight']:+,.0f}")
 
     # ---- 3. split the organ by its target profiles -------------------------
-    from scipy.cluster.hierarchy import linkage, fcluster
-
     tgt_ids = np.unique(post[sel1])
     tgt_pos = {int(t): j for j, t in enumerate(tgt_ids)}
     src_pos = {int(c): i for i, c in enumerate(chordo)}
@@ -434,8 +476,7 @@ def leg_anatomy(a):
     for p, q, w_ in zip(pre[sel1], post[sel1], syn[sel1]):
         M[src_pos[int(p)], tgt_pos[int(q)]] += float(w_)
     Mn = M / np.maximum(M.sum(1, keepdims=True), 1e-9)
-    labels = fcluster(linkage(Mn, method="average", metric="correlation"),
-                      t=a.clusters, criterion="maxclust")
+    labels = _cluster_profiles(Mn, a.clusters)
 
     def describe(mask):
         cells = chordo[mask]

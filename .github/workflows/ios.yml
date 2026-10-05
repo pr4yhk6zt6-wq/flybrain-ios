@@ -233,6 +233,62 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      # -------------------------------------------------------------- step 4
+      # Steps 1 to 3 progressively handed the animal over to its own nervous
+      # system. Step 4 drives all six legs and then does the thing the other
+      # three could not: it lets you look at it. This runs a short recording
+      # (the real one is minutes long) and asserts the recording exists and
+      # that the animal is standing in it. It asserts nothing about whether
+      # the animal walks: with six independent cords and no coordination
+      # between them, the honest expectation is that it stands, and finding
+      # out is the point of publishing the recording rather than a test.
+      - name: Step 4 — the whole animal, six legs, in a world
+        run: |
+          python3 tools/step4_world.py --ms 1500 --pre-ms 300 --nudge 700
+
+      - name: Step 4 — the recording must exist, and the animal must be in it
+        run: |
+          python3 - <<'PY'
+          import json, sys, pathlib
+
+          r = json.load(open('reports/step4_world.json'))
+          b = r['behaviour']
+          frames = pathlib.Path('world/frames.bin')
+          body = pathlib.Path('world/fly.bin')
+          npart = r['frames']['parts']
+
+          checks = [
+              ('all six legs are driven by their own cord', len(r['legs']) == 6),
+              ('the animal is standing in the recording',
+               b['foot_contacts_mean'] >= 4.0),
+              ('it did not fall over', not b['fell_over']),
+              ('the body geometry was written',
+               body.exists() and body.stat().st_size > 1_000_000),
+              ('the model's own meshes survived the packing',
+               r['body_geometry']['n_face'] > 100_000),
+              ('the recording has frames in it', r['frames']['n'] > 10),
+              ('the frame file is exactly the size the manifest says',
+               frames.stat().st_size
+               == r['frames']['n'] * npart * 7 * 4),
+              ('every visible part is posed in every frame', npart >= 60),
+              ('the animal's stance was solved for all six legs at once',
+               len(r['stance']['leg_force']) == 6),
+              ('the world's push is recorded rather than hidden',
+               len(r['model']['nudges_ms']) >= 1),
+              ('every leg carries some of the weight',
+               all(v > 0 for v in r['stance']['leg_force'].values())),
+          ]
+          ok = True
+          for label, cond in checks:
+              print(f"  {'ok  ' if cond else 'FAIL'} {label}")
+              ok &= bool(cond)
+          print(f"  net displacement {b['net_displacement']:.4f} units "
+                f"({b['net_displacement']/0.27:.2f} body lengths), "
+                f"{b['foot_contacts_mean']:.1f} of 6 feet down, "
+                f"fell over: {b['fell_over']}")
+          sys.exit(0 if ok else 1)
+          PY
+
       # -------------------------------------------------------------- the app
       - name: Build the connectome binary for the app
         run: |
@@ -342,3 +398,12 @@ jobs:
             reports/step3_closedloop.md
             reports/step3_closedloop.json
             docs/img/step3_loop.png
+
+      - name: Upload the step-4 evidence and the world
+        uses: actions/upload-artifact@v4
+        with:
+          name: step4-world
+          path: |
+            reports/step4_world.md
+            reports/step4_world.json
+            world/

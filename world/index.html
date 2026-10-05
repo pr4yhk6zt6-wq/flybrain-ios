@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlyBrain — the world</title>
+<style>
+  :root { --ink:#12161c; --paper:#f6f5f2; --line:#d8d5cd; --accent:#b4472b; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:var(--paper); color:var(--ink);
+              font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #c { display:block; width:100vw; height:100vh; }
+  .panel { position:fixed; background:rgba(246,245,242,.93); border:1px solid var(--line);
+           border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); }
+  #hud { top:14px; left:14px; min-width:240px; }
+  #hud h1 { margin:0 0 2px; font-size:15px; letter-spacing:.2px; }
+  #hud .sub { color:#6b6a66; font-size:11.5px; margin-bottom:9px; }
+  #hud table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  #hud td { padding:1px 0; font-size:12.5px; }
+  #hud td:last-child { text-align:right; font-weight:600; }
+  #bar { bottom:14px; left:14px; right:14px; display:flex; gap:10px; align-items:center; }
+  #bar button { font:inherit; font-size:12.5px; padding:6px 13px; border-radius:7px;
+                border:1px solid var(--line); background:#fff; cursor:pointer; }
+  #bar button:hover { border-color:var(--accent); color:var(--accent); }
+  #scrub { flex:1; accent-color:var(--accent); }
+  #bar label { font-size:12px; color:#4b4a46; white-space:nowrap; }
+  #bar select, #bar input[type=range] { font:inherit; }
+  #note { top:14px; right:14px; max-width:310px; font-size:11.5px; color:#4b4a46; }
+  #note b { color:var(--ink); }
+  #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+             background:var(--paper); font-size:15px; z-index:50; text-align:center; padding:30px; }
+  .err { color:var(--accent); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="loading">loading the animal …</div>
+
+<div class="panel" id="hud" hidden>
+  <h1>the fly, in its own world</h1>
+  <div class="sub" id="sub"></div>
+  <table>
+    <tr><td>time</td><td id="m-time">–</td></tr>
+    <tr><td>distance travelled</td><td id="m-dist">–</td></tr>
+    <tr><td>speed</td><td id="m-speed">–</td></tr>
+    <tr><td>feet on the floor</td><td id="m-feet">–</td></tr>
+    <tr><td>body height</td><td id="m-height">–</td></tr>
+    <tr><td>legs under cord control</td><td id="m-legs">–</td></tr>
+  </table>
+</div>
+
+<div class="panel" id="note" hidden>
+  <b>What you are watching.</b> The body is the real <i>flybody</i> model
+  (Janelia / Google DeepMind, Vaxenburg et al.). The movement is not animated:
+  every millisecond, each leg's sense organs are told where the joint is and
+  how much load the leg carries, a nerve cord taken out of the <i>Drosophila</i>
+  connectome runs, and its motor pools command the joints. No clock, no gait,
+  no target.
+</div>
+
+<div class="panel" id="bar" hidden>
+  <button id="play">pause</button>
+  <input id="scrub" type="range" min="0" max="1" value="0" step="1">
+  <label>speed
+    <select id="speed">
+      <option value="0.1">0.1×</option>
+      <option value="0.25" selected>0.25×</option>
+      <option value="0.5">0.5×</option>
+      <option value="1">1×</option>
+      <option value="2">2×</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="follow" checked> follow</label>
+  <label><input type="checkbox" id="trail" checked> trail</label>
+</div>
+
+<script src="three.min.js"></script>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const loading = $("#loading");
+
+function fail(msg) {
+  loading.innerHTML = '<div class="err">' + msg + '</div>';
+  loading.hidden = false;
+  throw new Error(msg);
+}
+
+async function getJSON(u) {
+  const r = await fetch(u, {cache: "no-cache"});
+  if (!r.ok) throw new Error(u + " → HTTP " + r.status);
+  return r.json();
+}
+async function getArrayBuffer(u, onProgress) {
+  const r = await fetch(u, {cache: "no-cache"});
+  if (!r.ok) throw new Error(u + " → HTTP " + r.status);
+  const len = +r.headers.get("Content-Length") || 0;
+  if (!r.body.getReader || !len) return await r.arrayBuffer();
+  const reader = r.body.getReader();
+  const chunks = []; let got = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    chunks.push(value); got += value.length;
+    if (onProgress) onProgress(got / len);
+  }
+  const out = new Uint8Array(got); let at = 0;
+  for (const ch of chunks) { out.set(ch, at); at += ch.length; }
+  return out.buffer;
+}
+
+(async function main() {
+  let manifest;
+  try {
+    manifest = await getJSON("world.json");
+  } catch (e) {
+    fail("Could not load <code>world.json</code>.<br><br>Make the recording first:"
+       + "<br><code>python3 tools/step4_world.py</code>"
+       + "<br><br><span style='font-size:12px'>" + e.message + "</span>");
+  }
+
+  const G = manifest.geoms, BG = manifest.body_geometry;
+  const NFRAME = manifest.frames.n, NPART = manifest.frames.parts;
+  const HZ = manifest.model.frame_hz;
+  const BODY_LEN = 0.27;                        // the animal, in model units
+
+  // ---- the body ---------------------------------------------------------
+  loading.textContent = "loading the body (" + (BG.bytes / 1e6).toFixed(1) + " MB) …";
+  const body = await getArrayBuffer("fly.bin",
+    (p) => { loading.textContent = "loading the body … " + Math.round(p * 100) + "%"; });
+
+  const nV = BG.n_vertex, nF = BG.n_face;
+  const V = new Float32Array(body, 0, nV * 3);
+  const N = new Float32Array(body, nV * 3 * 4, nV * 3);
+  const F = new Int32Array(body, nV * 3 * 4 * 2, nF * 3);
+
+  // one BufferGeometry per mesh in the model
+  const geoms = BG.meshes.map((meshdef) => {
+    const [vo, vn] = meshdef.vert, [fo, fn] = meshdef.face;
+    const v = new Float32Array(vn * 3), nn = new Float32Array(vn * 3);
+    for (let i = 0; i < vn * 3; i++) { v[i] = V[vo * 3 + i]; nn[i] = N[vo * 3 + i]; }
+    const idx = new Uint32Array(fn * 3);
+    for (let i = 0; i < fn * 3; i++) idx[i] = F[fo * 3 + i] - vo;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(v, 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(nn, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeBoundingSphere();
+    return g;
+  });
+
+  loading.textContent = "loading the recording …";
+  const framesBuf = await getArrayBuffer("frames.bin");
+  const FR = new Float32Array(framesBuf);
+  const STRIDE = NPART * 7;
+
+  // ---- the scene --------------------------------------------------------
+  const canvas = $("#c");
+  const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight, false);
+  if ("outputEncoding" in renderer) renderer.outputEncoding = THREE.sRGBEncoding;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf6f5f2);
+  scene.fog = new THREE.Fog(0xf6f5f2, 1.4, 4.2);
+
+  const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.005, 30);
+  const floorZ = manifest.floor_z !== undefined ? manifest.floor_z : -0.132;
+
+  // the floor: a grid, so the ground reads as ground
+  const grid = new THREE.GridHelper(2.4, 48, 0xb9b5ab, 0xd8d5cd);
+  grid.position.z = floorZ + 0.0004;
+  grid.rotation.x = Math.PI / 2;
+  scene.add(grid);
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.4, 2.4),
+    new THREE.MeshBasicMaterial({color: 0xece9e2, transparent: true, opacity: 0.55}));
+  glass.position.z = floorZ;
+  scene.add(glass);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a968c, 0.85));
+  const key = new THREE.DirectionalLight(0xfff4e8, 1.15);
+  key.position.set(0.5, -0.8, 1.0);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0xcfe0ff, 0.4);
+  rim.position.set(-0.7, 0.6, 0.3);
+  scene.add(rim);
+
+  // one mesh per visible part of the animal
+  const animal = new THREE.Group();
+  scene.add(animal);
+  const parts = [];
+  for (const gm of G) {
+    if (gm.mesh === undefined) continue;                 // the floor is drawn separately
+    const c = gm.rgba;
+    const mat = new THREE.MeshLambertMaterial({
+      color: new THREE.Color(c[0], c[1], c[2]).convertSRGBToLinear(),
+      side: THREE.DoubleSide,
+      transparent: c[3] < 0.99,
+      opacity: c[3],
+      depthWrite: c[3] > 0.5,
+    });
+    const mesh = new THREE.Mesh(geoms[gm.mesh], mat);
+    mesh.matrixAutoUpdate = false;
+    mesh.userData.size = new THREE.Vector3(gm.size[0], gm.size[1], gm.size[2]);
+    animal.add(mesh);
+    parts.push(mesh);
+  }
+
+  // the path it took
+  const trailGeom = new THREE.BufferGeometry();
+  const series = manifest.series || null;
+  if (series && series.xy) {
+    const pts = new Float32Array(series.xy.length * 3);
+    series.xy.forEach((p, i) => {
+      pts[i * 3] = p[0]; pts[i * 3 + 1] = p[1]; pts[i * 3 + 2] = floorZ + 0.002;
+    });
+    trailGeom.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+  }
+  const trail = new THREE.Line(trailGeom,
+    new THREE.LineBasicMaterial({color: 0xb4472b, transparent: true, opacity: 0.75}));
+  scene.add(trail);
+
+  // ---- camera control: a small orbit rig --------------------------------
+  const target0 = new THREE.Vector3(0, 0, floorZ + 0.05);
+  const target = target0.clone();
+  let az = 1.35, el = 0.30, dist = 0.95;
+  let dragging = false, px = 0, py = 0;
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true; px = e.clientX; py = e.clientY; canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointerup", (e) => {
+    dragging = false; try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    az -= (e.clientX - px) * 0.006;
+    el = Math.max(-1.5, Math.min(1.5, el + (e.clientY - py) * 0.005));
+    px = e.clientX; py = e.clientY;
+  });
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    dist = Math.max(0.12, Math.min(3.2, dist * (1 + Math.sign(e.deltaY) * 0.09)));
+  }, {passive: false});
+
+  function placeCamera() {
+    camera.position.set(
+      target.x + dist * Math.cos(el) * Math.cos(az),
+      target.y + dist * Math.cos(el) * Math.sin(az),
+      target.z + dist * Math.sin(el));
+    camera.up.set(0, 0, 1);
+    camera.lookAt(target);
+  }
+
+  // ---- playback ---------------------------------------------------------
+  let frame = 0, playing = true, speed = 0.25, follow = true;
+  const scrub = $("#scrub");
+  scrub.max = String(NFRAME - 1);
+  $("#play").onclick = () => {
+    playing = !playing; $("#play").textContent = playing ? "pause" : "play";
+  };
+  $("#speed").onchange = (e) => { speed = parseFloat(e.target.value); };
+  $("#follow").onchange = (e) => { follow = e.target.checked; };
+  $("#trail").onchange = (e) => { trail.visible = e.target.checked; };
+  scrub.oninput = () => { frame = +scrub.value; playing = false;
+                          $("#play").textContent = "play"; apply(); };
+
+  const q = new THREE.Quaternion(), p = new THREE.Vector3();
+
+  function apply() {
+    const base = Math.min(NFRAME - 1, Math.max(0, Math.floor(frame))) * STRIDE;
+    for (let i = 0; i < parts.length; i++) {
+      const o = base + i * 7;
+      p.set(FR[o], FR[o + 1], FR[o + 2]);
+      q.set(FR[o + 4], FR[o + 5], FR[o + 6], FR[o + 3]);   // x,y,z,w  ← stored w,x,y,z
+      parts[i].matrix.compose(p, q, parts[i].userData.size);
+      parts[i].matrixWorldNeedsUpdate = true;
+    }
+    if (series) {
+      const i = Math.min(series.xy.length - 1, Math.floor(frame));
+      if (follow) {
+        target.set(series.xy[i][0], series.xy[i][1], floorZ + 0.05);
+      }
+      const t = (frame / HZ);
+      $("#m-time").textContent = t.toFixed(2) + " s";
+      let d = 0;
+      for (let k = 1; k <= i; k++) {
+        const a = series.xy[k - 1], b = series.xy[k];
+        d += Math.hypot(b[0] - a[0], b[1] - a[1]);
+      }
+      $("#m-dist").textContent = (d / BODY_LEN).toFixed(2) + " body lengths";
+      const sp = (series.speed && series.speed[i] !== undefined) ? series.speed[i] : 0;
+      $("#m-speed").textContent = (sp / BODY_LEN).toFixed(2) + " bl/s";
+      $("#m-feet").textContent = (series.contacts[i] !== undefined
+        ? series.contacts[i].toFixed(0) : "–") + " of 6";
+      $("#m-height").textContent =
+        ((series.z[i] - floorZ) * 10).toFixed(2) + " mm";
+    }
+    scrub.value = String(Math.floor(frame));
+  }
+
+  // interpolate between frames so the motion is smooth at any speed
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    if (playing) {
+      frame += dt * HZ * speed;
+      if (frame >= NFRAME) frame = 0;
+      apply();
+    }
+    placeCamera();
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight, false);
+  });
+
+  apply();
+  placeCamera();
+
+  // ---- the labels -------------------------------------------------------
+  const b = manifest.behaviour;
+  $("#sub").textContent = manifest.legs.length + " legs driven by "
+    + manifest.legs.length + " connectome-derived cords · "
+    + manifest.frames.n + " frames at " + manifest.model.frame_hz + " Hz · "
+    + manifest.body_geometry.n_face.toLocaleString() + " triangles";
+  $("#m-legs").textContent = manifest.legs.length + " of 6";
+  $("#hud").hidden = false; $("#bar").hidden = false; $("#note").hidden = false;
+  loading.hidden = true;
+
+  console.log("behaviour:", b);
+  requestAnimationFrame(tick);
+})().catch((e) => fail(e.message || String(e)));
+</script>
+</body>
+</html>

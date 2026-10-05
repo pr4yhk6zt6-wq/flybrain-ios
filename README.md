@@ -24,8 +24,16 @@ asked it to.
 > reverses with it (−0.073, −0.087), which is what shows the resistance comes
 > from the biology and not from the wiring. The switch the reflex literature
 > predicts — resistance turning to assistance under load — **did not appear**,
-> and is published as not found. Nothing walks yet, on purpose: one leg is
-> driven and the other five are still frozen.
+> and is published as not found.
+>
+> **Step 4** ([`docs/STEP4.md`](docs/STEP4.md)) drives all six legs, each from
+> its own cord, and puts the animal in a world you can look at
+> (`python3 tools/serve_world.py`). The body is the real Janelia/DeepMind
+> *flybody* model — 85 scanned meshes, 262,180 triangles — and the movement is
+> not animated: it is a recording of the simulation. **The animal stands, on
+> five or six feet, and it does not walk.** That is the honest result: six
+> cords built independently cannot coordinate, and a tripod gait is the first
+> thing step 5 owes.
 
 ## What "real" means here
 
