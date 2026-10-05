@@ -34,6 +34,7 @@ REQUIRED = (
     "testEveryPoolIsPlacedOnTheJointTheAssetNames",
     "testTheConnectomeIsAskedForTheNamesTheAssetCarries",
     "testAMissingGroupIsReportedRatherThanReadAsSilence",
+    "testTheDescendingNeuronsCarryTheBrainsToneIntoTheCord",
     "testTheJointListStartsWithTheFreeJoint",
     "testTheLoopIsBalancedAroundTheStanceItMeasured",
     "testTheLoopReachesBothDirectionsFromTheStance",

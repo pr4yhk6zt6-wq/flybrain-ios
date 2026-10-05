@@ -45,8 +45,9 @@ protocol FlyCordRateSource: AnyObject {
     /// Smoothed firing rate of a named population, Hz.
     func poolRate(_ name: String) -> Double
     /// Drive a named population: a current, in threshold units. Called once per
-    /// cord update with what the organ is reporting.
-    func setOrganDrive(_ name: String, _ value: Double)
+    /// cord update — with what an organ is reporting for an `organ:` group, and
+    /// with the brain's tone for the descending group.
+    func setGroupDrive(_ name: String, _ value: Double)
 }
 
 // MARK: - The constants the loop has to choose
@@ -93,6 +94,13 @@ struct FlyCordSettings {
     /// Which organs are wired up. Both by default; a single-channel run is how
     /// step 3 showed which one does the work.
     var channels: Set<String> = ["chordotonal", "campaniform"]
+    /// The population that carries the brain's tone into the cord, by the name
+    /// the shipped connectome gives it — `build/flybanc_meta.json` lists
+    /// `descending` with 1,316 cells. Assumption #5 is about *this* group: the
+    /// tone is the brain's, and the cord hears it the way the reference sends
+    /// it (`tools/step3_closedloop.py`: `drivers = [(self.desc, self.args.desc,
+    /// 0, ms)]`, injected on every millisecond of every mode).
+    var descendingGroup: String = "descending"
 }
 
 // MARK: - The loop
@@ -156,6 +164,9 @@ final class FlyCord {
     private(set) var offset: [Double] = []
     /// What each organ is reporting, for the HUD and the tests.
     private(set) var organDrive: [String: Double] = [:]
+    /// The tone last put on the descending population — the brain's own input to
+    /// the cord, kept so the HUD and the tests can see it rather than infer it.
+    private(set) var descendingDrive: Double = 0
 
     private var calibratingMs: Double = 0
     private var calibrationSamples: [Double] = []
@@ -217,11 +228,19 @@ final class FlyCord {
         calibrationSamples = [Double](repeating: 0, count: drivenHinges.count)
         offset = [Double](repeating: 0, count: hingeCount)
 
-        // Which of the names this loop depends on the connectome actually has.
-        for name in Set(pools.map { $0.group } + organs.map { $0.group }).sorted() {
+        // Which of the names this loop depends on the connectome actually has —
+        // including the one that carries the brain's tone, because a cord whose
+        // descending input is missing is standing on its sense organs alone and
+        // would otherwise never say so.
+        for name in Set(pools.map { $0.group } + organs.map { $0.group }
+                        + [settings.descendingGroup]).sorted() {
             if !source.hasGroup(name) { missingGroups.append(name) }
         }
     }
+
+    /// Does the shipped connectome carry the descending population? The cord
+    /// does not carry the brain's tone into itself if it does not.
+    var descendingPresent: Bool { !missingGroups.contains(settings.descendingGroup) }
 
     /// How many pools the connectome answered for, for the HUD.
     var poolsPresent: Int {
@@ -240,6 +259,20 @@ final class FlyCord {
     /// per millisecond of simulated time, which is the connectome's own timestep.
     @discardableResult
     func update(dtMs: Double, proprio: FlyProprioception) -> [Double] {
+        // --- the brain -> cord -----------------------------------------------
+        // The tone the cord runs on is the *brain's*, and it is put where the
+        // reference puts it: on the descending neurons, which are the only
+        // population in this connectome that carries the brain's state into the
+        // cord (tools/step3_closedloop.py injects `args.desc` into `net.desc_idx`
+        // on every millisecond of every mode). What the cord adds below is what
+        // the *body* is reporting, which is a different thing from the brain's
+        // tone: the sense organs are told what their receptors see, and at rest
+        // that value happens to be the same number (assumption #10 — the
+        // proprioceptive tone re-uses the brain's so that this step introduces no
+        // magnitude of its own).
+        descendingDrive = settings.tone
+        source?.setGroupDrive(settings.descendingGroup, descendingDrive)
+
         // --- the load a leg carries standing: the campaniform organ's scale ---
         if referenceLoad.isEmpty {
             for (leg, force) in proprio.legLoad where force > 0 {
@@ -274,7 +307,7 @@ final class FlyCord {
                 }
                 let driven = max(0, value)
                 organDrive[organ.group] = driven
-                source?.setOrganDrive(organ.group, driven)
+                source?.setGroupDrive(organ.group, driven)
             }
         } else {
             // Calibrating: the organs are held at the value they have while
@@ -282,7 +315,7 @@ final class FlyCord {
             // nothing else. Step 3 calls this "clamped".
             for organ in organs {
                 organDrive[organ.group] = settings.tone
-                source?.setOrganDrive(organ.group, settings.tone)
+                source?.setGroupDrive(organ.group, settings.tone)
             }
         }
 
@@ -349,9 +382,11 @@ final class FlyCord {
         case .calibrating:
             return String(format: "measuring the stance · %d pools", pools.count)
         case .running:
-            return String(format: "%d/%d pools firing · %.1f Hz · organs %@",
+            return String(format: "%d/%d pools firing · %.1f Hz · organs %@ · desc %@",
                           activePools, pools.count, meanPoolHz,
-                          settings.channels.sorted().joined(separator: "+"))
+                          settings.channels.sorted().joined(separator: "+"),
+                          descendingPresent ? String(format: "%.1f", descendingDrive)
+                                            : "missing")
         }
     }
 }
@@ -371,7 +406,7 @@ final class SimulationRateSource: FlyCordRateSource {
 
     func hasGroup(_ name: String) -> Bool { groups.contains(name) }
     func poolRate(_ name: String) -> Double { Double(engine.groupRate(name)) }
-    func setOrganDrive(_ name: String, _ value: Double) {
+    func setGroupDrive(_ name: String, _ value: Double) {
         engine.setGroupDrive(name, Float(value))
     }
 }

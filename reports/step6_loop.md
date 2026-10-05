@@ -105,3 +105,50 @@ Three fixes, all of them gates rather than promises:
    build if any test is skipped, and if any test in `REQUIRED` did not run. It
    was checked against run 49's own log: it fails on it, and passes on a log
    where the suite ran.
+
+## The tone now arrives where the reference sends it (delivery order #3)
+
+The cord had a hole in it that no measurement had reached: the loop's tone was
+being put on the **sense organs** and on nothing else. The organs are not the
+brain. In `tools/step3_closedloop.py` the tonic drive is injected into
+`net.desc_idx` — the descending neurons, the only population that carries the
+brain's state into the leg circuit — on every millisecond of every mode
+(`drivers = [(self.desc, self.args.desc, 0, ms)]`), and the organs get their
+*own* drive on top of it. The app had the second half only, which is why the
+animal on the phone stood on six disconnected legs with no brain input at all.
+
+`FlyCord.update` now injects `settings.tone` into `settings.descendingGroup`
+(`"descending"`, the connectome's own name) before anything else it does that
+millisecond, in both phases, and `FlyCordTests`
+`.testTheDescendingNeuronsCarryTheBrainsToneIntoTheCord` pins it: the first
+millisecond, the last millisecond of calibration, and the fact that a
+connectome without that group is reported in `missingGroups` instead of reading
+as 0 Hz. A missing descending population is not a missing pool — the test says
+so — but a cord that is standing on its organs alone has to say so out loud.
+
+**Is it a pathway or a label?** That is a question about the artifact the app
+carries, so it is answered there. `tools/verify_descending.py` (new, run in CI
+beside `verify_loop.py`) reads `build/flybanc.bin` the way `Connectome.swift`
+does and counts:
+
+| | measured |
+|---|---|
+| descending cells | 1,316 |
+| synapses out of them | 89,557 (68.1 per cell) |
+| **into the 371 pool motor neurons, directly** | **3,283** |
+| per leg, direct | 52–59 (T1_left 56, T1_right 59, T2_left 52, T2_right 55, T3_left 52, T3_right 54) |
+| reachable within two hops | 367/371 pool motor neurons (98.9%) |
+| per leg, reachable | T1/T2 62/62, T3 59/61 |
+
+The tool fails the build if the group is absent, if `FlyCord.swift`'s name for
+it has drifted from the binary's, if fewer than 1,000 direct descending →
+pool synapses exist, or if any leg's pools fall below 90% two-hop
+reachability. The name check is the one that would have caught this whole
+section: the app and the binary have to agree about what the group is called.
+
+**What is not claimed.** That the tone *does* anything to the stance through
+this path on the phone. The synapse count says the cells are connected, not
+that 2.5 threshold units of current on a standing fly holds it up. That is the
+acceptance test of item 27, and it needs the device. Until it is measured, the
+only thing this section asserts is the wiring — and that the wiring is now the
+one the reference uses.

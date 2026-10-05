@@ -36,7 +36,7 @@ final class StubRates: FlyCordRateSource {
         return rates[name] ?? 0
     }
 
-    func setOrganDrive(_ name: String, _ value: Double) {
+    func setGroupDrive(_ name: String, _ value: Double) {
         drives[name] = value
     }
 }
@@ -179,6 +179,54 @@ final class FlyCordTests: XCTestCase {
                        "a group the connectome does not have must be reported: "
                        + "it reads as 0 Hz, which is what a quiet pool reads as")
         XCTAssertEqual(cord.poolsPresent, cord.pools.count - 1)
+    }
+
+    /// The cord's tone is the brain's, and it arrives where the reference sends
+    /// it: to the descending neurons. Until this test existed, the app put the
+    /// tone on the sense organs and on nothing else, so nothing in the loop
+    /// carried the brain's state into the cord at all — the animal stood on six
+    /// disconnected legs (AUDIT item 9, delivery order #3).
+    func testTheDescendingNeuronsCarryTheBrainsToneIntoTheCord() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        let p = stance(asset, hingeCount: cord.hingeCount)
+
+        XCTAssertTrue(cord.descendingPresent,
+                      "the shipped connectome carries the descending "
+                      + "population by this name (build/flybanc_meta.json)")
+
+        // The first millisecond, and every millisecond after it: the reference
+        // injects the tone into the descending neurons on every step of every
+        // mode, so a cord that is still measuring its own stance is not a cord
+        // that has been left without a brain.
+        _ = cord.update(dtMs: 1, proprio: p)
+        XCTAssertEqual(stub.drives[cord.settings.descendingGroup],
+                       cord.settings.tone,
+                       "the brain's tone is not on the descending neurons")
+        XCTAssertEqual(cord.descendingDrive, cord.settings.tone)
+        for _ in 0..<400 { _ = cord.update(dtMs: 1, proprio: p) }
+        XCTAssertEqual(cord.phase, .running)
+        XCTAssertEqual(stub.drives[cord.settings.descendingGroup],
+                       cord.settings.tone,
+                       "the descending drive was dropped once the loop started")
+
+        // The organs report what they see, and at rest that is the same number:
+        // assumption #10 re-uses the brain's tone so that this step adds no
+        // magnitude of its own. It is a restatement of the brain's tone, not a
+        // substitute for the descending drive above.
+        XCTAssertEqual(stub.drives[cord.organs[0].group],
+                       cord.settings.tone, accuracy: 1e-12)
+
+        // No descending population in the connectome is a fact the HUD has to
+        // state, not a silence it reads as 0 Hz.
+        let stub2 = StubRates()
+        stub2.absent = [cord.settings.descendingGroup]
+        let cord2 = FlyCord(asset: asset, source: stub2)
+        XCTAssertFalse(cord2.descendingPresent)
+        XCTAssertTrue(cord2.missingGroups.contains(cord.settings.descendingGroup))
+        XCTAssertEqual(cord2.poolsPresent, cord2.pools.count,
+                       "a missing descending group is not a missing pool")
     }
 
     // MARK: - The stance, and both directions from it

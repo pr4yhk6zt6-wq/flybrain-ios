@@ -394,6 +394,14 @@ jobs:
       - name: Step 6 — both ends of the loop must exist, and by the same names
         run: python3 tools/verify_loop.py
 
+      # The tone the cord runs on is the brain's, and FlyCord puts it on the
+      # descending population — where tools/step3_closedloop.py puts it. That is
+      # only a wiring claim until it is measured in the binary the app carries:
+      # the descending cells have to synapse onto the motor neurons the pool
+      # groups are made of, leg by leg. Reads build/flybanc.bin.
+      - name: Step 6 — the descending cells must reach the legs' motor pools
+        run: python3 tools/verify_descending.py
+
       - name: Pack the recorded world into the app bundle
         run: |
           python3 tools/pack_world.py
