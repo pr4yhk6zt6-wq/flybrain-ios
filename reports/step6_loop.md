@@ -228,3 +228,39 @@ in the app it can read but not run. `tools/pool_probe.py`'s first two rows are
 the measurement of the difference: 25/60 pools at ≥ 1 Hz with the raw
 convention, 27/60 with the 1.5× one — the cord's own 42 pools fire comfortably
 under either, which is why this was never the silence.
+
+## Where the silence can still be, and how the next build says which
+
+`python3 tools/pool_probe.py --only device` runs the same LIF with the app's own
+numbers and the pools fire — the cord's 42 pools, 23 of them at ≥ 1 Hz, mean
+12.60 Hz, best 67.50 Hz. So the readout path on the device is the only place
+left where a zero can be born, and there are four of them. The world HUD now
+prints one line that separates them, with the same quantities the probe prints,
+so a screenshotted phone can be read against this machine:
+
+    over 621 ms · net 456170 spk/s · groups 113/41834 · spikes 29940 (pools 432) · loudest …
+
+| reading | means |
+| --- | --- |
+| `groups 0/0` | `flybanc_meta.json` did not load: the group kernels are not encoded at all |
+| `net 0 spk/s` | the GPU wrote nothing — the command buffer failed, and its error is appended to this same line |
+| `spikes 0` with `net > 0` | the connectome is firing and no named group sees it: the group indices disagree with the cells |
+| `pools 0` with `spikes > 0` | every group sees its spikes except the pools — the rates are being divided by the wrong population, or read before the harvest |
+| `pools` ≈ probe | the readout is correct and the pool line's `0/42` is the muscles being genuinely quiet, which is a motor-pattern question, not a plumbing one |
+
+The last row is the one the probe's `over 200 ms · … (pools 432)` line predicts:
+the pool tally should be about 2.2 spikes per millisecond of window.
+
+Two things were changed to make that line trustworthy rather than decorative:
+
+* `groupCounts` is cleared by a dispatch in the same command buffer that
+  accumulates it (`resetCounters` with `zeroGroups`, once per frame, before the
+  step loop). It used to be a `memset` on the CPU at encode time, which is not
+  the same instant the GPU reaches the kernels: on a device whose queue is a few
+  frames deep, a frame's tallies could be dropped between the accumulation and
+  the harvest that reads them. CI now forbids the `memset` by name, and requires
+  the dispatch — a shader is the one file in the app CI can read but cannot run.
+* `harvestStats` records the command buffer's error if it had one and
+  `SimulationEngine.readoutLine` appends it. Every other counter the HUD shows is
+  incremented on the CPU while it encodes, so a GPU that refuses a kernel leaves
+  the physics running, the clock counting, and only the connectome quiet.

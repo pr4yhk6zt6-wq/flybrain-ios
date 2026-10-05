@@ -127,6 +127,42 @@ final class SimulationEngine {
     private(set) var groupRatesHz: [Float] = []
     private var groupIndexCount = 0
 
+    /// The GPU's own tally of group-member spikes, summed over every step of
+    /// the last harvested frame. It is the number the rates above are made of,
+    /// before the per-group division and the smoothing, so it is the one that
+    /// can tell a pool that is not firing from a pool whose rate was divided by
+    /// the wrong population size.
+    private(set) var groupSpikeSum = 0
+
+    /// The same tally restricted to the motor pools — the groups named
+    /// `pool:<leg>:<muscle>` by the same build that wrote this binary. It is
+    /// the decisive half of the pair: the photoreceptors and the sense organs
+    /// fire at hundreds of hertz, so a whole-connectome tally stays large even
+    /// when every muscle the animal has is quiet.
+    private(set) var poolSpikeSum = 0
+
+    /// Indices of `groupNames` that are motor pools, resolved once.
+    private var poolGroupIndices: [Int] = []
+
+    /// The last command buffer's error, if it had one. A GPU that refuses a
+    /// kernel is otherwise invisible from here: every counter the HUD reads is
+    /// incremented on the CPU while it encodes, so the animal keeps walking,
+    /// the clock keeps counting and only the connectome goes quiet.
+    private(set) var lastCommandBufferError: String?
+
+    /// What the readout path measured, in one line, for the HUD and for
+    /// `tools/pool_probe.py` to be read against each other on the same binary:
+    /// the connectome's own spike rate (a GPU-written counter, so a zero here
+    /// is a GPU that is not running), how big the group machinery is, and the
+    /// group tallies the per-pool rates are computed from.
+    var readoutLine: String {
+        var s = String(format: "net %.0f spk/s · groups %d/%d · spikes %d (pools %d)",
+                       stats.spikesPerSecond, groupNames.count,
+                       groupIndexCount, groupSpikeSum, poolSpikeSum)
+        if let e = lastCommandBufferError { s += " · gpu error: \(e)" }
+        return s
+    }
+
     private var params = SimParams()
 
     /// Longest synaptic delay in the dataset is 19 ms; the ring needs one more
@@ -205,6 +241,8 @@ final class SimulationEngine {
         groupDrives = try zeroed(groupCount * MemoryLayout<Float>.stride, "groupDrives")
 
         groupNames = groups.map { $0.name }
+        poolGroupIndices = groupNames.enumerated()
+            .filter { $0.element.hasPrefix("pool:") }.map { $0.offset }
         groupSizes = groups.map { $0.count }
         groupRatesHz = [Float](repeating: 0, count: groups.count)
         groupIndexCount = connectome.groupIndexCount
@@ -294,8 +332,27 @@ final class SimulationEngine {
             dispatch(e, psoDriveGroups, threads: groupIndexCount)
             e.endEncoding()
         }
-        memset(groupCounts.contents(), 0,
-               max(groupNames.count, 1) * MemoryLayout<UInt32>.stride)
+
+        // --- clear the frame's group tallies, on the GPU --------------------
+        // `groupSpikes` accumulates across every step below and the harvest in
+        // the completion handler reads the total, so the clear has to happen
+        // before the first step and after the previous frame's read: that is a
+        // statement about *GPU* order, and only a dispatch can make it. The
+        // memset this replaces ran at encode time, which is not the same thing.
+        if !groupNames.isEmpty, groupIndexCount > 0,
+           let e = cb.makeComputeCommandEncoder() {
+            e.label = "resetGroups"
+            e.setComputePipelineState(psoReset)
+            e.setBuffer(spikeCount, offset: 0, index: 0)
+            e.setBuffer(statsBuffer, offset: 0, index: 1)
+            e.setBuffer(groupCounts, offset: 0, index: 2)
+            var gc = UInt32(groupNames.count)
+            var zero: UInt32 = 1
+            e.setBytes(&gc, length: MemoryLayout<UInt32>.stride, index: 3)
+            e.setBytes(&zero, length: MemoryLayout<UInt32>.stride, index: 4)
+            dispatch(e, psoReset, threads: max(16, groupNames.count))
+            e.endEncoding()
+        }
 
         for _ in 0..<steps {
             // --- reset the per-step counters ------------------------------
@@ -304,6 +361,11 @@ final class SimulationEngine {
                 e.setComputePipelineState(psoReset)
                 e.setBuffer(spikeCount, offset: 0, index: 0)
                 e.setBuffer(statsBuffer, offset: 0, index: 1)
+                e.setBuffer(groupCounts, offset: 0, index: 2)
+                var gc = UInt32(groupNames.count)
+                var zero: UInt32 = 0
+                e.setBytes(&gc, length: MemoryLayout<UInt32>.stride, index: 3)
+                e.setBytes(&zero, length: MemoryLayout<UInt32>.stride, index: 4)
                 e.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                        threadsPerThreadgroup: MTLSize(width: 16, height: 1, depth: 1))
                 e.endEncoding()
@@ -415,7 +477,12 @@ final class SimulationEngine {
             e.endEncoding()
         }
 
-        cb.addCompletedHandler { [weak self] _ in
+        cb.addCompletedHandler { [weak self] cb in
+            if let error = cb.error {
+                self?.lastCommandBufferError = error.localizedDescription
+            } else {
+                self?.lastCommandBufferError = nil
+            }
             self?.harvestStats(steps: steps)
         }
         cb.commit()
@@ -475,13 +542,19 @@ final class SimulationEngine {
         let c = groupCounts.contents().assumingMemoryBound(to: UInt32.self)
         let windowMs = Float(steps) * params.dtMillis
         guard windowMs > 0 else { return }
+        var sum = 0
+        var pools = 0
         for i in 0..<groupNames.count {
             let size = Float(max(groupSizes[i], 1))
             let hz = Float(c[i]) / size * 1000.0 / windowMs
             // Light smoothing: the body should respond to a rate, not to the
             // frame-to-frame jitter of a few hundred neurons.
             groupRatesHz[i] += (hz - groupRatesHz[i]) * 0.35
+            sum += Int(c[i])
         }
+        for i in poolGroupIndices { pools += Int(c[i]) }
+        groupSpikeSum = sum
+        poolSpikeSum = pools
     }
 
     private func harvestStats(steps: Int) {

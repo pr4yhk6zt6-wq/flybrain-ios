@@ -268,8 +268,15 @@ final class WorldModel: ObservableObject {
             let loudest = c.loudestPools(3)
                 .map { String(format: "%@ %.1f", $0.0, $0.1) }
                 .joined(separator: " · ")
-            cordDetail = String(format: "over %d connectome ms · loudest %@",
+            // The readout line carries the three numbers that separate the
+            // ways the pools can read zero: the connectome's own spike rate
+            // (a GPU-written counter), the size of the group machinery, and the
+            // group tallies the per-pool rates are divided out of. A screenshot
+            // of this line is comparable, number for number, with
+            // `python3 tools/pool_probe.py --only device` on the same binary.
+            cordDetail = String(format: "over %d ms · %@ · loudest %@",
                                 engine?.stats.simulatedMilliseconds ?? 0,
+                                engine?.readoutLine ?? "no engine",
                                 loudest.isEmpty ? "—" : loudest)
         }
     }

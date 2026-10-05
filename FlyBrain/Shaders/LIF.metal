@@ -326,12 +326,23 @@ kernel void reduceStats(
 //  Kernel 7 — reset the per-step counters.
 // ============================================================================
 kernel void resetCounters(
-    device uint *spikeCount [[buffer(0)]],
-    device uint *stats      [[buffer(1)]],
-    uint         gid        [[thread_position_in_grid]])
+    device uint   *spikeCount  [[buffer(0)]],
+    device uint   *stats       [[buffer(1)]],
+    device uint   *groupCounts [[buffer(2)]],
+    constant uint &groupCount  [[buffer(3)]],
+    constant uint &zeroGroups  [[buffer(4)]],
+    uint           gid         [[thread_position_in_grid]])
 {
     if (gid == 0) spikeCount[0] = 0;
     if (gid < 11) stats[gid] = 0;
+    // The group tallies are the one counter that accumulates across a whole
+    // frame, so it is cleared once — by the GPU, in the same command buffer
+    // where the steps below accumulate it. Clearing it from the CPU with
+    // memset() happened at *encode* time, which is not the time the GPU reaches
+    // these kernels: a device that keeps its queue a few frames deep is a
+    // device where the clear and the accumulation can swap places, and then a
+    // frame's tallies are thrown away before anything reads them.
+    if (zeroGroups != 0 && gid < groupCount) groupCounts[gid] = 0;
 }
 
 // ===========================================================================

@@ -69,7 +69,7 @@ def load(bin_path: pathlib.Path, meta_path: pathlib.Path):
         g = groups[name]
         return group_idx[g["start"]:g["start"] + g["count"]].astype(np.int64)
 
-    return dict(n=n, e=e, N=n,
+    return dict(n=n, e=e, N=n, n_group_idx=n_group_idx,
                 rowPtr=view("csrRowPtr", np.uint32),
                 colIdx=view("csrColIdx", np.uint32),
                 weight=view("csrWeight", np.float16).astype(np.float32),
@@ -203,6 +203,21 @@ def main() -> int:
               f"— the HUD's line")
         print(f"  population        {row['population']:8.2f} Hz, "
               f"never fired {row['never_fired_pct']:.1f}%")
+        # The HUD's own readout line, in the HUD's own units and over the same
+        # kind of window, so a screenshot of the phone and this run on the same
+        # binary can be read side by side — the same three quantities:
+        # `net` is every spike in the connectome per second, `groups` is the
+        # named-group machinery the kernels are encoded against, and
+        # `group spikes` is the callers' own tally (SimulationEngine.groupSpikeSum
+        # on the device, summed here over all 113 groups for this window).
+        win_ms = args.ms
+        def tally(names):
+            return sum(hz(c, window, name, win_ms) * len(c["members"](name))
+                       * (win_ms / 1000.0) for name in names)
+        print(f"  the HUD's line    over {win_ms} ms · "
+              f"net {row['population'] * c['N']:.0f} spk/s · "
+              f"groups {len(c['groups'])}/{c['n_group_idx']} · "
+              f"spikes {tally(c['groups']):.0f} (pools {tally(cord_pools):.0f})")
         best = np.argsort(-pool_hz)[:5]
         print("  loudest pools: " + ", ".join(f"{pools[i].split(':')[1]}/"
                                               f"{pools[i].split(':')[2]} "

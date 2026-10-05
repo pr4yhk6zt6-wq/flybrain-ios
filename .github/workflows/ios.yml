@@ -408,6 +408,24 @@ jobs:
           grep -q 'clamp(P.cameraBias + contrast, 0.0f, 4.0f)' FlyBrain/Shaders/LIF.metal \
             || { echo "the retina's documented [0,4] clamp is gone (ASSUMPTIONS #15)"; exit 1; }
 
+      # The group tallies are the one counter that accumulates across a whole
+      # frame while the harvest that reads them runs after the GPU is done. That
+      # is an ordering claim, and only a dispatch inside the same command buffer
+      # can make it: the memset this gate forbids ran at *encode* time, which is
+      # not the time the GPU reaches the kernels, so a device that keeps its
+      # queue a few frames deep can throw a frame's tallies away before anything
+      # reads them. Both halves are pinned because either one alone is a bug.
+      - name: Step 6 — the group tallies must be cleared on the GPU, not the CPU
+        run: |
+          grep -q 'if (zeroGroups != 0 && gid < groupCount) groupCounts\[gid\] = 0;' \
+            FlyBrain/Shaders/LIF.metal \
+            || { echo "resetCounters no longer clears the group tallies on the GPU"; exit 1; }
+          if grep -q 'memset(groupCounts' FlyBrain/Sources/SimulationEngine.swift; then
+            echo "SimulationEngine is clearing groupCounts from the CPU again: that"
+            echo "write lands at encode time and races the GPU's accumulation."
+            exit 1
+          fi
+
       - name: Step 6 — the motor pools must be in the connectome
         run: python3 tools/verify_pools.py
 
