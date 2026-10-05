@@ -189,7 +189,11 @@ final class WorldModel: ObservableObject {
         world.apply(live: live)
     }
 
-    deinit { stop() }
+    // No `deinit { stop() }`: a CADisplayLink retains its target, so a display
+    // link that is still scheduled is a display link that keeps this object
+    // alive — the deinit could never run while there was anything to stop. The
+    // screen's `.onDisappear` calls `stop()`, and `stop()` invalidates the link,
+    // which is the only thing that can actually end the loop.
 
     func start() {
         guard link == nil else { return }
