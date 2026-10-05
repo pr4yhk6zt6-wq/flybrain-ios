@@ -1,0 +1,48 @@
+{
+  "params": {
+    "ms": 400,
+    "gain": 12.0
+  },
+  "T5_no_stimulus": {
+    "wingL_hz": 0.0,
+    "wingR_hz": 0.0,
+    "rms_asym_hz": 0.0,
+    "pass": true
+  },
+  "T6_looming": {
+    "rates": {
+      "looming": {
+        "LC4_hz": 3.0511627906976746,
+        "LPLC2_hz": 52.39779005524862,
+        "DNp01_hz": 146.0
+      },
+      "receding": {
+        "LC4_hz": 3.3302325581395347,
+        "LPLC2_hz": 48.59668508287293,
+        "DNp01_hz": 132.0
+      },
+      "static": {
+        "LC4_hz": 2.9767441860465116,
+        "LPLC2_hz": 52.68508287292818,
+        "DNp01_hz": 150.0
+      }
+    },
+    "pass": {
+      "LC4_hz": false,
+      "LPLC2_hz": false,
+      "DNp01_hz": false
+    }
+  },
+  "T7_optomotor": {
+    "wingL_hz": 209.79166666666666,
+    "wingR_hz": 255.20833333333331,
+    "steerL_hz": 88.95833333333333,
+    "steerR_hz": 153.125,
+    "responds": true
+  },
+  "fails": [
+    "T6_LC4_hz",
+    "T6_LPLC2_hz",
+    "T6_DNp01_hz"
+  ]
+}

@@ -72,6 +72,13 @@ jobs:
       - name: Validate the connectome
         run: python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
 
+      # Round-5 phase 3: connectome-level probes T5-T7. These REPORT — a
+      # negative finding (e.g. no looming preference) is printed and written
+      # to reports/phase3_probes.json, never tuned away, so the step is green
+      # unless the probe itself crashes.
+      - name: Phase-3 connectome probes (T5-T7, report-only)
+        run: python3 tools/phase3_probes.py --ms 400 --gain 12
+
       - name: Generate the Xcode project
         run: |
           xcodegen generate --spec project.yml
