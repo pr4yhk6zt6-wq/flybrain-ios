@@ -215,3 +215,16 @@ those readouts against a stub connectome, so the HUD cannot report a number the
 connectome did not give — and the moment a device build is in hand, the
 acceptance test of item 27 becomes a matter of reading two numbers off a
 screenshot instead of guessing.
+
+**Postscript, the same commit.** The drive the cord injects is now the current
+it says it is. The kernel was adding every external input as
+`externalInput × externalDrive`, so the tone of assumption #5 (2.5) reached the
+membrane as 3.75 while `tools/verify_banc.py` — the reference `LIF.metal`'s own
+header claims to reproduce — adds `I_ext` raw. `docs/ASSUMPTIONS.md` #25 now
+records the convention, `sampleRetina` keeps the retinal amplitude on the camera
+path where its name says it belongs (so the camera's drive is unchanged,
+bit for bit), and CI asserts both lines by name, since a shader is the one file
+in the app it can read but not run. `tools/pool_probe.py`'s first two rows are
+the measurement of the difference: 25/60 pools at ≥ 1 Hz with the raw
+convention, 27/60 with the 1.5× one — the cord's own 42 pools fire comfortably
+under either, which is why this was never the silence.
