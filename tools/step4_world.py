@@ -414,11 +414,24 @@ def geom_colour(model, i):
 
 
 def geom_manifest(model, keep):
+    """
+    One row per visible part, carrying its own index into the recorded part
+    axis.
+
+    The index is written, not counted by whoever draws. Every renderer has to
+    skip the rows without a mesh — the floor — when it builds its nodes, and a
+    counter of its own then drifts by one for every part after the first one
+    it skipped. The floor is part 0, so the drift is the whole animal: every
+    mesh drawn with the pose of the part before it. `part` removes the
+    question, and `tools/pack_world.py` refuses a manifest where it is not the
+    sequence 0, 1, 2 …
+    """
     import mujoco
     out = []
-    for i in keep:
+    for pos, i in enumerate(keep):
         t = int(model.geom_type[i])
         row = {
+            "part": pos,
             "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or f"geom{i}",
             "body": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
                                       int(model.geom_bodyid[i])) or "world",

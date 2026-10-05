@@ -37,10 +37,20 @@ struct WorldManifest: Decodable {
     struct WorldGeom: Decodable {
         let name: String
         let rgba: [Double]
+        /// The mesh scale, which the model needs: the scanned meshes are
+        /// about twenty times life size and MuJoCo's geoms carry the factor.
         let size: [Double]
         /// Absent for the parts that are not meshes — the floor, which this
         /// draws itself rather than reading from the file.
         let mesh: Int?
+        /// This part's own row in the recorded pose track, written by
+        /// `tools/step4_world.py`. Not the node's position in this array: the
+        /// floor is a part with no mesh, so anything that counts for itself
+        /// while it skips the floor is one ahead of the recording for the
+        /// whole animal. Absent only in a manifest written before the field
+        /// existed, in which case the counting fallback is what that manifest
+        /// was made for.
+        let part: Int?
     }
 
     struct WorldBodyGeometry: Decodable {
@@ -103,6 +113,10 @@ final class FlyWorld: @unchecked Sendable {
     private(set) var nodes: [SCNNode] = []
     /// The same parts' descriptions, index-aligned with `nodes`.
     private var parts: [WorldManifest.WorldGeom] = []
+    /// Which row of the recorded pose track each node reads, index-aligned
+    /// with `nodes`. The manifest's `part`, or — for a manifest written
+    /// before that field existed — the same count this file used to keep.
+    private var partOf: [Int] = []
 
     private var framesData = Data()
     /// node index -> index into the body asset's `visual` array, built once
@@ -192,6 +206,7 @@ final class FlyWorld: @unchecked Sendable {
             animal.addChildNode(node)
             nodes.append(node)
             parts.append(geom)
+            partOf.append(geom.part ?? nodes.count - 1)
         }
 
         FlyWorld.dress(scene: scene, floorZ: floorZ)
@@ -339,9 +354,14 @@ final class FlyWorld: @unchecked Sendable {
 
         framesData.withUnsafeBytes { raw in
             let s = raw.bindMemory(to: Float32.self)
+            guard s.count >= frameCount * stride else { return }
             let b0 = i0 * stride, b1 = i1 * stride
             for (k, node) in nodes.enumerated() {
-                let p = b0 + k * 7, q = b1 + k * 7
+                // The part this node follows, not the node's own index: see
+                // `partOf`.
+                let part = k < partOf.count ? partOf[k] : k
+                guard part >= 0, part < partCount else { continue }
+                let p = b0 + part * 7, q = b1 + part * 7
                 node.position = SCNVector3(
                     x: mix(s[p], s[q], t),
                     y: mix(s[p + 1], s[q + 1], t),
@@ -352,15 +372,23 @@ final class FlyWorld: @unchecked Sendable {
                     (s[q + 3], s[q + 4], s[q + 5], s[q + 6]), t)
                 node.orientation = SCNVector4(orient.1, orient.2, orient.3,
                                               orient.0)
-                if k < parts.count {
-                    let sz = parts[k].size
-                    if sz.count >= 3 {
-                        node.scale = SCNVector3(Float(sz[0]), Float(sz[1]),
-                                                Float(sz[2]))
-                    }
-                }
+                setScale(node, k)
             }
         }
+    }
+
+    /// The mesh, sized the way the model sizes it.
+    ///
+    /// The scanned meshes are stored about twenty times life size — the thorax
+    /// is 1.16 units long before it is scaled by 0.060 — and the geom's `size`
+    /// is the factor that makes it a fly. SceneKit has no such factor of its
+    /// own, so a node that is posed without it draws a mesh that is twenty
+    /// times too big, which puts the camera inside the animal.
+    private func setScale(_ node: SCNNode, _ k: Int) {
+        guard k < parts.count else { return }
+        let sz = parts[k].size
+        guard sz.count >= 3 else { return }
+        node.scale = SCNVector3(Float(sz[0]), Float(sz[1]), Float(sz[2]))
     }
 
     /// Pose the animal from the live solver.
@@ -388,6 +416,10 @@ final class FlyWorld: @unchecked Sendable {
             node.position = SCNVector3(Float(p.x), Float(p.y), Float(p.z))
             let q = quaternion(rotations[i])
             node.orientation = SCNVector4(q.x, q.y, q.z, q.w)
+            // The same sizing the recorded path uses, from the same geoms:
+            // the solver gives a pose, not a size, and a mesh drawn without
+            // its factor is twenty times life size.
+            setScale(node, k)
         }
     }
 

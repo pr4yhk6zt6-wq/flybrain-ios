@@ -205,6 +205,12 @@ async function getArrayBuffer(u, onProgress) {
     const mesh = new THREE.Mesh(geoms[gm.mesh], mat);
     mesh.matrixAutoUpdate = false;
     mesh.userData.size = new THREE.Vector3(gm.size[0], gm.size[1], gm.size[2]);
+    // Which row of the recorded part axis this mesh reads. It is written into
+    // the manifest by tools/step4_world.py (`part`) rather than counted here,
+    // because this loop skips the floor — part 0 — and a counter of our own
+    // would then be one ahead of the recording for the whole animal.
+    mesh.userData.part = gm.part !== undefined ? gm.part
+                                               : parts.length;
     animal.add(mesh);
     parts.push(mesh);
   }
@@ -272,7 +278,7 @@ async function getArrayBuffer(u, onProgress) {
   function apply() {
     const base = Math.min(NFRAME - 1, Math.max(0, Math.floor(frame))) * STRIDE;
     for (let i = 0; i < parts.length; i++) {
-      const o = base + i * 7;
+      const o = base + parts[i].userData.part * 7;
       p.set(FR[o], FR[o + 1], FR[o + 2]);
       q.set(FR[o + 4], FR[o + 5], FR[o + 6], FR[o + 3]);   // x,y,z,w  ← stored w,x,y,z
       parts[i].matrix.compose(p, q, parts[i].userData.size);
