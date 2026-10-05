@@ -64,6 +64,7 @@ struct ContentView: View {
                             retinalDrive: engine.retinalActivity,
                             framesDelivered: engine.cameraFrames,
                             meanLuminance: engine.cameraLuminance,
+                            retinaCells: engine.retinaCells,
                             band: PaneBand.between(bars: bars, within: geo.size,
                                                    pane: ContentView.cameraWindowSize,
                                                    gap: 10, split: false),

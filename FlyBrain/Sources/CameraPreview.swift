@@ -4,9 +4,10 @@
 //
 //  Two things are going on here. The obvious one is the video-call-style picture
 //  in picture. The less obvious one is that it doubles as a diagnostic: the
-//  camera drives only 10,647 of 139,255 neurons, so its effect on the whole
-//  point cloud is genuinely subtle. The drive meter under the video makes the
-//  coupling visible — cover the lens and the bar collapses within a second.
+//  camera drives only the 2,784 retina cells of a 175,237-neuron connectome, so
+//  its effect on the whole point cloud is genuinely subtle. The drive meter
+//  under the video makes the coupling visible — cover the lens and the bar
+//  collapses within a second, because the adaptation is on the cells.
 //
 
 import SwiftUI
@@ -46,6 +47,10 @@ struct FloatingCameraWindow: View {
     let retinalDrive: Float
     let framesDelivered: Int
     let meanLuminance: Float
+    /// The connectome's own retina-cell count, handed in rather than written
+    /// here: the label used to say 10,647, which was the FAFB brain-only
+    /// connectome this app ran before BANC.
+    let retinaCells: Int
     /// Where this window is allowed to be: the gap between the readouts at the
     /// top and the controls at the bottom, measured from the bars themselves by
     /// the screen that owns it (LayoutBand.swift). A window clamped with a
@@ -65,6 +70,17 @@ struct FloatingCameraWindow: View {
         expanded ? CGSize(width: 132, height: 200) : CGSize(width: 92, height: 70)
     }
 
+    /// The retina count, grouped the way a reader expects to see a number.
+    private var retinaLabel: String {
+        Self.grouping.string(from: NSNumber(value: retinaCells)) ?? "\(retinaCells)"
+    }
+
+    private static let grouping: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
 
@@ -74,8 +90,8 @@ struct FloatingCameraWindow: View {
                     .clipped()
 
                 // A faint grid standing in for the ommatidial lattice: a reminder
-                // that this frame is being resampled into 10,647 photoreceptors,
-                // not shown as a photograph.
+                // that this frame is being resampled into the connectome's own
+                // retina cells, not shown as a photograph.
                 if expanded {
                     OmmatidiaOverlay()
                         .frame(width: size.width, height: size.height * 0.74)
@@ -116,7 +132,7 @@ struct FloatingCameraWindow: View {
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.85))
                         Spacer()
-                        Text("10,647")
+                        Text(retinaLabel)
                             .font(.system(size: 7, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.45))
                     }

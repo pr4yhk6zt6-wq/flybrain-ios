@@ -1,12 +1,16 @@
 //
 //  LIF.metal
-//  Leaky integrate-and-fire simulation of the whole FlyWire FAFB v783 connectome.
+//  Leaky integrate-and-fire simulation of the whole BANC v888 connectome —
+//  brain *and* ventral nerve cord from one animal (175,237 neurons, 2,171,713
+//  edges, 19 MiB packed as CSR).
 //
-//  Reproduces, exactly, the NumPy reference in tools/verify_and_simulate.py:
+//  Reproduces, exactly, the NumPy reference in tools/verify_banc.py:
 //      tau_m 20 ms · tau_syn 5 ms · V_th 1.0 · V_reset 0 · t_ref 2 ms
-//      gain 6.0 · retinal drive 1.5 · noise sigma 0.015 · dt 1 ms
-//  Target numbers at that operating point: ~19 Hz population rate, stable, with
-//  activity propagating out of the optic lobe into the central complex.
+//      gain 12.0 · retinal drive 1.5 · noise sigma 0.015 · dt 1 ms
+//  Measured at that operating point (reports/banc_simulation.json): 17.3 Hz
+//  population rate, 28.6 Hz in the leg motor neurons, 119.0 Hz in the wing
+//  motor neurons, 79.7% of cells never firing — which is what a connectome
+//  looks like when it is not being told what to do.
 //
 //  Synaptic current is accumulated in FIXED POINT (int32, 1/65536 units) rather
 //  than float. Metal's float atomics need Metal 3 and an A14 or newer GPU; the

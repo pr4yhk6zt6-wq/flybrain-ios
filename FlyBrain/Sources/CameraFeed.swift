@@ -68,7 +68,8 @@ final class CameraFeed: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
 
         if !configured {
             session.beginConfiguration()
-            session.sessionPreset = .vga640x480   // 10,647 photoreceptors; VGA is plenty
+            session.sessionPreset = .vga640x480   // each retina cell samples one texel;
+                                              // VGA is 200x more than the 2,784 need
 
             if let device = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                     for: .video, position: .back),

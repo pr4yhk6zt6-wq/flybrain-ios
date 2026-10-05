@@ -75,6 +75,11 @@ final class BrainEngine: ObservableObject {
 
     var metadata: ConnectomeMetadata { connectome?.metadata ?? .fallback }
 
+    /// How many retina cells this connectome actually has, so the eye window
+    /// quotes the number in the data rather than a number from an older one.
+    /// BANC v888: 1,372 left + 1,412 right.
+    var retinaCells: Int { connectome?.retinaCount ?? 0 }
+
     init() {
         guard let d = MTLCreateSystemDefaultDevice() else {
             // The simulator before iOS 13 / an unsupported device.

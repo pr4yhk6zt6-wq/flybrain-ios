@@ -66,8 +66,9 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: >-
           FlyBrain uses the rear camera as the fruit fly's eyes. Each frame is
-          sampled directly into 10,647 simulated photoreceptor neurons. Video
-          never leaves the device and is never recorded.
+          resampled directly into the 2,784 retina cells of the BANC v888
+          connectome (1,372 in the left eye, 1,412 in the right). Video never
+          leaves the device and is never recorded.
         NSMicrophoneUsageDescription: >-
           Optionally used as the fly's auditory input, driving the antennal
           mechanosensory neurons. Audio never leaves the device.

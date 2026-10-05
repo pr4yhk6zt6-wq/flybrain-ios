@@ -1,6 +1,6 @@
 //
 //  Renderer.swift
-//  One draw call for 139,255 neurons, plus a bounded set of spike arcs.
+//  One draw call for 175,237 neurons, plus a bounded set of spike arcs.
 //
 
 import Foundation
