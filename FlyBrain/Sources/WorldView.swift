@@ -128,12 +128,11 @@ final class WorldRig {
 
 /// Owns the recording and the clock that plays it.
 final class WorldModel: ObservableObject {
-    /// The frame being shown. Written at display rate; read by the renderer,
-    /// not by SwiftUI — `shownFrame` is the throttled copy the UI binds to.
-    private(set) var frame: Double = 0
-    @Published var shownFrame: Double = 0
-    @Published var playing: Bool = true
-    @Published var speed: Double = 0.25          // a fly at 1x is a blur
+    /// Running, or paused mid-stance.
+    @Published var running: Bool = true
+    /// Bumped at 10 Hz so the HUD re-reads the solver's own counters without
+    /// rebuilding itself sixty times a second.
+    @Published private(set) var pulses: Int = 0
 
     @Published var azimuth: Double = 2.2
     @Published var elevation: Double = 0.42
@@ -143,15 +142,19 @@ final class WorldModel: ObservableObject {
     var liveZoom: Double = 1.0
 
     let world: FlyWorld
+    /// The animal. Not a recording of one: see FlyLiveBody.
+    let live: FlyLiveBody
     let rig = WorldRig()
 
     private var link: CADisplayLink?
     private var last: CFTimeInterval = 0
     private var lastPublish: CFTimeInterval = 0
 
-    init(world: FlyWorld) {
+    init(world: FlyWorld, live: FlyLiveBody) {
         self.world = world
+        self.live = live
         world.scene.rootNode.addChildNode(rig.root)
+        world.apply(live: live)
     }
 
     deinit { stop() }
@@ -169,43 +172,33 @@ final class WorldModel: ObservableObject {
         link = nil
     }
 
-    /// Move to a frame by hand — either the slider or a nudge.
-    func seek(_ f: Double) {
-        frame = min(max(f, 0), Double(max(0, world.count - 1)))
-        shownFrame = frame
-    }
-
     @objc private func tick(_ l: CADisplayLink) {
         let now = l.timestamp
         let dt = last == 0 ? 0.0 : min(0.1, now - last)
         last = now
 
-        if playing {
-            var f = frame + dt * Double(world.hz) * speed
-            if f >= Double(world.count) { f -= Double(world.count) }
-            frame = f
-        }
+        if running { live.advance(wallSeconds: dt) }
         render()
 
         // 60 Hz publishing would rebuild the whole HUD sixty times a second.
         if now - lastPublish > 0.1 {
             lastPublish = now
-            shownFrame = frame
+            pulses &+= 1
         }
     }
 
     /// Pose the animal and put the cameras where they belong. Public so the
-    /// slider can show its frame immediately, without waiting for a tick.
+    /// screen can show the first frame before the display link ticks.
     func render() {
-        world.apply(frame: frame)
+        world.apply(live: live)
         rig.root.position = world.centre()
         rig.set(azimuth: azimuth,
                 elevation: elevation,
                 distance: distance / max(0.05, liveZoom))
     }
 
-    var seconds: Double { shownFrame / Double(max(1, world.hz)) }
-    var totalSeconds: Double { Double(world.count) / Double(max(1, world.hz)) }
+    /// Simulated seconds since the animal was stood up.
+    var simulatedSeconds: Double { live.simulatedMS / 1000 }
 }
 
 // MARK: - Loading
@@ -214,20 +207,22 @@ final class WorldModel: ObservableObject {
 /// world to the screen.
 struct WorldContainer: View {
     @State private var world: FlyWorld?
+    @State private var body: FlyLiveBody?
     @State private var message: String?
     @State private var started = false
+    @State private var stage = "reading the model"
     let onClose: () -> Void
 
     var body: some View {
         Group {
-            if let w = world {
-                WorldScreen(world: w, onClose: onClose)
+            if let w = world, let b = body {
+                WorldScreen(world: w, live: b, onClose: onClose)
             } else if let m = message {
                 WorldUnavailableView(message: m, onClose: onClose)
             } else {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("reading the recording")
+                    Text(stage)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -239,12 +234,20 @@ struct WorldContainer: View {
             guard !started else { return }
             started = true
             let r = await Task.detached(priority: .userInitiated) {
-                () -> Result<FlyWorld, Error> in
-                do { return .success(try FlyWorld()) }
-                catch { return .failure(error) }
+                () -> Result<(FlyWorld, FlyLiveBody), Error> in
+                do {
+                    let w = try FlyWorld()
+                    await MainActor.run { stage = "standing the animal up" }
+                    let asset = try FlyBodyAsset.loadFromBundle()
+                    let b = FlyLiveBody(asset: asset)
+                    b.startUp()
+                    return .success((w, b))
+                } catch { return .failure(error) }
             }.value
             switch r {
-            case .success(let w): world = w
+            case .success(let pair):
+                world = pair.0
+                body = pair.1
             case .failure(let e):
                 message = e.localizedDescription
             }
@@ -256,17 +259,39 @@ struct WorldContainer: View {
 
 struct WorldScreen: View {
     @StateObject private var model: WorldModel
-    @State private var leftOffset = CGSize(width: -110, height: -170)
-    @State private var rightOffset = CGSize(width: 110, height: -170)
+    @State private var leftOffset = CGSize(width: -110, height: -150)
+    @State private var rightOffset = CGSize(width: 110, height: -150)
     @State private var showPanes = true
     let onClose: () -> Void
 
-    init(world: FlyWorld, onClose: @escaping () -> Void) {
-        _model = StateObject(wrappedValue: WorldModel(world: world))
+    init(world: FlyWorld, live: FlyLiveBody, onClose: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: WorldModel(world: world, live: live))
         self.onClose = onClose
     }
 
+    /// What a floating pane is allowed to occupy.
+    ///
+    /// The panes used to be free: they could be dragged onto each other, onto
+    /// the readouts at the top, or under the transport at the bottom, and the
+    /// result looked like a broken screen. Now each one is confined to its own
+    /// half — the left pane can never cross to the right of the middle, the
+    /// right pane can never cross to the left of it — and neither can reach
+    /// the 150 points at the top where the readouts and the buttons live, or
+    /// the 160 at the bottom where the transport does.
+    private func limit(_ size: CGSize, side: Double) -> (CGSize) -> CGSize {
+        let halfWidth = max(70.0, size.width / 2 - 78)
+        let top = -size.height / 2 + 150
+        let bottom = size.height / 2 - 160
+        return { o in
+            let x = side < 0 ? min(-8.0, max(-halfWidth, o.width))
+                             : max(8.0, min(halfWidth, o.width))
+            let y = bottom > top ? min(bottom, max(top, o.height)) : o.height
+            return CGSize(width: x, height: y)
+        }
+    }
+
     var body: some View {
+        GeometryReader { geo in
         ZStack {
             // The animal, which you can orbit and pinch.
             WorldMainView(model: model)
@@ -290,26 +315,30 @@ struct WorldScreen: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 54)
+                .padding(.top, 8)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 WorldTransport(model: model)
                     .padding(.horizontal, 14)
-                    .padding(.bottom, 28)
+                    .padding(.bottom, 24)
             }
 
-            // The two flanking cameras, floating over everything.
+            // The two flanking cameras, floating over everything — each
+            // confined to its own half by `limit`.
             if showPanes {
-                DraggablePane(offset: $leftOffset, title: "left eye") {
+                DraggablePane(offset: $leftOffset, title: "left eye",
+                              limit: limit(geo.size, side: -1)) {
                     SideSceneView(scene: model.world.scene,
                                   pointOfView: model.rig.left)
                 }
-                DraggablePane(offset: $rightOffset, title: "right eye") {
+                DraggablePane(offset: $rightOffset, title: "right eye",
+                              limit: limit(geo.size, side: 1)) {
                     SideSceneView(scene: model.world.scene,
                                   pointOfView: model.rig.right)
                 }
             }
+        }
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -404,15 +433,21 @@ struct WorldMainView: UIViewRepresentable {
 struct DraggablePane<Content: View>: View {
     @Binding var offset: CGSize
     let title: String
+    /// Where this pane is allowed to be. Nil means anywhere.
+    let limit: ((CGSize) -> CGSize)?
     let content: Content
     @State private var settled = CGSize.zero
 
     init(offset: Binding<CGSize>, title: String,
+         limit: ((CGSize) -> CGSize)? = nil,
          @ViewBuilder content: () -> Content) {
         _offset = offset
         self.title = title
+        self.limit = limit
         self.content = content()
     }
+
+    private func clamp(_ o: CGSize) -> CGSize { limit?(o) ?? o }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -444,12 +479,17 @@ struct DraggablePane<Content: View>: View {
         .gesture(
             DragGesture()
                 .onChanged { g in
-                    offset = CGSize(width: settled.width + g.translation.width,
-                                    height: settled.height
-                                             + g.translation.height)
+                    offset = clamp(CGSize(width: settled.width
+                                                   + g.translation.width,
+                                          height: settled.height
+                                                   + g.translation.height))
                 }
                 .onEnded { _ in settled = offset }
         )
+        .onAppear {
+            offset = clamp(offset)
+            settled = offset
+        }
     }
 }
 
@@ -460,20 +500,24 @@ struct WorldHUD: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("the fly, in its own world")
+            Text("the fly, running here")
                 .font(.system(size: 12, weight: .semibold))
             Text("the real model · \(model.world.meshCount) meshes · "
                  + "\(model.world.faceCount) triangles")
                 .font(.system(size: 9))
-            Text("each leg driven by a cord of real neurons cut out of the "
-                 + "VNC")
+            Text("simulated on this device — 103 bodies, 102 joints, "
+                 + "74 contact geoms")
                 .font(.system(size: 9))
-            if let b = model.world.manifest.behaviour {
-                Text("moved \(String(format: "%.2f", b.net_displacement ?? 0))"
-                     + " units — it stands, it does not walk")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
+            Text(String(format: "feet down %d/6 · contacts %d · COM z %+.4f cm",
+                        model.live.feetDown, model.live.contacts,
+                        model.live.centreHeight))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(String(format: "muscle tone: posture only (%d of 102 joints) "
+                        + "· the cord is next",
+                        model.live.posture.filter { abs($0) > 1e-9 }.count))
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, 11)
@@ -488,41 +532,30 @@ struct WorldTransport: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
-                Button { model.playing.toggle() } label: {
-                    Image(systemName: model.playing ? "pause.fill" : "play.fill")
+                Button { model.running.toggle() } label: {
+                    Image(systemName: model.running ? "pause.fill" : "play.fill")
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(.bordered)
 
-                Slider(value: Binding(
-                    get: { model.shownFrame },
-                    set: { model.playing = false
-                           model.seek($0)
-                           model.render() }),
-                       in: 0...max(1, Double(model.world.count - 1)))
-
-                Text(String(format: "%.2fs", model.seconds))
+                Text(String(format: "%.1f s simulated", model.simulatedSeconds))
                     .font(.system(size: 11, design: .monospaced))
-                    .frame(width: 52, alignment: .trailing)
+                    .frame(minWidth: 104, alignment: .leading)
+
+                Spacer(minLength: 4)
+
+                Text(String(format: "%d steps · %.2f ms each",
+                            model.live.stepCount, model.live.dt * 1000))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 6) {
-                Text("speed")
-                    .font(.system(size: 9))
+                Text(String(format: "%.2f× real time on this device",
+                            model.live.realtime))
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.secondary)
-                ForEach([0.1, 0.25, 0.5, 1.0], id: \.self) { s in
-                    Button(String(format: "%g×", s)) { model.speed = s }
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(abs(model.speed - s) < 0.001
-                                    ? Color.accentColor.opacity(0.8)
-                                    : Color.primary.opacity(0.10),
-                                    in: Capsule())
-                        .foregroundStyle(abs(model.speed - s) < 0.001
-                                         ? Color.white : Color.primary)
-                }
-                Spacer()
+                Spacer(minLength: 4)
                 Text("drag to orbit · pinch to zoom")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)

@@ -25,9 +25,18 @@ struct ContentView: View {
                     .ignoresSafeArea()
 
                 VStack {
-                    HUDView(stats: engine.stats,
-                            fps: engine.fps,
-                            simulatedMs: engine.stats.simulatedMilliseconds)
+                    // The readouts and the buttons were two absolute overlays
+                    // with hard-coded top paddings (50 and 54), which put the
+                    // Map pill on top of the ≈power readout on a phone with a
+                    // notch. They are one row now, so they cannot collide.
+                    HStack(alignment: .top, spacing: 10) {
+                        HUDView(stats: engine.stats,
+                                fps: engine.fps,
+                                simulatedMs: engine.stats.simulatedMilliseconds)
+                        Spacer(minLength: 8)
+                        mapButtons
+                    }
+                    .padding(.top, 8)
                     Spacer()
                     if let info = engine.selected {
                         NeuronInspector(info: info,
@@ -59,40 +68,7 @@ struct ContentView: View {
                     .transition(.scale.combined(with: .opacity))
                 }
 
-                VStack {
-                    HStack(spacing: 12) {
-                        Spacer()
-                        // The world: the animal this brain belongs to, and
-                        // what it did when the cords were switched on.
-                        Button {
-                            showWorld = true
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "map.fill")
-                                Text("Map")
-                            }
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(.black.opacity(0.45),
-                                        in: Capsule())
-                            .overlay(Capsule().stroke(
-                                .white.opacity(0.25), lineWidth: 1))
-                        }
-                        Button {
-                            withAnimation { showControls.toggle() }
-                        } label: {
-                            Image(systemName: showControls ? "chevron.down.circle.fill"
-                                                           : "slider.horizontal.3")
-                                .font(.title2)
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.top, 54)
-                    Spacer()
-                }
+                // The two buttons live in the top row now; see above.
             } else {
                 LoadingView()
             }
@@ -112,6 +88,35 @@ struct ContentView: View {
         }
     }
 
+    /// Map and the controls toggle, side by side with the readouts.
+    private var mapButtons: some View {
+        HStack(spacing: 10) {
+            // The world: the animal this brain belongs to, running live.
+            Button {
+                showWorld = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "figure.walk.motion")
+                    Text("Body")
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.45), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
+            }
+            Button {
+                withAnimation { showControls.toggle() }
+            } label: {
+                Image(systemName: showControls ? "chevron.down.circle.fill"
+                                               : "slider.horizontal.3")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 30, height: 30)
+            }
+        }
+    }
 }
 
 // MARK: - HUD
@@ -135,7 +140,6 @@ struct HUDView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 50)
     }
 
     private func metric(_ label: String, _ value: String,
@@ -341,9 +345,10 @@ struct LoadingView: View {
     var body: some View {
         VStack(spacing: 14) {
             ProgressView().tint(.white)
-            Text("Loading 139,255 neurons…")
+            Text("Loading 175,237 neurons…")
                 .font(.footnote).foregroundStyle(.secondary)
-            Text("FlyWire FAFB v783").font(.caption2).foregroundStyle(.tertiary)
+            Text("BANC v888 · brain and nerve cord · 2,171,713 synapses")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 }

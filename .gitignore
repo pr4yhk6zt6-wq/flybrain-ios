@@ -29,3 +29,7 @@ FlyBrain/Resources/fly_anatomy.json
 # copies it in at build time
 FlyBrain/World/
 uploads/
+
+# development scratch: probes live in tools/probes/, this is the sandbox
+tmp/
+MUJOCO_LOG.TXT

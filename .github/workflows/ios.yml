@@ -295,6 +295,68 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      # ------------------------------------------------- step 5: the body, live
+      # The solver the phone runs, written in NumPy first so it can be checked
+      # against MuJoCo before a line of Swift exists. Three checks, and all
+      # three have to pass: forward kinematics against mj_forward to 1e-15
+      # (that one is a frame convention, not a tolerance question); twenty
+      # milliseconds of free fall against MuJoCo stepping the same model with
+      # the same 100 us integrator; and the animal standing for three seconds
+      # on its own six feet, on muscles and a floor and nothing else.
+      #
+      # Then the golden trace, which is what the Swift port is pinned to. The
+      # body asset is rebuilt first: a json field the solver reads is silently
+      # inert when it is absent, so every number below is stale until it is.
+      - name: Step 5 — rebuild the body asset
+        run: |
+          python3 tools/build_body.py --flybody data/flybody \
+            --out build/fly_body.json --meshes build/fly_meshes.bin
+
+      - name: Step 5 — the solver against MuJoCo, and the animal standing
+        run: |
+          python3 tools/fly_aba.py --verify \
+            --mjcf data/flybody/flybody-main/flybody/fruitfly/assets/fruitfly.xml \
+            --out reports/step5_aba.json
+
+      - name: Step 5 — the golden trace the Swift solver must reproduce
+        run: python3 tools/fly_aba.py --golden build/fly_golden.json
+
+      - name: Step 5 — read the report and fail if anything is wrong with it
+        run: |
+          python3 - <<'PY'
+          import json, sys
+
+          r = json.load(open('reports/step5_aba.json'))
+          k, d, st = r['kinematics'], r['dynamics'], r['standing']
+          checks = [
+              ('forward kinematics match mj_forward', k['ok']),
+              ('the first step of free fall matches MuJoCo', d['ok']),
+              ('body positions stay put in free fall', d['xpos'] < 1e-4),
+              ('the centre of mass stays put in free fall', d['com'] < 1e-6),
+              ('the animal stands on its own muscles', st['ok']),
+              ('no joint ran away', st['worst_joint_rate'] < 60),
+              ('the floor carries the animal weight',
+               0.8 <= st['support_over_weight_last_half'] <= 1.2),
+              ('the feet are down', st['feet_on_floor_mean'] >= 5.0),
+              ('it does not sink or lift while it stands',
+               st['com_z_sd_last_half'] < 0.01),
+          ]
+          ok = True
+          for label, cond in checks:
+              print(f"  {'ok  ' if cond else 'FAIL'} {label}")
+              ok &= bool(cond)
+          print(f"  standing: COM z {st['com_z_first']:+.5f} -> "
+                f"{st['com_z_last']:+.5f} cm, drift {st['drift_cm']:.4f} cm, "
+                f"support/weight {st['support_over_weight_last_half']:.3f}")
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Step 5 — pack the body into the app bundle
+        run: |
+          rm -f FlyBrain/World/fly_body.json
+          python3 tools/pack_body.py
+          ls -lh FlyBrain/World/
+
       # -------------------------------------------------------------- the app
       - name: Build the connectome binary for the app
         run: |

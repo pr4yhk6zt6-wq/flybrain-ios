@@ -3,17 +3,19 @@
 //  The animal, and the recording of it, as something a phone can hold.
 //
 //  The geometry is the real Janelia / Google DeepMind *flybody* model
-//  (Vaxenburg et al.): 85 meshes scanned from a real animal. The poses are
-//  not an animation — they are a recording of the simulation in
-//  tools/step4_world.py, in which each millisecond every leg's sense organ
-//  is told where the joint is and how much load the leg carries, a cord
-//  taken out of the BANC connectome runs, and its motor pools command the
-//  joints. Nothing is keyframed here; the only interpolation is the
-//  smoothing between two recorded frames.
+//  (Vaxenburg et al.): 85 meshes scanned from a real animal.
 //
-//  The three files this reads are generated. Run `tools/step4_world.py` then
-//  `tools/pack_world.py` before building, or the world opens with an
-//  explanation instead of a fly.
+//  The poses are no longer a recording. This class carries the meshes, the
+//  floor and the lights; `apply(live:)` takes the state of `FlyLiveBody` —
+//  the solver running on this device — and poses every node from it, once per
+//  display frame. `apply(frame:)` still exists because the mesh geometry and
+//  the recorded manifest come out of the same packer, but nothing drives it:
+//  the Map screen is not a playback any more.
+//
+//  The mesh geometry (world.json + fly.bin) and the body asset
+//  (fly_body.json, for the physics) are both generated. Run
+//  `tools/step4_world.py`, `tools/build_body.py`, then the two pack steps
+//  before building, or the world opens with an explanation instead of a fly.
 //
 
 import Foundation
@@ -103,8 +105,11 @@ final class FlyWorld: @unchecked Sendable {
     private var parts: [WorldManifest.WorldGeom] = []
 
     private var framesData = Data()
+    /// node index -> index into the body asset's `visual` array, built once
+    /// by name on the first live pose.
+    private var liveIndex: [Int]?
     private let floorZ: Float
-    private let frameCount: Int
+    private var frameCount: Int
     private let partCount: Int
     private let frameHz: Int
 
@@ -122,14 +127,17 @@ final class FlyWorld: @unchecked Sendable {
         guard let bodyURL = locate("fly", "bin") else {
             throw WorldLoadError.missing("fly.bin")
         }
-        guard let framesURL = locate("frames", "bin") else {
-            throw WorldLoadError.missing("frames.bin")
-        }
+        // The recorded pose track is optional now: the Map screen steps the
+        // solver instead of playing it back, and a build without the seven
+        // megabyte recording is a smaller build, not a broken one.
+        let framesURL = locate("frames", "bin")
 
         let manifest = try JSONDecoder().decode(
             WorldManifest.self, from: try Data(contentsOf: jsonURL))
         let bodyData = try Data(contentsOf: bodyURL, options: .mappedIfSafe)
-        framesData = try Data(contentsOf: framesURL, options: .mappedIfSafe)
+        if let framesURL {
+            framesData = (try? Data(contentsOf: framesURL, options: .mappedIfSafe)) ?? Data()
+        }
 
         let nV = manifest.body_geometry.n_vertex
         let nF = manifest.body_geometry.n_face
@@ -140,14 +148,15 @@ final class FlyWorld: @unchecked Sendable {
         }
         let stride = manifest.frames.parts * 7
         let expectFrames = manifest.frames.n * stride * 4
-        guard framesData.count >= expectFrames else {
+        if !framesData.isEmpty && framesData.count < expectFrames {
             throw WorldLoadError.corrupt("frames.bin is "
                 + "\(framesData.count) bytes, expected \(expectFrames)")
         }
 
+
         self.manifest = manifest
         self.floorZ = Float(manifest.floor_z)
-        self.frameCount = manifest.frames.n
+        self.frameCount = framesData.isEmpty ? 0 : manifest.frames.n
         self.partCount = manifest.frames.parts
         self.frameHz = max(1, 1000 / max(1, manifest.frames.stride_ms))
 
@@ -354,6 +363,34 @@ final class FlyWorld: @unchecked Sendable {
         }
     }
 
+    /// Pose the animal from the live solver.
+    ///
+    /// One node per visual geom, keyed by name — the mesh packer and the body
+    /// asset both come from the same MJCF geoms, so the names are the same
+    /// strings, and a name that is missing is a mesh that has no physics to
+    /// follow rather than a silent wrong pose on the wrong body.
+    func apply(live: FlyLiveBody) {
+        guard !nodes.isEmpty else { return }
+        let (positions, rotations) = live.visualWorld()
+        if liveIndex == nil {
+            var byName: [String: Int] = [:]
+            for (i, name) in live.visualName.enumerated() { byName[name] = i }
+            liveIndex = nodes.map { node in
+                guard let name = node.name else { return -1 }
+                return byName[name] ?? -1
+            }
+        }
+        guard let map = liveIndex else { return }
+        for (k, node) in nodes.enumerated() {
+            let i = map[k]
+            guard i >= 0, i < positions.count else { continue }
+            let p = positions[i]
+            node.position = SCNVector3(Float(p.x), Float(p.y), Float(p.z))
+            let q = quaternion(rotations[i])
+            node.orientation = SCNVector4(q.x, q.y, q.z, q.w)
+        }
+    }
+
     /// Where the animal is, so a camera can keep it in frame.
     func centre() -> SCNVector3 {
         guard !nodes.isEmpty else { return SCNVector3(0, 0, floorZ) }
@@ -367,9 +404,11 @@ final class FlyWorld: @unchecked Sendable {
         return SCNVector3(x / n, y / n, z / n)
     }
 
-    /// Frames in the recording.
+    /// Frames in the recording, if one was packed. Zero means the screen is
+    /// running the solver, which is the only way it runs now.
     var count: Int { frameCount }
     var hz: Int { frameHz }
+    var hasRecording: Bool { frameCount > 0 && !framesData.isEmpty }
     var floor: Float { floorZ }
     /// Meshes actually drawn — the parts that carry geometry.
     var meshCount: Int { nodes.count }
@@ -377,6 +416,44 @@ final class FlyWorld: @unchecked Sendable {
 }
 
 // MARK: - Small maths
+
+/// A rotation matrix as a quaternion (x, y, z, w) — Shepperd's method, the
+/// numerically stable branch of the four.
+func quaternion(_ m: Mat3) -> (x: Float, y: Float, z: Float, w: Float) {
+    let r00 = m.c0.x, r10 = m.c0.y, r20 = m.c0.z
+    let r01 = m.c1.x, r11 = m.c1.y, r21 = m.c1.z
+    let r02 = m.c2.x, r12 = m.c2.y, r22 = m.c2.z
+    let trace = r00 + r11 + r22
+    var w = 0.0, x = 0.0, y = 0.0, z = 0.0
+    if trace > 0 {
+        let s = (trace + 1).squareRoot() * 2
+        w = s / 4
+        x = (r12 - r21) / s
+        y = (r20 - r02) / s
+        z = (r01 - r10) / s
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1 + r00 - r11 - r22).squareRoot() * 2
+        w = (r12 - r21) / s
+        x = s / 4
+        y = (r01 + r10) / s
+        z = (r20 + r02) / s
+    } else if r11 > r22 {
+        let s = (1 + r11 - r00 - r22).squareRoot() * 2
+        w = (r20 - r02) / s
+        x = (r01 + r10) / s
+        y = s / 4
+        z = (r12 + r21) / s
+    } else {
+        let s = (1 + r22 - r00 - r11).squareRoot() * 2
+        w = (r01 - r10) / s
+        x = (r20 + r02) / s
+        y = (r12 + r21) / s
+        z = s / 4
+    }
+    let n = (w * w + x * x + y * y + z * z).squareRoot()
+    if n < 1e-12 { return (0, 0, 0, 1) }
+    return (Float(x / n), Float(y / n), Float(z / n), Float(w / n))
+}
 
 @inline(__always) private func mix(_ a: Float32, _ b: Float32,
                                    _ t: Float) -> Float {
