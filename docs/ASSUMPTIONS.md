@@ -14,8 +14,11 @@ Step 1 introduces no constants of its own: everything `tools/step1_anatomy.py`
 prints is read out of the MJCF or out of BANC, and everything `tools/step1_sim.py`
 does is MuJoCo integrating the model as shipped.
 
-**Current total: 6.** All six arrive with step 2, the first step that simulates
-the nerve cord rather than measuring it.
+**Current total: 14.** Six arrive with step 2, the first step that simulates
+the nerve cord rather than measuring it. Eight more arrive with step 3, the
+first step that joins that cord to a body — which means joining two vocabularies
+(BANC's muscles, flybody's joints) and inventing a transducer between what the
+body does and what the organ reports.
 
 | # | assumption | value | why | test that catches it |
 |---|---|---|---|---|
@@ -25,10 +28,21 @@ the nerve cord rather than measuring it.
 | 4 | axonal delay | soma-to-soma distance / 0.25 m/s, clipped to 1–8 ms | the distances are measured from `root_position_nm`; the speed is a stated conduction velocity | median 1 ms, p90 2 ms — sub-millisecond differences do not change the sign of the readouts, and the tool prints the distribution |
 | 5 | descending tone | a standing fly's brain drives its descending neurons at 2.5 (threshold units); a sensory population under test gets +3.0 | the descending neurons are the only cells that carry the brain's state into this subgraph, and a standing fly's cord is not silent | sweeping the tone from 1.0 to 3.0. **Test result: below 2.0 the motor pools are silent, above 3.0 they saturate; 2.5 is the first value where both tibia antagonists are active together, as they are in a standing leg.** |
 | 6 | scope of the circuit | the ≤3-hop neighbourhood of the leg's organs and motor neurons: 38,181 of 188,508 cells | the full connectome would make the sign of every 4-hop path meaningless | a cell that matters to the reflex but sits 4+ hops away is absent. Not yet measured; this is the known hole. |
+| 7 | muscle activation | τ = 60 ms, a first-order filter on each pool's spike rate | a joint cannot follow individual spikes, and insect skeletal muscle fuses twitches over tens of milliseconds | swept at 20 and 200 ms, with the jitter of the commanded angle reported at each — the tremor is the assumption made visible |
+| 8 | the antagonist command law | `ctrl = q_rest + (joint range) × (b − b_ref)`, where `b = ā_raiser / (ā_raiser + ā_lowerer)` | the joint's own anatomical range is the only scale the body model supplies, and a ratio does not care how *large* the rates are — so assumption #1, the synaptic scale, drops out of the loop entirely | the N* sweep: neither the standing pose nor the reflex moves with N*. And the standing test: at the measured `b_ref`, the joint sits at the pose step 1 measured |
+| 9 | muscle → joint | `POOL_ACTION` in `tools/step3_closedloop.py`; the trochanter is fused to the femur in *Drosophila*, so its muscles act on the coxa–femur joint | BANC names muscles, flybody names joints, and the only honest thing between them is the muscle's anatomical action | each joint's flexion and protraction direction is **measured on the assembled animal**, and every pool is either placed on a joint or listed under `pools_not_driven` |
+| 10 | proprioceptive tone | 2.5, the same number as the descending tone | a loaded leg's proprioceptors are tonically active, and re-using the brain's tone means this step adds no new magnitude of its own | the organ gain κ is swept, which spans the same range a change in the tone's modulation depth would |
+| 11 | chordotonal transduction | `drive = tone × (1 − polarity × κ × x)`, floored at zero, with `x` the knee's angle away from standing over half its range; κ = 1; polarity = flexion stretches the organ | the polarity is published (FeCO is stretched by flexion, relaxed by extension); κ is genuinely unknown, because a real FeCO is range-fractionated over a working range narrower than the joint's whole range | swept at κ = 1 / 4 / 16, and the polarity is run both ways. **Test result: see `docs/STEP3.md` §5.** |
+| 12 | campaniform transduction | `drive = tone × (this leg's normal ground-reaction force ÷ the force it carries standing)` | that is what a strain gauge is; there is no free gain in it | the load conditions (0 and 2 body weights) test it directly, and the measured force is reported at every condition |
+| 13 | which organ sees what | chordotonal ← femur–tibia angle; campaniform ← this leg's ground reaction force | the FeCO spans that joint; campaniform sensilla report cuticular strain from load | single-channel conditions run each on its own, and both are reported |
+| 14 | scope of the body | one front leg's three proximal joints are driven by the cord; the other five legs, the tarsus and the claw stay at the rest command step 1 used | the loop has to close somewhere, and a leg is the natural unit | the standing test, and the pools that are left out are listed rather than dropped |
 
 **Not modelled at all, and therefore not claimed:** gap junctions (electrical
-synapses), neuromodulation, muscle dynamics, synaptic plasticity, and any
-per-connection weight that is not the synapse count.
+synapses), neuromodulation, synaptic plasticity, and any per-connection weight
+that is not the synapse count. Muscle *dynamics* is modelled as the one-pole
+filter of assumption #7 and nothing more — no force–length, no force–velocity,
+no series elasticity. The body's actuators are the affine position actuators
+`flybody` ships, so the model inherits their stiffness as if it were muscle.
 
 ---
 

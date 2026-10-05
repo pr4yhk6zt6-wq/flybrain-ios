@@ -15,9 +15,17 @@ asked it to.
 > ([`reports/step1_anatomy.md`](reports/step1_anatomy.md)). Step 2 has taken the
 > leg reflex out of the connectome and checked it against the papers
 > ([`docs/STEP2.md`](docs/STEP2.md)): the organ contacts the published cell
-> types, the path is disynaptic as published, and the loop does **not** yet
-> move the leg — that negative result is written down and is what the next
-> commit has to fix. Nothing walks yet, on purpose.
+> types, and the path is disynaptic as published. **Step 3 has closed the loop**
+> ([`docs/STEP3.md`](docs/STEP3.md)): the pools drive the muscles, the muscles
+> move the joints, the joints drive the organs, and the organs drive the pools
+> back — with no clock and no trained network anywhere in the path. The animal
+> still stands, and the leg resists being pushed (ρ = +0.125 and +0.186, both
+> resolved). Reverse the organ's published transduction polarity and the reflex
+> reverses with it (−0.073, −0.087), which is what shows the resistance comes
+> from the biology and not from the wiring. The switch the reflex literature
+> predicts — resistance turning to assistance under load — **did not appear**,
+> and is published as not found. Nothing walks yet, on purpose: one leg is
+> driven and the other five are still frozen.
 
 ## What "real" means here
 

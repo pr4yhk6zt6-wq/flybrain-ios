@@ -10,7 +10,9 @@ jobs:
   build:
     name: Build (macOS, Xcode)
     runs-on: macos-15
-    timeout-minutes: 45
+    # Step 3 runs ~20 minutes of nerve cord and ~20 minutes of physics on top
+    # of the build, because it is an experiment and not a unit test.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -150,6 +152,87 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      # ------------------------------------------------------ step 3: the loop
+      # The exact command docs/STEP3.md documents, so CI reproduces the numbers
+      # the write-up quotes. It fails the build if the animal stops standing
+      # with one leg under cord control. It does NOT assert the direction of
+      # the reflex: that is the result, it is state-dependent in the real
+      # animal, and step 2 already declined to claim it. What is asserted is
+      # that the measurement exists, at more than one load, in both
+      # directions, and across every parameter this step had to choose.
+      - name: Step 3 — close the loop, cord to muscle to joint to sense organ
+        run: |
+          python3 tools/step3_closedloop.py --leg front_leg --side left \
+                                            --plot docs/img/step3_loop.png
+
+      - name: Step 3 — the loop must close, and the reflex must be measured
+        run: |
+          python3 - <<'PY'
+          import json, sys
+
+          r = json.load(open('reports/step3_closedloop.json'))
+          s, idx, driven = r['standing'], r['reflex_index'], r['driven']
+          loads = sorted({v['load_body_weights'] for v in idx.values()})
+          dirs = sorted({v['direction'] for v in idx.values()})
+          force = [v['force_ref'] for v in r['reference'].values()]
+
+          # Two rows of the polarity control, identical in every respect except
+          # the sign of one published biological fact. If they agree, the organ
+          # is not reaching the loop and nothing below means anything.
+          pol = list(r['polarity_control'].values())
+          spread = sum(abs(pol[0][d]['reflex_index'] - pol[1][d]['reflex_index'])
+                       for d in ('extension', 'flexion'))
+
+          checks = [
+              ('the animal stands with one leg under cord control',
+               s['standing']),
+              ('the body does not sink once it has settled',
+               abs(s['com_z_mm_change_second_half']) < 0.10),
+              ('most of the feet are still on the floor',
+               s['foot_contacts_mean'] >= 4.0),
+              ('every driven joint is commanded by both of its antagonists',
+               all(driven[j]['+1'] and driven[j]['-1'] for j in driven)),
+              ('the flexion and extension directions were measured, not assumed',
+               all('flexion' in r['joints'][j] and 'extension' in r['joints'][j]
+                   for j in driven)),
+              ('the reflex is measured in both directions',
+               dirs == ['extension', 'flexion']),
+              ('the reflex is measured at more than one load', len(loads) >= 2),
+              ('adding load actually loads the leg', max(force) > 1.5 * min(force)),
+              ('the load question is asked again where the reflex is readable',
+               len(r['reflex_index_at_switch_kappa']) >= 2),
+              ('the organ gain is swept, not chosen', len(r['kappa_sweep']) >= 2),
+              ('the muscle filter is swept, not chosen',
+               len(r['tau_muscle_sweep']) >= 2),
+              ('the polarity of the organ is tested, not assumed',
+               len(r['polarity_control']) == 2),
+              ('reversing that polarity changes what the loop does', spread > 0.02),
+              ("step 2's synaptic scale is swept, not chosen",
+               len(r['scale_sweep']) >= 2),
+              ('every pool is either placed on a joint or listed as not driven',
+               len(r['pool_placement']) + len(r['pools_not_driven']) >= 7),
+          ]
+
+          ok = True
+          for label, cond in checks:
+              print(f"  {'ok  ' if cond else 'FAIL'} {label}")
+              ok &= bool(cond)
+
+          # What was measured. Deliberately no assertion about the *direction*
+          # of the reflex: that is a finding, and a finding is not a test.
+          for tag, block in (("kappa = 1", idx),
+                             ("kappa = 4", r['reflex_index_at_switch_kappa'])):
+              for v in block.values():
+                  print(f"  {tag} {v['load_body_weights']:g} W "
+                        f"{v['direction']:9s} rho {v['reflex_index']:+.3f} "
+                        f"+- {v['reflex_index_sem']:.3f} ({v['verdict']}"
+                        f"{'' if v['resolved'] else ', below the noise'})")
+          for k, row in r['polarity_control'].items():
+              print(f"  {k}: " + ", ".join(
+                  f"{d} {row[d]['reflex_index']:+.3f}" for d in row))
+          sys.exit(0 if ok else 1)
+          PY
+
       # -------------------------------------------------------------- the app
       - name: Build the connectome binary for the app
         run: |
@@ -250,3 +333,12 @@ jobs:
             reports/step2_reflex.md
             reports/step2_reflex.json
             reports/step2_legcircuit.json
+
+      - name: Upload the step-3 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: step3-evidence
+          path: |
+            reports/step3_closedloop.md
+            reports/step3_closedloop.json
+            docs/img/step3_loop.png

@@ -92,12 +92,23 @@ Cells are `arcs (synapses)`. Azevedo et al. 2020: the femoral chordotonal organ 
 | standing+lineage09A | +0.00456 | +0.00861 | **-0.00404** | +0.00 | -0.71 | -0.01217 |
 | standing+lineage10B | -0.00250 | -0.00045 | **-0.00206** | +0.00 | +0.00 | -0.01676 |
 | standing+lineage13A | -0.04896 | -0.04257 | **-0.00639** | -1.09 | -6.43 | -0.08595 |
-| release_tonic | -0.03620 | -0.02850 | **-0.00770** | -0.50 | +0.71 | -0.00668 |
+| organ tone restored (from silent) | -0.03620 | -0.02850 | **-0.00770** | -0.50 | +0.71 | -0.00668 |
 | standing+load | -0.00270 | -0.01089 | **+0.00819** | -0.08 | -0.71 | -0.01441 |
 
 `Δg` is the change in net synaptic conductance arriving at each pool — what the wiring delivers, before any threshold is applied. It is the robust readout here: the extensor pool is two cells, so its firing rate moves in whole spikes.
 
 The published optogenetic result (Agrawal et al. 2020) is that driving 13Bα produces tibia **flexion** and driving 9Aα produces **extension**. A positive flexor−extensor change is the connectome's version of that prediction.
+
+### Which way the organ's own tone points
+
+`standing` is the cord with the chordotonal organ silent; `organ tone restored` is the same cord with the organ driven. The two rows below are the same pair of runs read in the two directions, because which one is the *baseline* decides the sign, and step 3 is built on that sign.
+
+| what was done to the organ | Δflexor Hz | Δextensor Hz | flexor − extensor Hz |
+|---|---:|---:|---:|
+| tone added | -0.50 | +0.71 | **-1.22** |
+| tone removed | +0.50 | -0.71 | **+1.22** |
+
+So the resting organ's tonic activity **opposes** the tibia flexor: it takes 0.50 Hz off it and gives 0.71 Hz to the extensor, and taking the organ away does the reverse. Read through the published transduction — flexion stretches the FeCO, extension relaxes it — that is a resistance reflex: imposed flexion raises FeCO activity, which favours the extensor, which extends the tibia against the imposed movement. Step 3 closes the loop and measures whether the body agrees.
 
 ## 6. Robustness: the answer across the synaptic scale
 

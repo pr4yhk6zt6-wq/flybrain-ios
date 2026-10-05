@@ -155,16 +155,29 @@ means the condition favours the flexor, i.e. flexion.
 | + lineage 09A (7 cells) | 0.00 | −0.71 | +0.71 | +0.0046 | +0.0086 | −0.0040 |
 | + lineage 10B (6 cells) | 0.00 | 0.00 | 0.00 | −0.0025 | −0.0005 | −0.0021 |
 | + lineage 13A (51 cells) | −1.09 | −6.43 | +5.34 | −0.0490 | −0.0426 | −0.0064 |
-| **release** (organ silenced) | −0.50 | +0.71 | **−1.22** | −0.0362 | −0.0285 | −0.0077 |
+| **+ organ tone** (the tonic state) | −0.50 | +0.71 | **−1.22** | −0.0362 | −0.0285 | −0.0077 |
+| **organ silenced** (released) | +0.50 | −0.71 | **+1.22** | +0.0362 | +0.0285 | +0.0077 |
 | **+ load** (campaniform) | −0.08 | −0.71 | **+0.63** | −0.0027 | −0.0109 | **+0.0082** |
 
 `Δg` is the change in net synaptic conductance arriving at a pool: what the
 wiring delivers, before any threshold is applied.
 
+**A correction to the previous version of this table.** It had one row,
+labelled *release (organ silenced)*, whose numbers were computed in the other
+direction: they are what happens when the tone is **restored**, not removed.
+Both directions are listed now, because step 3 is built on this sign and a row
+labelled with the opposite of what it measures is worse than no row.
+
 **What came out right:**
 
-* **Release.** Silencing the chordotonal organ costs the flexor 0.50 Hz and
-  *raises* the extensor: the tonic organ is what holds the flexor up.
+* **The organ's tonic activity opposes the flexor.** Restoring it takes 0.50 Hz
+  off the tibia flexor and gives 0.71 Hz to the extensor; silencing it — what
+  an imposed movement does when it unloads the organ — does the reverse. Read
+  through the published transduction (flexion stretches the FeCO, extension
+  relaxes it), that is a resistance reflex: imposed flexion raises FeCO
+  activity, which favours the extensor, which extends the tibia against the
+  imposed movement. Step 3 closes the loop and measures whether the body
+  agrees, instead of asserting it here.
 * **Load.** The campaniform (load) organ is the one condition whose conductance
   metric favours the flexor (+0.0082) while everything else favours the extensor.
 * **13B.** Driving the 13B lineage biases the tibia toward the flexor
@@ -211,9 +224,10 @@ weakness in this step.
 **Establishes:** the connectome contains a polysynaptic pathway from the leg's
 proprioceptors to its motor pools, with the published anatomy of all three organs
 intact (no direct chordotonal → tibia motor neuron; one direct campaniform →
-flexor; 13B as the organ's first partner); and that tonic organ activity plus
-load signalling both act to support the flexor, which is the pair of effects the
-next step needs.
+flexor; 13B as the organ's first partner); and that the tonic chordotonal
+organ biases the tibia towards extension while load signalling biases it
+towards flexion — two effects that point in opposite directions, which is the
+pair step 3 closes the loop with.
 
 **Does not establish:** which way the tibia reflex goes. That depends on a free
 scale parameter, on a transmitter prediction, and on a 2-cell motor pool.

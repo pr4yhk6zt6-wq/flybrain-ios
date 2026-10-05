@@ -58,6 +58,7 @@ import json
 import pathlib
 import sys
 import time
+from types import SimpleNamespace as NS
 
 import numpy as np
 
@@ -157,10 +158,134 @@ def parse_positions(meta):
     return pos, parsed
 
 
+class CordNetwork:
+    """
+    The nerve cord as a steppable object.
+
+    `simulate()` below is the batch form that step 2 uses: give it a duration
+    and a list of tonic drives, get rates back. Step 3 needs the same cell
+    model one millisecond at a time, because the drives there come from a body
+    that is moving while the cord is running. Both go through this class, so
+    there is exactly one implementation of the membrane equation.
+
+    The physics is unchanged from the batch version — the RNG is consumed in
+    the same order and every arithmetic operation is the same one — so the two
+    produce bit-identical traces. `tools/step3_closedloop.py` re-runs step 2's
+    standing state through the stepwise path and compares.
+    """
+
+    def __init__(self, N, e_pre, e_post, w_sign, w_mag, delay, rng_seed=42):
+        order = np.argsort(e_pre, kind="stable")
+        self.N = N
+        self.e_pre, self.e_post = e_pre[order], e_post[order]
+        self.w_mag, self.delay = w_mag[order], delay[order]
+        self.is_exc = (w_sign[order] > 0)
+
+        e_row = np.zeros(N + 1, dtype=np.int64)
+        np.add.at(e_row, self.e_pre + 1, 1)
+        np.cumsum(e_row, out=e_row)
+        self.e_row = e_row
+
+        self.rng = np.random.default_rng(rng_seed)
+        self.V = np.zeros(N, dtype=np.float32)
+        self.g_e = np.zeros(N, dtype=np.float32)
+        self.g_i = np.zeros(N, dtype=np.float32)
+        self.refrac = np.zeros(N, np.int16)
+        self.max_d = int(self.delay.max()) + 1 if len(self.delay) else 2
+        self.ring_e = np.zeros((self.max_d, N), np.float32)
+        self.ring_i = np.zeros((self.max_d, N), np.float32)
+        self.de = np.exp(-DT / TAU_SYN)
+
+        self.spikes = np.zeros(N, np.int32)
+        self.t = 0
+        self.fired = np.zeros(0, dtype=np.int64)
+
+    def step(self, drivers=()):
+        """Advance the cord by exactly 1 ms. Returns the neurons that fired."""
+        t, N = self.t, self.N
+        slot = t % self.max_d
+        g_e = self.g_e * self.de + self.ring_e[slot]
+        g_i = self.g_i * self.de + self.ring_i[slot]
+        self.ring_e[slot] = 0
+        self.ring_i[slot] = 0
+
+        I = g_e * (E_EXC - self.V) + g_i * (E_INH - self.V)
+        I = I + self.rng.normal(0, NOISE, N).astype(np.float32)
+        for idx, amp, t0_, t1_ in drivers:
+            if amp and t0_ <= t < t1_ and len(idx):
+                I[idx] += amp
+
+        free = self.refrac <= 0
+        self.refrac[~free] -= 1          # count the refractory period down
+        # the resting conductance is the leak of tau_m = 20 ms
+        dV = (DT / TAU_M) * (-self.V + I)
+        self.V = np.where(free, self.V + dV, self.V).astype(np.float32)
+
+        fired = np.flatnonzero((self.V >= 1.0) & free)
+        self.V[fired] = 0.0
+        self.refrac[fired] = T_REF
+        if len(fired):
+            self.spikes[fired] += 1
+            for u in fired:
+                s0, s1 = self.e_row[u], self.e_row[u + 1]
+                if s1 > s0:
+                    d = self.delay[s0:s1]
+                    m = self.w_mag[s0:s1]
+                    ex = self.is_exc[s0:s1]
+                    tgt = self.e_post[s0:s1]
+                    slots = (t + d) % self.max_d
+                    if ex.any():
+                        np.add.at(self.ring_e, (slots[ex], tgt[ex]), m[ex])
+                    if (~ex).any():
+                        np.add.at(self.ring_i, (slots[~ex], tgt[~ex]), m[~ex])
+
+        self.g_e, self.g_i = g_e, g_i
+        self.fired = fired
+        self.t = t + 1
+        return fired
+
+    def rate_hz(self, idx, window=None):
+        """Mean rate of a set of neurons over the last `window` ms."""
+        window = self.t if window is None else window
+        if not len(idx):
+            return 0.0
+        return float(self.spikes[idx].sum() / len(idx) / (window / 1000.0))
+
+    def run(self, ms, drivers, watch=None, sample_from=None):
+        """Batch form: `ms` steps, sampled from `sample_from` (default: half)."""
+        watch = watch or {}
+        sample_from = ms // 2 if sample_from is None else sample_from
+        per_ms = []
+        acc = {k: {"v": [], "i": []} for k in watch}
+        for _ in range(ms):
+            self.step(drivers)
+            per_ms.append(len(self.fired))
+            if self.t > sample_from:
+                for k, idx in watch.items():
+                    if len(idx):
+                        acc[k]["v"].append(float(self.V[idx].mean()))
+                        acc[k]["i"].append(float(self.g_e[idx].mean()
+                                                 - self.g_i[idx].mean()))
+        out = {}
+        for k, idx in watch.items():
+            if not len(idx):
+                continue
+            out[k] = {
+                "hz": float(self.spikes[idx].sum() / len(idx) / (ms / 1000.0)),
+                "v": float(np.mean(acc[k]["v"])) if acc[k]["v"] else float("nan"),
+                "g": float(np.mean(acc[k]["i"])) if acc[k]["i"] else float("nan"),
+                "spikes": int(self.spikes[idx].sum()),
+                "n": int(len(idx)),
+            }
+        out["_population_hz"] = float(np.mean(per_ms[sample_from:]))
+        return out
+
+
 def simulate(N, e_pre, e_post, w_sign, w_mag, delay, ms, drivers,
              rng_seed=42, watch=None, sample_from=None):
     """
-    Conductance-based LIF over a subgraph.
+    Conductance-based LIF over a subgraph. Batch entry point; the model itself
+    is `CordNetwork`.
 
     `w_mag` is the synaptic conductance one spike delivers, `w_sign` its sign.
     Excitatory spikes add to g_e, inhibitory to g_i; the membrane equation is
@@ -171,108 +296,18 @@ def simulate(N, e_pre, e_post, w_sign, w_mag, delay, ms, drivers,
     strongly inhibited cell can still be driven by enough excitation — which is
     what makes the fly's balanced E/I circuits work at all.
     """
-    order = np.argsort(e_pre, kind="stable")
-    e_pre, e_post = e_pre[order], e_post[order]
-    w_mag, delay = w_mag[order], delay[order]
-    is_exc = (w_sign[order] > 0)
-    e_row = np.zeros(N + 1, dtype=np.int64)
-    np.add.at(e_row, e_pre + 1, 1)
-    np.cumsum(e_row, out=e_row)
-
-    rng = np.random.default_rng(rng_seed)
-    V = np.zeros(N, dtype=np.float32)
-    g_e = np.zeros(N, dtype=np.float32)
-    g_i = np.zeros(N, dtype=np.float32)
-    refrac = np.zeros(N, np.int16)
-    max_d = int(delay.max()) + 1 if len(delay) else 2
-    ring_e = np.zeros((max_d, N), np.float32)
-    ring_i = np.zeros((max_d, N), np.float32)
-    de = np.exp(-DT / TAU_SYN)
-
-    spikes = np.zeros(N, np.int32)
-    per_ms = []
-    sample_from = ms // 2 if sample_from is None else sample_from
-    acc = {k: {"v": [], "i": []} for k in (watch or {})}
-
-    for t in range(ms):
-        slot = t % max_d
-        g_e = g_e * de + ring_e[slot]
-        g_i = g_i * de + ring_i[slot]
-        ring_e[slot] = 0
-        ring_i[slot] = 0
-
-        I = g_e * (E_EXC - V) + g_i * (E_INH - V)
-        I = I + rng.normal(0, NOISE, N).astype(np.float32)
-        for idx, amp, t0_, t1_ in drivers:
-            if amp and t0_ <= t < t1_ and len(idx):
-                I[idx] += amp
-
-        free = refrac <= 0
-        refrac[~free] -= 1                 # count the refractory period down
-        # the resting conductance is the leak of tau_m = 20 ms
-        dV = (DT / TAU_M) * (-V + I)
-        V = np.where(free, V + dV, V).astype(np.float32)
-
-        fired = np.flatnonzero((V >= 1.0) & free)
-        V[fired] = 0.0
-        refrac[fired] = T_REF
-        if len(fired):
-            spikes[fired] += 1
-            for u in fired:
-                s0, s1 = e_row[u], e_row[u + 1]
-                if s1 > s0:
-                    d = delay[s0:s1]
-                    m = w_mag[s0:s1]
-                    ex = is_exc[s0:s1]
-                    tgt = e_post[s0:s1]
-                    slots = (t + d) % max_d
-                    if ex.any():
-                        np.add.at(ring_e, (slots[ex], tgt[ex]), m[ex])
-                    if (~ex).any():
-                        np.add.at(ring_i, (slots[~ex], tgt[~ex]), m[~ex])
-        per_ms.append(len(fired))
-        if t >= sample_from:
-            for k, idx in (watch or {}).items():
-                if len(idx):
-                    acc[k]["v"].append(float(V[idx].mean()))
-                    acc[k]["i"].append(float(g_e[idx].mean() - g_i[idx].mean()))
-
-    out = {}
-    for k, idx in (watch or {}).items():
-        if not len(idx):
-            continue
-        out[k] = {
-            "hz": float(spikes[idx].sum() / len(idx) / (ms / 1000.0)),
-            "v": float(np.mean(acc[k]["v"])) if acc[k]["v"] else float("nan"),
-            "g": float(np.mean(acc[k]["i"])) if acc[k]["i"] else float("nan"),
-            "spikes": int(spikes[idx].sum()),
-            "n": int(len(idx)),
-        }
-    out["_population_hz"] = float(np.mean(per_ms[sample_from:]))
-    return out
+    net = CordNetwork(N, e_pre, e_post, w_sign, w_mag, delay, rng_seed=rng_seed)
+    return net.run(ms, drivers, watch=watch, sample_from=sample_from)
 
 
 # --------------------------------------------------------------------------
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--banc", default="data/banc", type=pathlib.Path)
-    ap.add_argument("--leg", default="front_leg", choices=list(LEGS))
-    ap.add_argument("--side", default="left", choices=["left", "right"])
-    ap.add_argument("--min-syn", type=int, default=3)
-    ap.add_argument("--ms", type=int, default=1000)
-    ap.add_argument("--n-star", type=float, default=12.0,
-                    help="presynaptic partners at 100 Hz that drive an average "
-                         "neuron to threshold — the circuit-wide synaptic scale")
-    ap.add_argument("--n-star-sweep", default="6,12,24,48")
-    ap.add_argument("--desc", type=float, default=2.0,
-                    help="tonic drive to the descending (brain -> cord) neurons")
-    ap.add_argument("--stim", type=float, default=3.0,
-                    help="drive added to a sensory population or a lineage")
-    ap.add_argument("--clusters", type=int, default=3)
-    ap.add_argument("--json", default="reports/step2_reflex.json", type=pathlib.Path)
-    ap.add_argument("--md", default="reports/step2_reflex.md", type=pathlib.Path)
-    a = ap.parse_args()
-
+def leg_anatomy(a):
+    """
+    The leg's wiring, before anything is simulated: which cells are the sense
+    organs, which are the motor pools, and how the organ splits by its own
+    target profile. Step 3 imports this so that the body it closes the loop
+    with is driven by exactly the pools step 2 measured.
+    """
     meta, pre, post, syn = load(a.banc, a.min_syn)
     n = len(meta)
     ct = text(meta, "cell_type")
@@ -421,6 +456,28 @@ def main() -> int:
         print(f"    {k}: {d['cells']:2d} cells {d['cell_types']} -> "
               f"{[t['cell'] for t in d['top_targets'][:3]]}")
 
+    return NS(meta=meta, pre=pre, post=post, syn=syn, n=n, ct=ct, nt=nt,
+              sign=sign, fn=fn, det=det, part_s=part_s, part_e=part_e,
+              ptt=ptt, sc=sc, side=side, neuroneme=neuroneme,
+              organs=organs, leg_motor=leg_motor, pools=pools,
+              chordo=chordo, sel1=sel1, subtypes=subtypes,
+              leg=leg, neuro=neuro, on_leg=on_leg, part_here=part_here,
+              arcs=arcs, monosynaptic=monosynaptic, disyn=disyn)
+
+
+def build_network(a, leg):
+    """
+    The reflex subgraph as arrays a simulation can step: nodes, edges, signs,
+    axonal delays, the index groups to watch, and the synaptic scale.
+
+    Built once and handed to both the batch runner (step 2) and the
+    millisecond-by-millisecond loop (step 3), so the two cannot disagree about
+    what the circuit is.
+    """
+    meta, pre, post, syn = leg.meta, leg.pre, leg.post, leg.syn
+    n, ct, sc, sign = leg.n, leg.ct, leg.sc, leg.sign
+    organs, pools, chordo, sel1 = leg.organs, leg.pools, leg.chordo, leg.sel1
+    leg_motor, subtypes = leg.leg_motor, leg.subtypes
     # ---- the subgraph ------------------------------------------------------
     sources = np.unique(np.concatenate(list(organs.values())))
     fwd = _reach(n, pre, post, np.unique(np.concatenate([sources, chordo])), 3)
@@ -483,6 +540,48 @@ def main() -> int:
     w_mag = (w_raw * K).astype(np.float32)
     log(f"synaptic scale: N* = {a.n_star:g} -> K = {K:.5f}, mean |w| = "
         f"{float(w_mag.mean()):.4f}")
+
+    return NS(N=len(nodes), nodes=nodes, node_of=node_of,
+              e_pre=e_pre, e_post=e_post, w_sign=w_sign, w_raw=w_raw,
+              delay=delay, watch=watch, sub_of=sub_of, fam_of=fam_of,
+              desc_idx=desc_idx, nodes_of=nodes_of, mean_raw=mean_raw,
+              scale_for=scale_for, K=K, w_mag=w_mag,
+              subgraph_edges=int(sel.sum()), pos_parsed=parsed)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--banc", default="data/banc", type=pathlib.Path)
+    ap.add_argument("--leg", default="front_leg", choices=list(LEGS))
+    ap.add_argument("--side", default="left", choices=["left", "right"])
+    ap.add_argument("--min-syn", type=int, default=3)
+    ap.add_argument("--ms", type=int, default=1000)
+    ap.add_argument("--n-star", type=float, default=12.0,
+                    help="presynaptic partners at 100 Hz that drive an average "
+                         "neuron to threshold — the circuit-wide synaptic scale")
+    ap.add_argument("--n-star-sweep", default="6,12,24,48")
+    ap.add_argument("--desc", type=float, default=2.0,
+                    help="tonic drive to the descending (brain -> cord) neurons")
+    ap.add_argument("--stim", type=float, default=3.0,
+                    help="drive added to a sensory population or a lineage")
+    ap.add_argument("--clusters", type=int, default=3)
+    ap.add_argument("--json", default="reports/step2_reflex.json", type=pathlib.Path)
+    ap.add_argument("--md", default="reports/step2_reflex.md", type=pathlib.Path)
+    a = ap.parse_args()
+
+    leg = leg_anatomy(a)
+    meta, sign = leg.meta, leg.sign
+    organs, pools, subtypes = leg.organs, leg.pools, leg.subtypes
+    neuro, s = leg.neuro, a.side
+    arcs, monosynaptic, disyn = leg.arcs, leg.monosynaptic, leg.disyn
+
+    net = build_network(a, leg)
+    nodes, e_pre, e_post = net.nodes, net.e_pre, net.e_post
+    w_sign, w_raw, delay = net.w_sign, net.w_raw, net.delay
+    watch, sub_of, fam_of, desc_idx = net.watch, net.sub_of, net.fam_of, net.desc_idx
+    scale_for, K, w_mag = net.scale_for, net.K, net.w_mag
+    mean_raw = net.mean_raw
+
 
     def run(name, drivers, k=None, ms=None):
         wm = w_mag if k is None else (w_raw * k).astype(np.float32)
@@ -579,6 +678,30 @@ def main() -> int:
             return None
         return verdict[cond]["flexor_minus_extensor_hz"]
 
+    # The tonic state is the standing fly: a loaded leg's chordotonal organ is
+    # active all the time. `standing` above is that state with the organ taken
+    # away, so this one comparison has two directions and they say opposite
+    # things. Both are reported, under the name of what was done rather than
+    # what was meant, because step 3's answer depends on the sign.
+    def signed_delta(hi, lo, name, field="hz"):
+        return (pool(runs[hi], name).get(field, 0.0)
+                - pool(runs[lo], name).get(field, 0.0))
+
+    organ = {}
+    for label, (hi, lo) in {"tone_added": ("release_tonic", "standing"),
+                            "tone_removed": ("standing", "release_tonic")}.items():
+        d = {f: {"flexor": signed_delta(hi, lo, "tibia flexor", f),
+                 "extensor": signed_delta(hi, lo, "tibia extensor", f)}
+             for f in ("hz", "v", "g")}
+        organ[label] = {
+            "d_flexor_hz": d["hz"]["flexor"],
+            "d_extensor_hz": d["hz"]["extensor"],
+            "flexor_minus_extensor_hz": d["hz"]["flexor"] - d["hz"]["extensor"],
+            "d_flexor_g": d["g"]["flexor"],
+            "d_extensor_g": d["g"]["extensor"],
+            "flexor_minus_extensor_g": d["g"]["flexor"] - d["g"]["extensor"],
+        }
+
     out = {
         "leg": f"{neuro}_{s}",
         "corrections": [
@@ -605,7 +728,7 @@ def main() -> int:
                    "stim": a.stim, "clusters": a.clusters},
         "organs": {k: int(len(v)) for k, v in organs.items()},
         "pools": {k: int(len(v)) for k, v in pools.items() if len(v)},
-        "subgraph": {"neurons": int(len(nodes)), "edges": int(sel.sum()),
+        "subgraph": {"neurons": int(len(nodes)), "edges": net.subgraph_edges,
                      "descending": int(len(desc_idx))},
         "chordotonal_arcs": arcs,
         "monosynaptic": monosynaptic,
@@ -616,6 +739,7 @@ def main() -> int:
         "scale_sweep": sweep,
         "control_sign_shuffled": control,
         "verdict": verdict,
+        "organ_tone": organ,
     }
     a.json.parent.mkdir(parents=True, exist_ok=True)
     a.json.write_text(json.dumps(out, indent=1))
@@ -778,8 +902,9 @@ def write_markdown(o: dict, path: pathlib.Path) -> None:
     A("| condition | Δg flexor | Δg extensor | flex−ext (g) | Δflex Hz | "
       "Δext Hz | flex−ext (V) |")
     A("|---|---:|---:|---:|---:|---:|---:|")
+    names = {"release_tonic": "organ tone restored (from silent)"}
     for k, d in o["verdict"].items():
-        A(f"| {k} | {d['d_flexor_g']:+.5f} | {d['d_extensor_g']:+.5f} | "
+        A(f"| {names.get(k, k)} | {d['d_flexor_g']:+.5f} | {d['d_extensor_g']:+.5f} | "
           f"**{d['flexor_minus_extensor_g']:+.5f}** | {d['d_flexor_hz']:+.2f} | "
           f"{d['d_extensor_hz']:+.2f} | {d['flexor_minus_extensor_v']:+.5f} |")
     A("")
@@ -792,6 +917,27 @@ def write_markdown(o: dict, path: pathlib.Path) -> None:
       "13Bα produces tibia **flexion** and driving 9Aα produces **extension**. "
       "A positive flexor−extensor change is the connectome's version of that "
       "prediction.\n")
+
+    g = o["organ_tone"]
+    A("### Which way the organ's own tone points\n")
+    A("`standing` is the cord with the chordotonal organ silent; `organ tone "
+      "restored` is the same cord with the organ driven. The two rows below are "
+      "the same pair of runs read in the two directions, because which one is "
+      "the *baseline* decides the sign, and step 3 is built on that sign.\n")
+    A("| what was done to the organ | Δflexor Hz | Δextensor Hz | "
+      "flexor − extensor Hz |")
+    A("|---|---:|---:|---:|")
+    for label, row in g.items():
+        A(f"| {label.replace('_', ' ')} | {row['d_flexor_hz']:+.2f} | "
+          f"{row['d_extensor_hz']:+.2f} | **{row['flexor_minus_extensor_hz']:+.2f}** |")
+    A("")
+    A("So the resting organ's tonic activity **opposes** the tibia flexor: it "
+      "takes 0.50 Hz off it and gives 0.71 Hz to the extensor, and taking the "
+      "organ away does the reverse. Read through the published transduction — "
+      "flexion stretches the FeCO, extension relaxes it — that is a resistance "
+      "reflex: imposed flexion raises FeCO activity, which favours the "
+      "extensor, which extends the tibia against the imposed movement. Step 3 "
+      "closes the loop and measures whether the body agrees.\n")
 
     A("## 6. Robustness: the answer across the synaptic scale\n")
     A("| N* | condition | flexor Hz | extensor Hz | flexor V | extensor V |")
