@@ -474,10 +474,15 @@ jobs:
           # wearing the pose of the part before it - which is what the app and
           # the browser viewer were both doing.
           cd build
-          unzip -p FlyBrain-unsigned.ipa 'FlyBrain.app/World/world.json' > world.json
           python3 - <<'PY'
-          import json, sys
-          w = json.load(open('world.json'))
+          import json, sys, zipfile
+          z = zipfile.ZipFile('FlyBrain-unsigned.ipa')
+          name = next((n for n in z.namelist()
+                       if n.endswith('World/world.json')), None)
+          if name is None:
+              sys.exit('world.json is not inside the .ipa')
+          print(f'  reading {name} out of the built product')
+          w = json.loads(z.read(name))
           g = w['geoms']
           parts = [x.get('part') for x in g]
           checks = [
