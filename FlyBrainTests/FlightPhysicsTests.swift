@@ -425,6 +425,7 @@ final class FlightPhysicsTests: XCTestCase {
         }
         let tip = SIMD3<Float>(verts[vert * 6], verts[vert * 6 + 1], verts[vert * 6 + 2])
 
+        var mats = [float4x4]()
         func footX() -> Float {
             model.solve(angles: body.jointAngles, root: matrix_identity_float4x4, into: &mats)
             let w = mats[pi] * SIMD4<Float>(tip, 1)
