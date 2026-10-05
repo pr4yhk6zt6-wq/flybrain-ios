@@ -215,7 +215,9 @@ final class FlyCordTests: XCTestCase {
         // assumption #10 re-uses the brain's tone so that this step adds no
         // magnitude of its own. It is a restatement of the brain's tone, not a
         // substitute for the descending drive above.
-        XCTAssertEqual(stub.drives[cord.organs[0].group],
+        // (`?? .nan` because the stub answers for any name, and a missing name
+        // has to fail this assertion rather than not compile.)
+        XCTAssertEqual(stub.drives[cord.organs[0].group] ?? .nan,
                        cord.settings.tone, accuracy: 1e-12)
 
         // No descending population in the connectome is a fact the HUD has to
