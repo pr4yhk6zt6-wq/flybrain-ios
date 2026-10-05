@@ -220,14 +220,42 @@ final class FlyCordTests: XCTestCase {
         XCTAssertEqual(stub.drives[cord.organs[0].group] ?? .nan,
                        cord.settings.tone, accuracy: 1e-12)
 
+        // The HUD's numbers have to be the numbers the connectome gave, not a
+        // second opinion about them: the device's screenshot
+        // (`uploads/IMG_2713.png`) reads `0/42 pools firing · 0.0 Hz` beside
+        // `desc 2.5`, and telling a silent input from a bored animal needs both
+        // halves measured rather than one of them assumed.
+        let stub2 = StubRates()
+        let cord2 = FlyCord(asset: asset, source: stub2)
+        for pool in cord2.pools { stub2.rates[pool.group] = 7.5 }
+        stub2.rates[cord2.settings.descendingGroup] = 12.5
+        for organ in cord2.organs { stub2.rates[organ.group] = 3.5 }
+        _ = cord2.update(dtMs: 1, proprio: p)
+        XCTAssertEqual(cord2.descendingRateHz, 12.5,
+                       "the descending rate is not read from the connectome")
+        XCTAssertEqual(cord2.organRateHz, 3.5, accuracy: 1e-12,
+                       "the organ rate is not read from the connectome")
+        XCTAssertEqual(cord2.poolRateHz.count, cord2.pools.count)
+        for (i, pool) in cord2.pools.enumerated() {
+            XCTAssertEqual(cord2.poolRateHz[i], 7.5,
+                           "\(pool.group) reports a rate the connectome did "
+                           + "not give")
+        }
+        // ... and one update is one millisecond of a muscle that fuses over 60:
+        // the *filtered* activation is a fraction of the rate, which is exactly
+        // why a single frame of a quiet-looking HUD proves nothing on its own.
+        XCTAssertLessThan(cord2.meanPoolHz, 1.0)
+        let loudest = cord2.loudestPools(3).map { $0.1 }
+        XCTAssertEqual(loudest, [7.5, 7.5, 7.5])
+
         // No descending population in the connectome is a fact the HUD has to
         // state, not a silence it reads as 0 Hz.
-        let stub2 = StubRates()
-        stub2.absent = [cord.settings.descendingGroup]
-        let cord2 = FlyCord(asset: asset, source: stub2)
-        XCTAssertFalse(cord2.descendingPresent)
-        XCTAssertTrue(cord2.missingGroups.contains(cord.settings.descendingGroup))
-        XCTAssertEqual(cord2.poolsPresent, cord2.pools.count,
+        let stub3 = StubRates()
+        stub3.absent = [cord.settings.descendingGroup]
+        let cord3 = FlyCord(asset: asset, source: stub3)
+        XCTAssertFalse(cord3.descendingPresent)
+        XCTAssertTrue(cord3.missingGroups.contains(cord.settings.descendingGroup))
+        XCTAssertEqual(cord3.poolsPresent, cord3.pools.count,
                        "a missing descending group is not a missing pool")
     }
 

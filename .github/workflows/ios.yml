@@ -379,6 +379,11 @@ jobs:
           python3 tools/build_banc.py --raw data/banc --out build/flybanc.bin \
                                       --min-syn 3 --conduction-speed 0.25
           python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
+          # The app has to run at the operating point that was measured, and
+          # the two numbers live in different languages — so the one that can
+          # be checked is checked here rather than trusted.
+          grep -q 'var gain: Float = 12' FlyBrain/Sources/SimulationEngine.swift \
+            || { echo "the app's default synaptic gain is not the 12 CI validates at"; exit 1; }
           mkdir -p FlyBrain/Resources
           cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
           cp build/fly_anatomy.json FlyBrain/Resources/

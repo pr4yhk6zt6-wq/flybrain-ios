@@ -58,7 +58,18 @@ struct SimulationStats {
 final class SimulationEngine {
 
     // Biophysics the user can change at runtime.
-    var gain: Float = 6.0 {
+    //
+    // The default is the operating point the reference is measured at, not a
+    // round number: `tools/verify_banc.py` is run in CI with `--gain 12
+    // --drive 1.5`, which is where this app's own `reports/banc_simulation.json`
+    // numbers come from (17.3 Hz population, 28.6 Hz in the leg motor neurons),
+    // and where `tools/step3_closedloop.py` measured the cord's law
+    // (assumption #5: below tone 2.0 the pools are silent, above 3.0 they
+    // saturate). Shipping 6.0 put the phone's connectome at less than half of
+    // that population rate — `tools/pool_probe.py` measures what each
+    // operating point does to the 42 pools the cord actually carries. CI
+    // asserts this number matches the one it validates at.
+    var gain: Float = 12.0 {
         didSet { params.gain = gain }
     }
     var retinalDrive: Float = 1.5 {

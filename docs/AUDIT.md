@@ -185,7 +185,7 @@ multiplying by it is what produced the sliver screenshot.
 | 19 | Emergent behaviours | **PARTIAL** | Standing + postural stability emerge from tone + physics (`testTheAnimalStandsWithMuscleToneOnly`). Reflex arc validated offline (step 2/3: ρ = +0.125/+0.186, polarity control reverses it). Walking/grooming/feeding/escape all follow items 9→17. |
 | 20 | iPhone optimisation | **DONE** (brain), **PARTIAL** (body) | GPU LIF, packed CSR, zero-copy connectome, camera-sampled retina; body solver is CPU scalar Swift at 100 µs substeps with adaptive throughput (`realtime` readout). A GPU/Metal port of the ABA solve is possible later; not yet needed — device runs at a measured fraction of real time and reports it. |
 | 21 | Graphics budget | **DONE** | Point-cloud brain, SceneKit flat lambert body, no shadows/post-effects; perf beats pixels in every trade so far. |
-| 22 | Debug / observability | **PARTIAL** | Brain: FPS/spikes/rate/power, voltage/spiking/regions render modes, tap-to-inspect, stimulate. Body: feet-down, contacts, COM height, substep/RTF readouts, plus the cord's own line (`n/m pools firing · Hz · organs`) and how fast the connectome is actually running (`cord × real time`). The device build that produced `IMG_2713` printed `85 meshes · 262180 triangles · 102 joints`, `feet 6/6 · COM z −0.0228 cm · 6 contacts`, `0/42 pools firing · 0.0 Hz · organs campaniform+chordotonal · desc 2.5` and `cord 621 updates · 0.09× real time` — every number this item asks for except the per-pool breakdown and the muscle excitation. **Gap:** a per-pool readout, and the muscle excitation per joint. |
+| 22 | Debug / observability | **PARTIAL** | Brain: FPS/spikes/rate/power, voltage/spiking/regions render modes, tap-to-inspect, stimulate. Body: feet-down, contacts, COM height, substep/RTF readouts, plus the cord's own line (`n/m pools firing · Hz · organs`) and how fast the connectome is actually running (`cord × real time`). The device build that produced `IMG_2713` printed `85 meshes · 262180 triangles · 102 joints`, `feet 6/6 · COM z −0.0228 cm · 6 contacts`, `0/42 pools firing · 0.0 Hz · organs campaniform+chordotonal · desc 2.5` and `cord 621 updates · 0.09× real time` — every number this item asks for except the per-pool breakdown and the muscle excitation. The per-pool readout it was missing is now on the body HUD: the loudest three pools by the rate the connectome reported, the descending rate beside the tone that was injected, the organ rate, and the connectome milliseconds the rates were averaged over (`FlyCord.loudestPools`, `FlyCord.descendingRateHz`). **Gap:** the muscle excitation per joint. |
 | 23 | Biological data policy | **DONE** | `docs/ASSUMPTIONS.md` is the registry (every constant: source + test); CI reproduces published checks (Azevedo 2020 monosynaptic absence, Phelps 2021 campaniform presence, corrected-sign guard for 7b22dd1). Placeholders are named `placeholder` in the asset. |
 | 24 | Modular, headless-capable architecture | **DONE** | Connectome / SimulationEngine / Renderer / FlyDynamics / FlyLiveBody / FlyWorld / WorldView are separate files with narrow seams; Python tools run the whole science pipeline headless; brain sim runs with no body and vice versa. |
 | 25 | Incremental phases | **ON TRACK** | Phases 1–5 of the 12-phase plan complete and measured (reports/step1–5); current position ≈ phase 6–7 (VNC pathways, walking circuitry). |
@@ -204,12 +204,17 @@ multiplying by it is what produced the sliver screenshot.
    as a small asset, LIF pools on the body side, `proprioception → pools →
    motor pool rates → drive offsets → muscles`. Test: the animal still stands,
    and a pushed leg resists (the step-3 result, now on the phone).
-3a. **Why the device's motor pools are silent** — the screenshot reads
-   `0/42 pools firing · 0.0 Hz` at `desc 2.5` while the cord drives the
-   descending population every millisecond. The LIF parameters the app's
-   kernel runs with and the Python reference's are a table diff, not a device
-   experiment, so this is doable offline; the answer decides whether item 27's
-   acceptance test can pass at all.
+3a. **Why the device's motor pools are silent** — **the reference has been
+   asked first** (`tools/pool_probe.py`, the table in reports/step6_loop.md):
+   at the app's own numbers the cord's 42 pools come out at 23 firing, mean
+   12.6 Hz, so the model does not predict silence and the phone is not doing
+   what its kernel documents. Fixed-point rounding of the weights, the drive
+   scaling and the integration constants have each been measured and cleared;
+   the default gain has been aligned with the reference's 12.0 and CI now
+   asserts it. What remains needs the device: the next build's HUD prints the
+   descending rate, the organ rate, the pool rate, the loudest pools and the
+   window — which of the three is zero is the answer, and it decides whether
+   item 27's acceptance test can pass at all.
 3. **VNC pathways & descending drive** — **done in the commit that carries
    this**: the cord injects the brain's tone into the descending population
    every millisecond (`FlyCord.update`), the injection is pinned by

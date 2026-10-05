@@ -167,6 +167,20 @@ final class FlyCord {
     /// The tone last put on the descending population — the brain's own input to
     /// the cord, kept so the HUD and the tests can see it rather than infer it.
     private(set) var descendingDrive: Double = 0
+    /// The firing rate of the descending population, Hz, as the connectome
+    /// reported it on the last update. The cord does not use it — it is here
+    /// because "the pools are silent" is a claim about the *input*, and the
+    /// device is the only place it can be measured (uploads/IMG_2713.png).
+    private(set) var descendingRateHz: Double = 0
+    /// Mean firing rate of the organ populations the cord drives, Hz.
+    private(set) var organRateHz: Double = 0
+    /// The firing rate of every pool this update, in `pools` order — what
+    /// `activation` is filtered from, and what a per-pool readout needs.
+    private(set) var poolRateHz: [Double] = []
+    /// How many connectome milliseconds the rates above were measured over,
+    /// from the engine. A rate averaged over one millisecond is a different
+    /// animal from one averaged over a hundred, and the HUD says which.
+    var harvestedMs: (() -> Double)?
 
     private var calibratingMs: Double = 0
     private var calibrationSamples: [Double] = []
@@ -323,10 +337,23 @@ final class FlyCord {
         // A pool's rate, filtered as a muscle fuses it.
         let alpha = settings.tauMuscleMs > 0
             ? min(1, dtMs / settings.tauMuscleMs) : 1
+        if poolRateHz.count != pools.count {
+            poolRateHz = [Double](repeating: 0, count: pools.count)
+        }
         for (i, pool) in pools.enumerated() {
             let rate = source?.poolRate(pool.group) ?? 0
+            poolRateHz[i] = rate
             activation[i] += (rate - activation[i]) * alpha
         }
+        // The loop's own inputs, measured rather than assumed: the population
+        // the brain's tone is injected into, and the organs the body drives.
+        descendingRateHz = source?.poolRate(settings.descendingGroup) ?? 0
+        var organSum = 0.0, organN = 0
+        for organ in organs where settings.channels.contains(organ.kind) {
+            organSum += source?.poolRate(organ.group) ?? 0
+            organN += 1
+        }
+        organRateHz = organN > 0 ? organSum / Double(organN) : 0
 
         // The balance of each driven hinge: the ratio of the two antagonists'
         // activity, so how *large* the rates are drops out of the command
@@ -376,17 +403,37 @@ final class FlyCord {
     /// The pools that are firing at all.
     var activePools: Int { activation.filter { $0 >= 1 }.count }
 
+    /// The loudest pools, by the rate the connectome reported, for a per-pool
+    /// readout — `[("T1_left tibia_flexor", 12.4), ...]`.
+    func loudestPools(_ n: Int = 3) -> [(String, Double)] {
+        pools.indices
+            .sorted { poolRateHz.indices.contains($0) && poolRateHz.indices.contains($1)
+                        ? poolRateHz[$0] > poolRateHz[$1] : false }
+            .prefix(n)
+            .map { i in
+                let parts = pools[i].group.split(separator: ":")
+                let leg = parts.count > 1 ? String(parts[1]) : "?"
+                return ("\(leg) \(pools[i].name)", poolRateHz.indices.contains(i) ? poolRateHz[i] : 0)
+            }
+    }
+
     /// One line for the HUD: the state of the loop, in the animal's terms.
     var summary: String {
         switch phase {
         case .calibrating:
             return String(format: "measuring the stance · %d pools", pools.count)
         case .running:
-            return String(format: "%d/%d pools firing · %.1f Hz · organs %@ · desc %@",
+            // The output (pools), then the inputs that produced it: the
+            // population the tone is injected into, the organs the body
+            // drives, and the tone itself. A cord that reads 0/42 while the
+            // neurons it is talking to are at 0 Hz is a broken *input*; one
+            // that reads 0/42 with descending at 15 Hz is a broken balance.
+            // Without both halves on the screen neither can be told apart
+            // (this is item 22's per-pool readout, and item 27's measurement).
+            return String(format: "%d/%d pools · %.1f Hz · desc %.1f Hz (tone %.1f) · organs %.1f Hz · %@",
                           activePools, pools.count, meanPoolHz,
-                          settings.channels.sorted().joined(separator: "+"),
-                          descendingPresent ? String(format: "%.1f", descendingDrive)
-                                            : "missing")
+                          descendingRateHz, descendingDrive, organRateHz,
+                          settings.channels.sorted().joined(separator: "+"))
         }
     }
 }

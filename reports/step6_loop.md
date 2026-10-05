@@ -152,3 +152,66 @@ that 2.5 threshold units of current on a standing fly holds it up. That is the
 acceptance test of item 27, and it needs the device. Until it is measured, the
 only thing this section asserts is the wiring — and that the wiring is now the
 one the reference uses.
+
+## Why the device reads `0/42 pools firing` (offline, before touching anything)
+
+The same screenshot that showed the animal in pieces showed something else, and
+it is not a drawing bug: `0/42 pools firing · 0.0 Hz · organs
+campaniform+chordotonal · desc 2.5`. The cord was driving the descending
+population — the HUD prints the tone it put there — and the pools the cord reads
+its balance from reported nothing at all.
+
+The first question is whether the *model* says they should be silent, and that
+is answerable here: the app's kernel documents itself as reproducing the NumPy
+reference in `tools/verify_banc.py`, so the reference was run at the app's own
+numbers. `tools/pool_probe.py` (new) is that experiment, on the same
+`build/flybanc.bin` the app carries:
+
+| condition | what it is | descending | pools ≥ 1 Hz | pool mean | population |
+|---|---|---|---|---|---|
+| app | gain 6, descending 2.5, organs 2.5 | 12.45 Hz | 25/60 | 6.37 Hz | 2.35 Hz |
+| app ×1.5 | the same, as `driveGroups` scales it (×externalDrive 1.5) | 17.63 Hz | 27/60 | 9.66 Hz | 2.56 Hz |
+| reference | gain 12, the operating point CI validates at | 13.67 Hz | 24/60 | 12.08 Hz | 4.01 Hz |
+| **device** | gain 6, drives ×1.5, flat retina 1.0 — the app's configuration | 17.41 Hz | 26/60 | 9.34 Hz | 2.60 Hz |
+| vision | gain 12, descending 2.5, photoreceptors at 1.5 | 13.87 Hz | 26/60 | 11.15 Hz | 4.72 Hz |
+
+In the device's own configuration the cord's 42 pools come out at **23 firing
+at ≥ 1 Hz, mean 12.60 Hz, best 67.5 Hz**. The model does not predict silence.
+So the phone's engine is not doing what its own kernel says it does, and the
+HUD is the only instrument that can say which of the three quantities is the
+quiet one.
+
+Ruled out on the way, by measurement rather than by reading:
+
+* **fixed-point synaptic current.** The scatter kernel rounds every weight into
+  `int(round(w · 65536))`. The packed weights are 5.5e-2 … 0.88 with a mean of
+  0.24, so **0 of 2,171,713 synapses** quantize to zero, and the rounding error
+  is exactly zero — the weights are already multiples of the fixed-point step.
+* **the drive semantics.** The app multiplies a group's drive by
+  `SimParams.externalDrive` (1.5) where the reference adds it raw
+  (`I = I_syn·gain + I_ext + noise`). Wrong by a factor of 1.5, but the *loud*
+  direction: the ×1.5 row above fires more, not less.
+* **the integration constants.** `decayMembrane` / `decaySynaptic` default to 0
+  in the struct and are only written by `recomputeDecays()` — so the question is
+  whether `init` calls it. It does (`SimulationEngine.init`, before the
+  buffers are handed out), so the decays are `exp(-dt/20)` and `exp(-dt/5)` and
+  not zero.
+* **the operating point.** The app shipped a default `gain = 6.0` against the
+  reference's 12.0 — the number `tools/verify_banc.py` is run at in CI and the
+  one the population numbers in `reports/banc_simulation.json` belong to. That
+  is half the documented operating point, and it is fixed in the commit that
+  carries this section, with CI now asserting the two agree.
+
+What the next build measures, in one line each, because the alternative is
+another screenshot that cannot distinguish a silent input from a bored animal:
+
+* the descending population's **rate** (was it 0 Hz at a tone of 2.5?), the
+  organ populations' rate, and the pools' rate — on the same HUD line;
+* the loudest three pools by name, and the **connectome milliseconds** the
+  rates were averaged over, on the line below it.
+
+`FlyCordTests.testTheDescendingNeuronsCarryTheBrainsToneIntoTheCord` now pins
+those readouts against a stub connectome, so the HUD cannot report a number the
+connectome did not give — and the moment a device build is in hand, the
+acceptance test of item 27 becomes a matter of reading two numbers off a
+screenshot instead of guessing.

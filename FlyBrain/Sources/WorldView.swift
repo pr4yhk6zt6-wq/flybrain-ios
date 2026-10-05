@@ -155,6 +155,12 @@ final class WorldModel: ObservableObject {
     /// The loop: organs out, pools back in (FlyCord.swift).
     private(set) var cord: FlyCord?
     @Published private(set) var cordLine = "the cord is not attached"
+    /// The line under `cordLine`: the loudest pools by the rate the connectome
+    /// reported, and how many connectome milliseconds those rates were
+    /// averaged over. A rate measured over one millisecond is a different
+    /// animal from one measured over a hundred, and the number is on screen so
+    /// that a silent cord and a mis-measured one can be told apart.
+    @Published private(set) var cordDetail = ""
     /// Simulated milliseconds of cord per wall second, measured — 1.0 is real
     /// time. Reported, never assumed.
     @Published private(set) var cordRealtime: Double = 0
@@ -257,7 +263,15 @@ final class WorldModel: ObservableObject {
                 cordStepsPerFrame += 1
             }
         }
-        if let c = cord { cordLine = c.summary }
+        if let c = cord {
+            cordLine = c.summary
+            let loudest = c.loudestPools(3)
+                .map { String(format: "%@ %.1f", $0.0, $0.1) }
+                .joined(separator: " · ")
+            cordDetail = String(format: "over %d connectome ms · loudest %@",
+                                engine?.stats.simulatedMilliseconds ?? 0,
+                                loudest.isEmpty ? "—" : loudest)
+        }
     }
 
     private var lastCordAdapt: CFTimeInterval = 0
@@ -645,6 +659,15 @@ struct WorldHUD: View {
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            // The per-pool readout: the loudest three, and the window the rates
+            // came from. Never more than one line, so it cannot collide with
+            // anything below it.
+            Text(model.cordDetail)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             if model.cord != nil {
                 Text(String(format: "cord %d updates · %.2f× real time",
                             model.live.cordUpdates, model.cordRealtime))
