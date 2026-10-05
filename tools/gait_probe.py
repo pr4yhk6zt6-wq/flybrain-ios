@@ -97,6 +97,9 @@ def main() -> int:
     ap.add_argument("--tone", default=2.5, type=float)
     ap.add_argument("--drive-premotor", default=0.0, type=float,
                     help="also drive premotor:multileg at this current (0 = not driven)")
+    ap.add_argument("--no-vision", action="store_true",
+                    help="leave the photoreceptors undriven too: the descending "
+                         "tone is then the only structured input the cord has")
     ap.add_argument("--silent-organs", action="store_true",
                     help="do not drive the organ groups: what the cord does on its "
                          "own (descending tone + retina only)")
@@ -114,8 +117,9 @@ def main() -> int:
 
     organs = [] if args.silent_organs else sorted(
         n for n in c["groups"] if n.startswith("organ:"))
-    drives = {"descending": args.tone, "sensory_vision": 1.0,
-              **{o: args.tone for o in organs}}
+    drives = {"descending": args.tone, **{o: args.tone for o in organs}}
+    if not args.no_vision:
+        drives["sensory_vision"] = 1.0
     if args.drive_premotor:
         drives["premotor:multileg"] = args.drive_premotor
 

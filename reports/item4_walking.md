@@ -61,16 +61,24 @@ tripod co-vary more than legs across tripods?
 
 | condition | within | across | index |
 | --- | --- | --- | --- |
-| 400 ms, app's point | +0.373 | +0.379 | −0.006 |
+| 400 ms, app's point (gain 12) | +0.373 | +0.379 | −0.006 |
 | 400 ms, `premotor:multileg` driven at 5 | +0.327 | +0.451 | −0.124 |
 | 400 ms, organs silent (cord alone) | +0.530 | +0.539 | −0.009 |
 | 2000 ms, app's point | +0.060 | +0.133 | −0.073 |
+| 400 ms, gain 2 (sparsest: 11–28 Hz) | +0.475 | +0.425 | +0.050 |
+| 400 ms, gain 4 | +0.015 | +0.100 | −0.085 |
+| 400 ms, gain 6 | +0.344 | +0.451 | −0.107 |
+| 400 ms, gain 8 | +0.282 | +0.346 | −0.063 |
+| 400 ms, descending tone only (no organs, no retina) | +0.486 | +0.447 | +0.038 |
+| 2000 ms, descending tone only | +0.160 | +0.163 | −0.003 |
+| 400 ms, descending tone only at 8 | +0.136 | +0.019 | +0.117 |
 
-Every condition gives the same answer: the six legs' pool rates move together
-(+0.06 to +0.54 correlation, always), with no tripod structure in it. There is a
-strong common mode — the uniform drive plus a chaotic network — and the 788
-multi-leg cells are 11% of the premotor population, too little to organise a
-global drive that saturates the pools at 30–65 Hz.
+Eleven conditions, and the index has no sign: it wanders in ±0.12 with the
+correlations always positive (+0.02 to +0.54). The six legs' pool rates move
+together, whatever is driving them and however hard the network is pushed — a
+common chaotic mode, with the 788 multi-leg cells (11% of the premotor
+population) too few to organise it. Even with the descending tone as the only
+structured input, the cord produces no tripod.
 
 **So the honest statement for item 4 is: this cord, driven uniformly, does not
 walk, and no amount of tuning the existing loop will make it.** The two things
