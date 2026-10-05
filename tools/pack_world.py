@@ -23,8 +23,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "world"
 DEFAULT_DEST = ROOT / "FlyBrain" / "World"
 
-# The three files the app reads, in FlyWorld.init order.
-NEEDED = ("world.json", "fly.bin", "frames.bin")
+# What the app reads: the manifest, and the meshes. The pose track is *not*
+# here on purpose. The Map screen runs the solver on the device, so shipping
+# `frames.bin` would ship seven megabytes of a recording nothing plays — and a
+# build that carries a recording is a build that can start playing one again.
+# It stays in world/ for the browser viewer, which does play it.
+NEEDED = ("world.json", "fly.bin")
+RECORDING = "frames.bin"
 
 
 def check(src: pathlib.Path) -> dict:
@@ -34,7 +39,6 @@ def check(src: pathlib.Path) -> dict:
     fr = manifest["frames"]
 
     expect_body = (bg["n_vertex"] * 3 + bg["n_vertex"] * 3 + bg["n_face"] * 3) * 4
-    expect_frames = fr["n"] * fr["parts"] * 7 * 4
 
     facts = {
         "n_vertex": bg["n_vertex"],
@@ -46,7 +50,6 @@ def check(src: pathlib.Path) -> dict:
         "geoms": len(manifest["geoms"]),
         "legs": len(manifest["legs"]),
         "expected_fly_bin_bytes": expect_body,
-        "expected_frames_bin_bytes": expect_frames,
     }
 
     problems = []
@@ -54,20 +57,37 @@ def check(src: pathlib.Path) -> dict:
         p = src / name
         if not p.exists():
             problems.append(f"{name} is missing — run tools/step4_world.py")
+
+    # The part axis is what every renderer indexes, and every renderer skips
+    # the rows with no mesh (the floor, which is part 0). If `part` is not the
+    # identity sequence over the manifest's own order, the animal is drawn with
+    # each mesh wearing the pose of the part before it. Checked here, once,
+    # rather than trusted in two languages.
+    parts = [g.get("part") for g in manifest["geoms"]]
+    if parts != list(range(len(parts))):
+        problems.append("manifest geoms do not carry part = 0, 1, 2 … — the "
+                        "renderers would pose every mesh off by one")
+    if len(parts) != fr["parts"]:
+        problems.append(f"the manifest lists {len(parts)} geoms but records "
+                        f"{fr['parts']} parts")
+
     if not problems:
         body = (src / "fly.bin").stat().st_size
-        frames = (src / "frames.bin").stat().st_size
         if body < expect_body:
             problems.append(
                 f"fly.bin is {body} bytes, the manifest needs {expect_body}")
-        if frames < expect_frames:
-            problems.append(
-                f"frames.bin is {frames} bytes, the manifest needs "
-                f"{expect_frames}")
         facts["fly_bin_bytes"] = body
-        facts["frames_bin_bytes"] = frames
-        facts["total_bytes"] = (
-            body + frames + (src / "world.json").stat().st_size)
+        total = body + (src / "world.json").stat().st_size
+        rec = src / RECORDING
+        if rec.exists():                    # for the viewer, not for the app
+            want = fr["n"] * fr["parts"] * 7 * 4
+            size = rec.stat().st_size
+            if size < want:
+                problems.append(
+                    f"{RECORDING} is {size} bytes, the manifest needs {want}")
+            facts["recording_bytes"] = size
+            total += size
+        facts["total_bytes"] = total
 
     facts["problems"] = problems
     return facts
@@ -96,14 +116,18 @@ def main() -> int:
           f"{facts['n_face']:,} triangles")
     print(f"  {facts['frames']} frames x {facts['parts']} parts at "
           f"{1000 // max(1, facts['stride_ms'])} Hz "
-          f"({facts['frames'] * facts['parts'] * 7 * 4 / 1e6:.2f} MB)")
-    print(f"  {facts['legs']} legs, {facts['geoms']} tracked parts")
+          f"({facts['frames'] * facts['parts'] * 7 * 4 / 1e6:.2f} MB, viewer only)")
+    print(f"  {facts['legs']} legs, {facts['geoms']} tracked parts, "
+          f"part indices 0 … {facts['geoms'] - 1} in manifest order")
 
     if facts["problems"]:
         return 1
 
     total = facts["total_bytes"]
-    print(f"  world.json + fly.bin + frames.bin = {total / 1e6:.2f} MB")
+    print(f"  the app carries world.json + fly.bin = "
+          f"{(facts['fly_bin_bytes'] + (args.src / 'world.json').stat().st_size) / 1e6:.2f} MB"
+          + (f", the viewer also has {facts.get('recording_bytes', 0) / 1e6:.2f} MB "
+             f"of recording" if facts.get("recording_bytes") else ""))
 
     if args.dry_run:
         return 0
@@ -112,10 +136,15 @@ def main() -> int:
     for name in NEEDED:
         shutil.copy2(args.src / name, args.dest / name)
     # A folder reference is copied whole, so anything stale in it would ship.
+    # That is also what keeps the recording out of the app: if a previous build
+    # left a frames.bin here, it goes now. The Map screen would not read it,
+    # and the point of this step is that no build can quietly play one back.
     kept = {p.name for p in args.dest.iterdir() if p.is_file()} - set(NEEDED)
     for name in sorted(kept):
         (args.dest / name).unlink()
-        print(f"  removed stale {name}")
+        print(f"  removed stale {name}"
+              + (" (the app runs the solver; a recording is not shipped)"
+                 if name == RECORDING else ""))
 
     for name in NEEDED:
         p = args.dest / name

@@ -440,7 +440,7 @@ jobs:
           cd build && zip -qry FlyBrain-unsigned.ipa Payload
           ls -lh FlyBrain-unsigned.ipa
 
-      - name: The .ipa must contain its data
+      - name: The .ipa must contain its data, and must not contain a recording
         run: |
           cd build
           for f in flybanc.bin flybanc_meta.json fly_anatomy.json; do
@@ -449,13 +449,55 @@ jobs:
           done
           # The world is what the Map button opens; an .ipa without it would
           # install and then explain itself instead of showing a fly.
-          for f in world.json fly.bin frames.bin; do
+          for f in world.json fly.bin; do
             unzip -l FlyBrain-unsigned.ipa | grep -qE \
               "FlyBrain.app/(World/)?$f$" \
               || { echo "$f is NOT in the .ipa - the world will not open"; \
                    exit 1; }
           done
-          echo "all data assets present, and the world is in the .ipa"
+          # And the recording must NOT be in it. The Map screen runs the
+          # solver on the device; a build that ships frames.bin is a build that
+          # can play it back instead, which is exactly what the .ipa on the
+          # phone was doing.
+          if unzip -l FlyBrain-unsigned.ipa | grep -qE \
+               "FlyBrain.app/(World/)?frames\.bin$"; then
+            echo "frames.bin IS in the .ipa - this build could play a recording"; \
+            exit 1
+          fi
+          echo "the app carries its model and its connectome, and no recording"
+
+      - name: The manifest's part axis must be written, not counted
+        run: |
+          # Every renderer skips the parts with no mesh (the floor is part 0)
+          # and indexes the recorded poses itself. If `part` is missing or is
+          # not 0, 1, 2 … in manifest order, the animal is drawn with each mesh
+          # wearing the pose of the part before it - which is what the app and
+          # the browser viewer were both doing.
+          cd build
+          unzip -p FlyBrain-unsigned.ipa 'FlyBrain.app/World/world.json' > world.json
+          python3 - <<'PY'
+          import json, sys
+          w = json.load(open('world.json'))
+          g = w['geoms']
+          parts = [x.get('part') for x in g]
+          checks = [
+              ('every geom carries a part index', all(p is not None for p in parts)),
+              ('the indices are 0, 1, 2 … in manifest order',
+               parts == list(range(len(parts)))),
+              ('the recording has one row per part',
+               w['frames']['parts'] == len(g)),
+              ('the first part is the floor', g[0]['name'] == 'floor'
+               and 'mesh' not in g[0]),
+              ('every part after it has a mesh',
+               all('mesh' in x for x in g[1:])),
+          ]
+          ok = True
+          for label, cond in checks:
+              print(f"  {'ok  ' if cond else 'FAIL'} {label}")
+              ok &= bool(cond)
+          print(f"  {len(g)} parts, {w['frames']['n']} recorded frames")
+          sys.exit(0 if ok else 1)
+          PY
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
