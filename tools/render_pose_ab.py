@@ -86,6 +86,39 @@ def soup(parts, poses, conjugate: bool):
     return np.concatenate(tris), np.concatenate(cols)
 
 
+def mujoco_soup(world_path: pathlib.Path, meshes_path: pathlib.Path,
+                xml: pathlib.Path):
+    """The same vertices, posed by MuJoCo — the ground truth for the figure."""
+    import mujoco
+    model = mujoco.MjModel.from_xml_path(str(xml))
+    data = mujoco.MjData(model)
+    asset = json.loads(pathlib.Path("build/fly_body.json").read_text())
+    data.qpos[:] = 0
+    free = next(j for j in range(model.njnt)
+                if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE)
+    data.qpos[model.jnt_qposadr[free]:model.jnt_qposadr[free] + 3] = \
+        [0.0, 0.0, asset["stance_root_z"]]
+    data.qpos[model.jnt_qposadr[free] + 3:model.jnt_qposadr[free] + 7] = [1, 0, 0, 0]
+    for j in range(model.njnt):
+        if model.jnt_type[j] != mujoco.mjtJoint.mjJNT_HINGE:
+            continue
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
+        if name in asset["stance_q"]:
+            data.qpos[model.jnt_qposadr[j]] = asset["stance_q"][name]
+    mujoco.mj_forward(model, data)
+
+    parts = mesh_soup(world_path, meshes_path)
+    tris, cols = [], []
+    for name, V, F, rgb in parts:
+        g = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        if g < 0:
+            continue
+        M = data.geom_xmat[g].reshape(3, 3)
+        tris.append((V @ M.T + data.geom_xpos[g])[F])
+        cols.append(np.repeat(rgb[None, :], len(F), axis=0))
+    return np.concatenate(tris), np.concatenate(cols)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -94,6 +127,9 @@ def main() -> int:
     ap.add_argument("--meshes", default=pathlib.Path("build/fly_meshes.bin"), type=pathlib.Path)
     ap.add_argument("--png", default=pathlib.Path("docs/img/pose_conjugate_ab.png"),
                     type=pathlib.Path)
+    ap.add_argument("--truth-xml", default=pathlib.Path(
+        "data/flybody/flybody-main/flybody/fruitfly/assets/fruitfly.xml"),
+        type=pathlib.Path, help="draw MuJoCo's own pose as the third panel")
     ap.add_argument("--size", type=int, default=560)
     ap.add_argument("--fov", type=float, default=55.0)
     args = ap.parse_args()
@@ -116,17 +152,24 @@ def main() -> int:
     cam = rs.camera(lookat, 0.55, np.degrees(2.2), np.degrees(0.42), fov=args.fov)
     floor_z = -0.035
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5.6), dpi=110)
-    titles = ["what the phone drew — conjugate",
-              "what it draws now — the rotation itself"]
-    for ax, conjugate, title in zip(axes, (True, False), titles):
-        tri, col = soup(parts, poses, conjugate)
+    panels = []
+    if args.truth_xml and args.truth_xml.exists():
+        panels.append(("what MuJoCo draws — the truth",
+                       mujoco_soup(args.world, args.meshes, args.truth_xml)))
+    panels += [("what the phone drew — conjugate", soup(parts, poses, True)),
+               ("what it draws now — the rotation itself", soup(parts, poses, False))]
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.6 * len(panels), 5.6), dpi=110)
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, (title, (tri, col)) in zip(axes, panels):
         img = rs.render(tri, col, cam, w=args.size, h=args.size, floor_z=floor_z)
         ax.imshow(img)
         ax.set_title(title, fontsize=11)
         ax.axis("off")
     fig.suptitle("the same stance, the same meshes, the same camera — one sign",
-                 fontsize=12)
+                 fontsize=13, y=0.99)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.tight_layout()
     args.png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.png)
