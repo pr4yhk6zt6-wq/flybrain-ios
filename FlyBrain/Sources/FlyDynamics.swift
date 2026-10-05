@@ -677,9 +677,15 @@ final class FlyDynamics {
         // flybody publishes no muscle optimal angles — nothing in the MJCF
         // says where any muscle is longest — so this is an APPROXIMATION,
         // declared in docs/ASSUMPTIONS.md.
+        // `springRef` through a local: Swift will not let a closure read a
+        // property of `self` while the rest of `self` is still being built
+        // ("'self' captured by a closure before all members were
+        // initialized"), and this pass is the first place the compiler gets
+        // to say so — it was hidden behind the type-checker error in `step()`.
+        let references = springRef
         optimal = hinges.enumerated().map { k, j in
             if let o = asset.muscles[j.name]?.optimalAngle { return o }
-            let ref = springRef[k]
+            let ref = references[k]
             if ref != 0 { return ref }
             let r = j.range
             return r.count > 1 ? 0.5 * (r[0] + r[1]) : 0
