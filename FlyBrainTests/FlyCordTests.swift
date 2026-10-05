@@ -301,13 +301,26 @@ final class FlyCordTests: XCTestCase {
             throw XCTSkip("the asset has no chordotonal organ on a knee")
         }
         for pool in cord.pools { stub.rates[pool.group] = 20 }
+        // The organs are only driven once the loop is running. For the first
+        // `calibrateMs` (300 ms, assumption #23) the cord holds every organ at
+        // its standing value on purpose — that is the pose `b_ref` is measured
+        // from, and step 3 calls it "clamped" — so a test that asks what a
+        // joint angle does to the drive has to get past the calibration first.
+        // Without this the assertion below reads 2.5, the clamped value, and
+        // says nothing about the organ at all. The two sibling tests in this
+        // file (polarity, campaniform) both warm the loop up for exactly this
+        // reason; this one did not, and run 55 failed on it.
+        for _ in 0..<500 {
+            _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount))
+        }
+        XCTAssertEqual(cord.phase, .running)
         // At the standing angle the organ is at its tonic drive.
         _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount))
         XCTAssertEqual(stub.drives[organ.group] ?? -1, cord.settings.tone,
                        accuracy: 1e-9)
-        // Flexion stretches it, and a stretched organ is silenced (polarity +1).
-        // Half its range of flexion is a quarter of the joint's range, so at
-        // κ = 1 the drive falls by half.
+        // Flexion stretches it, and a stretched organ is silenced (polarity +1):
+        // half its range of flexion is half of `halfSpan`, so at κ = 1 the
+        // drive falls by half.
         let flexed = stance(asset, hingeCount: cord.hingeCount,
                             kneeAngle: tibia.rest + organ.halfSpan / 2)
         _ = cord.update(dtMs: 1, proprio: flexed)
