@@ -264,3 +264,23 @@ Two things were changed to make that line trustworthy rather than decorative:
   `SimulationEngine.readoutLine` appends it. Every other counter the HUD shows is
   incremented on the CPU while it encodes, so a GPU that refuses a kernel leaves
   the physics running, the clock counting, and only the connectome quiet.
+
+**The number the next screenshot should show.** `tools/pool_probe.py` now runs the
+cord's own muscle filter — `activation += (rate − activation)·(dt/tau)`, dt 1 ms,
+tau 60 ms (assumption #7) — over the pools the *asset* placed, so it prints the
+world HUD's first line as a prediction, not just the rates underneath it:
+
+    device (the build behind IMG_2713)   29/42 pools · 47.9 Hz · desc 17.4 Hz (tone 3.75)
+    app (gain 12, drives raw, retina 1)  29/42 pools · 58.1 Hz · desc 14.1 Hz (tone 2.5)
+    app x1.5                             29/42 pools · 77.2 Hz · desc 16.0 Hz (tone 3.75)
+    reference (step 3's configuration)   29/42 pools · 61.5 Hz · desc 13.7 Hz (tone 2.5)
+    vision (retina at 1.5)               28/42 pools · 62.9 Hz · desc 13.9 Hz (tone 2.5)
+
+Every row has the pools loud: the *lowest* is 24/60 pool groups at ≥ 1 Hz and the
+cord's own 42 come out 28–29 of 42 firing in all five conditions. So `0/42 pools
+firing · 0.0 Hz` on the phone is not the animal being quiet in any configuration
+this network's own law produces — it is the readout, and the readout line beside
+it will say which of its three links is the one that is zero. The prediction is
+also the acceptance test: the next build's HUD is expected to read about
+`29/42 pools · 58 Hz · desc 14 Hz (tone 2.5) · organs 13 Hz`, and a screenshot that
+says otherwise is a fact about the phone, not about the probe.

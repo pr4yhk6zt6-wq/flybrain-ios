@@ -14,15 +14,17 @@ reference) with the app's own numbers, and reports what the 42 pool groups do.
 
 Conditions, because the difference between them is the whole point:
 
-  app          gain 6.0, descending 2.5, organs 2.5, as the cord drives them
-               (FlyCord.update → setGroupDrive), vision silent
-  app x1.5     the same, with the drive that `driveGroups` builds — the kernel
-               computes `I = iSyn*gain + externalInput*P.externalDrive + noise`
-               and externalDrive is 1.5, so a group drive of 2.5 arrives as 3.75
-  reference    gain 12.0, descending 2.5 — `tools/step3_closedloop.py --desc 2.5
+  device       the build behind uploads/IMG_2713.png: gain 6.0, and every drive
+               carrying the old kernel convention (external input multiplied by
+               `externalDrive` 1.5, so a tone of 2.5 arrived as 3.75)
+  app          the app as it stands: gain 12.0 (SimulationEngine's default), the
+               tone of assumption #5 (2.5) on the descending group and on both
+               organ channels, drives added raw (ASSUMPTIONS #25)
+  app x1.5     the same at the old convention's amplitude, for the difference
+  reference    gain 12.0, drives 2.5 — `tools/step3_closedloop.py --desc 2.5
                --n-star 12`, the configuration the loop's law was measured in
-  vision       gain 12.0, descending 2.5, and the photoreceptors driven at 1.5,
-               i.e. the whole sensorimotor path the brief asks about
+  vision       gain 12.0, drives 2.5, and the photoreceptors driven at 1.5, i.e.
+               the whole sensorimotor path the brief asks about
 
 The numbers to look for: `pool Hz mean`, `pools firing` (the HUD's n/42, a pool
 counts as firing at ≥ 1 Hz after the cord's 60 ms muscle filter), and
@@ -77,8 +79,15 @@ def load(bin_path: pathlib.Path, meta_path: pathlib.Path):
                 meta=meta, groups=groups, members=members)
 
 
-def run(c, ms, gain, drives, seed=42, report_every=0):
-    """The LIF of tools/verify_banc.py, with an arbitrary drive per group."""
+def run(c, ms, gain, drives, seed=42, report_every=0, track=()):
+    """The LIF of tools/verify_banc.py, with an arbitrary drive per group.
+
+    `track` names groups whose per-millisecond spike counts are wanted back
+    (a (ms, len(track)) array), which is what a firing *rate* has to be built
+    from: the app's per-group counter is a sum over a frame, and FlyCord filters
+    that sum through a 60 ms muscle time constant, so the predicted HUD line
+    cannot be read off a window total alone.
+    """
     N, rowPtr, colIdx, W, delay = c["N"], c["rowPtr"], c["colIdx"], c["weight"], c["delay"]
     DT, TAU_M, TAU_SYN = 1.0, 20.0, 5.0
     V_TH, T_REF, NOISE = 1.0, 2, 0.015
@@ -97,6 +106,14 @@ def run(c, ms, gain, drives, seed=42, report_every=0):
     spikes = np.zeros(N, np.int64)
     lag = 50                                   # ignore the start-up transient
     window = np.zeros(N, np.int64)
+
+    # neuron -> tracked group, built once; a bincount per millisecond is then
+    # enough to know every tracked group's spikes at that millisecond.
+    track_idx = [c["members"](name) for name in track]
+    pool_of = np.full(N, -1, np.int64)
+    for k, idx in enumerate(track_idx):
+        pool_of[idx] = k
+    tracked = np.zeros((ms, len(track_idx)), np.int64) if track_idx else None
     for t in range(ms):
         slot = t % max_d
         I_syn = I_syn * ds + ring[slot]
@@ -111,6 +128,10 @@ def run(c, ms, gain, drives, seed=42, report_every=0):
         spikes[fired] += 1
         if t >= ms - lag:
             window[fired] += 1
+        if tracked is not None and len(fired):
+            which = pool_of[fired]
+            which = which[which >= 0]          # -1 is "not a tracked pool"
+            tracked[t] = np.bincount(which, minlength=len(track_idx))
         if len(fired):
             s0 = rowPtr[fired].astype(np.int64)
             s1 = rowPtr[fired + 1].astype(np.int64)
@@ -120,7 +141,7 @@ def run(c, ms, gain, drives, seed=42, report_every=0):
                                  colIdx[e]), W[e])
         if report_every and t % report_every == 0:
             print(f"    t={t:4d} fired={len(fired):6,}", flush=True)
-    return spikes, window
+    return spikes, window, tracked
 
 
 def hz(c, counts, name, ms):
@@ -155,22 +176,26 @@ def main() -> int:
     pools = [g["name"] for g in meta["groups"] if g["name"].startswith("pool:")]
     print(f"{args.bin}: {c['N']:,} neurons, {len(pools)} pools, {len(organs)} organ groups")
 
+    # `externalInput` is added raw since ASSUMPTIONS #25 — one convention for the
+    # groups and the photoreceptors, matching tools/verify_banc.py — so a drive
+    # in this table is the current it is written as. The "device" row is the
+    # build behind uploads/IMG_2713.png, which ran the *old* convention at the
+    # old gain; every other row is the app as it stands.
     conditions = {
-        "app": dict(gain=6.0, drives={"descending": 2.5,
-                                      **{o: 2.5 for o in organs}}),
-        "app x1.5": dict(gain=6.0, drives={"descending": 2.5 * 1.5,
-                                           **{o: 2.5 * 1.5 for o in organs}}),
+        "device": dict(gain=6.0, drives={"descending": 2.5 * 1.5,
+                                         **{o: 2.5 * 1.5 for o in organs},
+                                         "sensory_vision": 1.0}),
+        "app": dict(gain=12.0, drives={"descending": 2.5,
+                                       **{o: 2.5 for o in organs},
+                                       "sensory_vision": 1.0}),
+        "app x1.5": dict(gain=12.0, drives={"descending": 2.5 * 1.5,
+                                            **{o: 2.5 * 1.5 for o in organs},
+                                            "sensory_vision": 1.0}),
         "reference": dict(gain=12.0, drives={"descending": 2.5,
                                              **{o: 2.5 for o in organs}}),
         "vision": dict(gain=12.0, drives={"descending": 2.5,
                                           **{o: 2.5 for o in organs},
                                           "sensory_vision": 1.5}),
-        # the device's own configuration: the app's default gain, the drive as
-        # the kernel builds it (organ/descending × externalDrive), and the flat
-        # retinal drive BrainEngine sets at load when there is no camera
-        "device": dict(gain=6.0, drives={"descending": 2.5 * 1.5,
-                                         **{o: 2.5 * 1.5 for o in organs},
-                                         "sensory_vision": 1.0}),
     }
 
     rows = []
@@ -178,8 +203,8 @@ def main() -> int:
         if args.only and name != args.only:
             continue
         t0 = time.time()
-        spikes, window = run(c, args.ms, cfg["gain"], cfg["drives"],
-                             report_every=0)
+        spikes, window, tracked = run(c, args.ms, cfg["gain"], cfg["drives"],
+                                      report_every=0, track=cord_pools)
         pool_hz = np.array([hz(c, window, p, args.ms) for p in pools])
         firing = int((pool_hz >= 1.0).sum())
         row = dict(
@@ -218,6 +243,22 @@ def main() -> int:
               f"net {row['population'] * c['N']:.0f} spk/s · "
               f"groups {len(c['groups'])}/{c['n_group_idx']} · "
               f"spikes {tally(c['groups']):.0f} (pools {tally(cord_pools):.0f})")
+        if tracked is not None and len(cord_pools):
+            # FlyCord, line for line: the pool's rate in Hz, then the muscle
+            # filter, activation += (rate − activation)·(dt/tau), dt = 1 ms and
+            # tau = 60 ms (assumption #7). `activePools` counts activation >= 1,
+            # and the HUD prints that count, the mean activation, the *measured*
+            # descending rate and the organ mean beside the tone it was given.
+            sizes = np.array([max(len(c["members"](g)), 1) for g in cord_pools])
+            rate = tracked / sizes[None, :] * 1000.0
+            act = np.zeros(len(cord_pools))
+            for t in range(rate.shape[0]):
+                act += (rate[t] - act) * (1.0 / 60.0)
+            tone = cfg["drives"].get("descending", 0.0)
+            print(f"  the HUD should read {int((act >= 1.0).sum())}/{len(cord_pools)} "
+                  f"pools · {act.mean():.1f} Hz · desc {row['descending']:.1f} Hz "
+                  f"(tone {tone:g}) · organs {row['organ_mean']:.1f} Hz")
+
         best = np.argsort(-pool_hz)[:5]
         print("  loudest pools: " + ", ".join(f"{pools[i].split(':')[1]}/"
                                               f"{pools[i].split(':')[2]} "
