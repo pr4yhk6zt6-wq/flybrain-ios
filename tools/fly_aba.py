@@ -652,6 +652,12 @@ class FlySim:
             IA[par] += Xi.T @ Ia @ Xi
             pA[par] += Xi.T @ (pAe + U[i] * (u[i] / D[i]))
 
+        # Kept for the cross-language bisection driver: after the loop these
+        # are exactly the values each body's own step used (a body's IA/pA are
+        # only ever added to *before* it is processed, never after).
+        self._X, self._IA_used, self._pA_used = X, IA.copy(), pA.copy()
+        self._D, self._u, self._U, self._tau_last = D, u, U, tau
+
         # The root. A free root is a six-DOF joint whose parent is the world,
         # so its acceleration is whatever leaves the accumulated wrench at
         # zero, -IA^-1 pA; a welded root does not accelerate at all, and

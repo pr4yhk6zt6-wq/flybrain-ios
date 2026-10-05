@@ -104,6 +104,12 @@ struct Mat3 {
 
     static let identity = Mat3()
 
+    /// The zero matrix. `Mat3()` is the *identity* — that is the right default
+    /// for an orientation and the wrong one for a block that is supposed to
+    /// vanish, and confusing the two is how the spatial transforms below once
+    /// grew an identity in their upper-right block. Spell it out.
+    static let zero = Mat3(columns: (Vec3.zero, Vec3.zero, Vec3.zero))
+
     var transpose: Mat3 { Mat3(columns: (Vec3(c0.x, c1.x, c2.x),
                                         Vec3(c0.y, c1.y, c2.y),
                                         Vec3(c0.z, c1.z, c2.z))) }
@@ -214,7 +220,7 @@ struct SMat6 {
 
 /// The motion cross-product matrix: `crm(v) * u == v x_m u`.
 @inline(__always) func crm(_ v: SVec6) -> SMat6 {
-    SMat6(a: crossMat(v.w), b: Mat3(),
+    SMat6(a: crossMat(v.w), b: Mat3.zero,
           c: crossMat(v.v), d: crossMat(v.w))
 }
 
@@ -309,7 +315,7 @@ typealias Quat = SIMD4<Double>
 /// runs, and the answer is quietly wrong by a factor that depends on the
 /// joint's orientation.
 @inline(__always) func xform(_ E: Mat3, _ r: Vec3) -> SMat6 {
-    SMat6(a: E, b: Mat3(),
+    SMat6(a: E, b: Mat3.zero,
           c: crossMat(E * r) * (E * -1), d: E)
 }
 
@@ -767,6 +773,19 @@ final class FlyDynamics {
         rot = [Mat3](repeating: .identity, count: nBody)
         gpos = [Vec3](repeating: .zero, count: asset.collision.count)
         grot = [Mat3](repeating: .identity, count: asset.collision.count)
+        // The stance, at the height the stance was measured at. `stance_q` is
+        // the compressed pose the animal's own actuators hold its joints in,
+        // and `stance_root_z` is where its root sits while they do it
+        // (tools/stand_body.py measures the hold torques there). Starting at
+        // z = 0 instead puts the feet 49 um clear of the floor: the contact
+        // that is supposed to carry the animal's weight never forms, and the
+        // stance servo holds the legs against nothing — the reference solver
+        // starts at `stance_root_z` (`FlySim.reset`), and the port now does
+        // too. Found by comparing the standing run step by step with the
+        // reference: at z = 0 both have **zero** contacts and the same
+        // 0.148 rad/s rate, at `stance_root_z` both have **four** and the
+        // same 0.227 rad/s — the port was standing in the air.
+        rootPos = Vec3(0, 0, asset.stanceRootZ)
         q = stanceQ
         qd = [Double](repeating: 0, count: nj)
         torque = [Double](repeating: 0, count: nj)
@@ -998,6 +1017,64 @@ final class FlyDynamics {
 
     // MARK: One substep
 
+    /// A joint's own constants, and the body it hangs on.
+    ///
+    /// Inspection, not simulation: the tests and the Linux driver in `local/`
+    /// compare these against `tools/fly_aba.py`'s arrays field by field, which
+    /// is the only way to tell a modelling difference from a decoding one.
+    struct JointFacts {
+        let name: String
+        let body: Int
+        let axis: Vec3
+        let stiffness: Double
+        let springRef: Double
+        let damping: Double
+        let armature: Double
+        let lo: Double
+        let hi: Double
+        let limited: Bool
+        let mass: Double
+        let com: Vec3
+        let inertia: SMat6
+    }
+
+    func facts(_ j: Int) -> JointFacts {
+        let b = jointBody[j]
+        return JointFacts(name: jointName[j], body: b, axis: axis[j],
+                          stiffness: stiffness[j], springRef: springRef[j],
+                          damping: damping[j], armature: armature[j],
+                          lo: lo[j], hi: hi[j], limited: limited[j],
+                          mass: bodyMass[b], com: com[b], inertia: inertia[b])
+    }
+
+    /// The backward pass's working values, after one `step`, for the
+    /// cross-language bisection driver in `local/`. A body's IA and pA only
+    /// ever grow *before* it is processed, so what is stored at the end of the
+    /// pass is what that body's own step used.
+    var nb: Int { nBody }
+    func passX(_ i: Int) -> SMat6 { X[i] }
+    func passIA(_ i: Int) -> SMat6 { IA[i] }
+    func passPA(_ i: Int) -> SVec6 { pA[i] }
+    func passCi(_ i: Int) -> SVec6 { ci[i] }
+    func passU(_ i: Int) -> SVec6 { U[i] }
+    func passD(_ i: Int) -> Double { D[i] }
+    func passUu(_ i: Int) -> Double { u[i] }
+    func passTau() -> [Double] { tau }
+    func passV(_ i: Int) -> SVec6 { v[i] }
+    var ng: Int { gpos.count }
+    func geomWorld(_ g: Int) -> (pos: Vec3, rot: Mat3, body: Int, type: String, size: Vec3, h: Double) {
+        (gpos[g], grot[g], geomBody[g], geomType[g], geomSize[g], support(g))
+    }
+    func passC(_ i: Int) -> SVec6 { c[i] }
+
+    /// A link's world pose, as `kinematics()` computed it.
+    func linkWorld(_ i: Int) -> (pos: Vec3, rot: Mat3) { (pos[i], rot[i]) }
+
+    /// The parent link of a body, and the fixed pose it hangs at.
+    func linkFacts(_ i: Int) -> (parent: Int, pos: Vec3, quat: Quat, mass: Double) {
+        (parent[i], bodyPos[i], bodyQuat[i], bodyMass[i])
+    }
+
     /// How many times a hard stop has killed a joint's rate in this run.
     ///
     /// The golden trace is a violent vacuum tumble whose joints reach hundreds
@@ -1081,7 +1158,16 @@ final class FlyDynamics {
                 let cii = crm(v[i]) * Siqd
                 ci[i] = cii
                 let Di = dot(Si, Ui) + armature[j] + damping[j] * dt
-                let Ia = IA[i] - (outer(Ui) * (-1 / Di))
+                // Featherstone 7.42: the articulated-body inertia *loses* the
+                // rank-one term the joint cannot see, I^a = I^A - U U^T / D.
+                // This read `- (outer(Ui) * (-1 / Di))`, which is I^A + U U^T / D
+                // — the wrong sign on the only term that carries a child's
+                // inertia into its parent. The reference solver, judged against
+                // MuJoCo's own step on the same state, reproduces MuJoCo's rates
+                // after one step to 1.7e-04 rad/s out of 68; this line made the
+                // phone solver 1620x worse than that and put a 4e-04 rad error
+                // into the first step of the golden trace.
+                let Ia = IA[i] - outer(Ui) * (1 / Di)
                 let pAe = pA[i] + Ia * cii
                 let ui = tau[j] - dot(Si, pAe) - damping[j] * qd[j]
                 U[i] = Ui

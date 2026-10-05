@@ -218,8 +218,19 @@ final class FlyDynamicsTests: XCTestCase {
 
         let last = comZ.suffix(50)
         let mean = last.reduce(0, +) / Double(last.count)
-        // The reference value: the stance's centre of mass height, -0.0229 cm,
-        // measured in tools/fly_aba.py's check 3.
+        // The reference value, and the port now reproduces it digit for digit:
+        // running exactly this scenario on tools/fly_aba.py gives a mean of
+        // -0.027384 (first -0.026137, last -0.027331, six feet down at every
+        // step, worst joint rate 2.644 rad/s). `verify_standing`'s own 1.5 s
+        // run, which keeps ramping the tonic drive past 20 ms, settles at
+        // -0.0230 — the -0.0229 this test was first written against.
+        //
+        // The animal starts at the *stance height*, which is where its hold
+        // torques were measured (`FlyDynamics.init` sets root z =
+        // stance_root_z). Started at z = 0 it hangs 49 um above the floor with
+        // no contact at all, the servo holds the legs against nothing, and by
+        // 200 steps it has launched itself: the port measured a mean of
+        // +0.038 and 1 foot down before that was fixed.
         XCTAssertEqual(mean, -0.0229, accuracy: 0.01,
                        "the animal is not standing where the reference stands")
         XCTAssertGreaterThanOrEqual(feetLow, 4,

@@ -67,11 +67,16 @@ The fix is to scale by **1** — the vertices packed by `tools/step4_world.py`
 are already in model centimetres, which is also what `geom_size` and
 `geom_rbound` are computed from.
 
-### The solver's own gap (found by run 54, 2026-10-05)
+### The solver's own gap (found by run 54, 2026-10-05 — closed the same day)
 
 Run 54 is the first run where the body asset reached the bundle. It is also the
-first run in which `FlyDynamicsTests` was not skipped — and the port fails its
-own golden trace, by a wide margin (numbers in item 16). Nothing about the
+first run in which `FlyDynamicsTests` was not skipped — and the port failed its
+own golden trace, by a wide margin. **Both causes are found and fixed**, and the
+trace now reproduces exactly (item 16, `reports/step5_aba.md`): a `Mat3()` that
+was an identity where the spatial transforms needed a zero block, and an
+articulated-body inertia that added the rank-one term Featherstone subtracts.
+The failure text below is kept because it is what the next transliteration
+should be measured against. Nothing about the
 app's *behaviour* is claimed until that is fixed: the Python side is the
 verified reference, the Swift side is a transliteration that has never actually
 been checked against it until now.
@@ -117,7 +122,7 @@ multiplying by it is what produced the sliver screenshot.
 | 13 | Proprioception | **DONE** | `FlyProprioception` exposes joint angle, rate, leg load, body height, speed, feetDown, and the knee angle now drives the leg's chordotonal organ group (38–63 cells) with the published polarity: flexion stretches it, stretching silences it (assumption #11). The grip is measured on the device, not chosen (`FlyCordTests`). |
 | 14 | Motor neurons → muscles → physics, no direct commands | **DONE** | The only path to the body is `posture + drive → excitation → muscleTorque → ABA solver → contacts`; high-level code never sets `q`, `position` or `velocity`. The source of `drive` is the cord: motor-pool firing rates → muscle activation → the balance of each joint's antagonist pair → excitation. |
 | 15 | Force-based muscle model | **DONE** | Hill force-length, per-direction velocity term (shortening weakens, lengthening loads ≤1.8), antagonist pairs, measured `hold_torque` inversion, optional fatigue hooks not yet — `FlyDynamics.muscleTorque`, verified in `FlyDynamicsTests`. |
-| 16 | Physics is the authority | **BROKEN — see below** | The Python reference is verified against MuJoCo (FK 4.4e-16, free fall 2.1e-5 cm, and the animal standing 3 s). The **Swift port does not yet reproduce its golden trace**: after 500 steps `q` differs by 0.160, `qd` by 19.997, root velocity by 23.15, ω by 150.97, root position by 0.581, root quaternion by 0.917 (tolerance 1e-7), and the hard-stop fingerprint (4,044 rate-kills in the reference) is reported beside it. This was invisible until run 54, because the test **skipped itself** in every green CI run — the asset that fed it was deleted by `tools/pack_world.py` (see §0). The test now runs, fails, and says where. The animal standing on muscle tone does pass, so the divergence is in the moving terms, not the statics. |
+| 16 | Physics is the authority | **DONE** | The port reproduces the reference's golden trace **exactly**: all six final metrics `0.000000` against a tolerance of `1e-07`, the hard-stop fingerprint 4,044 in both, and no traced step off by more than `1e-9`; two runs byte-identical. Two port bugs were behind the 0.160 divergence of run 54 and both were settled against MuJoCo rather than against the reference (`tools/judge_port.py`): `Mat3()` is the identity, so the spatial transforms `xform`/`crm` carried a spurious identity in their upper-right block (now `Mat3.zero`), and the articulated-body inertia's rank-one term was **added** instead of subtracted (`IA + U Uᵀ/D` for Featherstone 7.42's `IA - U Uᵀ/D`). After both fixes the port's one-step rates are within **1.6e-15 rad/s** of the reference and its distance to MuJoCo is the reference's own, digit for digit (8.7e-04 rad/s worst over ten states). The reference itself is verified against MuJoCo: FK 4.4e-16, 20 ms free tumble, standing 1.5 s. A third port bug surfaced while checking the standing test: the initial state had the root at z = 0 instead of `stance_root_z`, so the animal hung 49 um above the floor with **no contact at all** and the stance servo held the legs against nothing — the standing scenario now reproduces the reference digit for digit (mean COM z -0.027384, six feet down, worst rate 2.644 rad/s). |
 | 17 | Walking emerges from neural activity | **MISSING** (by design) | No walk controller exists — correct per the brief; step 5's report says plainly: six cords cannot coordinate, tripod gait is owed. Offline, `tools/step4_world.py` showed cord-driven stance + nudge responses recorded in `behaviour.json`. |
 | 18 | Minimal environment | **PARTIAL** | Floor + grid + lights + walls-not-yet; no obstacles, odor sources, wind, surface types. The world exists to stimulate; keep it deliberately spare. |
 | 19 | Emergent behaviours | **PARTIAL** | Standing + postural stability emerge from tone + physics (`testTheAnimalStandsWithMuscleToneOnly`). Reflex arc validated offline (step 2/3: ρ = +0.125/+0.186, polarity control reverses it). Walking/grooming/feeding/escape all follow items 9→17. |

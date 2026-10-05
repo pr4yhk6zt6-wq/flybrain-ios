@@ -195,5 +195,95 @@ failing:
   any tolerance;
 * `FlyDynamics.limitStops` / `jointsAtLimit()` expose the port's own clamping.
 
-Status of item 16 (`docs/AUDIT.md`): **BROKEN**, and honestly so — the app must
-not be described as physically authoritative until this trace is reproduced.
+### Resolved: two bugs, both settled against MuJoCo (2026-10-05)
+
+The trace reproduces **exactly** now: all six final metrics are `0.000000`
+against a tolerance of `1e-07`, the hard-stop count is 4,044 in both, and no
+traced step diverges by more than `1e-9`. Two consecutive runs are
+byte-identical. Both bugs were in the port, and the reference was used to
+*find* them but not to *judge* them — that is what `tools/judge_port.py` is
+for.
+
+**Bug 1 — `Mat3()` is the identity.** `xform` and `crm` build their 6×6 as four
+3×3 blocks, and both wrote `b: Mat3()` for the upper-right block. `Mat3()`
+default-constructs the **identity**, so every spatial transform carried a
+spurious identity in its top-right corner: `X` mapped a parent's linear
+velocity straight into the child's, and `crm`'s motion cross-product lost its
+zero block. The fix spells the intent out with a new `Mat3.zero`.
+
+*How it was found.* The joint constants were identical in both languages (102
+of 102 joints agree to 7.0e-14 relative over axis, stiffness, spring ref,
+damping, armature, mass, COM, body pose, quat and all 36 inertia entries), and
+so was every body's world pose (104 of 104 to 3.3e-16), which is why the
+divergence had to be inside the recursion and not in the asset or the frames.
+Dumping the backward pass body by body showed every body's `X` differing by
+exactly 1.0 in one entry — the upper-right block — and nothing else.
+
+**Bug 2 — the articulated-body inertia's rank-one term had the wrong sign.**
+
+    the port:  Ia = IA[i] - (outer(Ui) * (-1 / Di))    =  IA + U U^T / D
+    reference: Ia = IA[i] - np.outer(Ui, Ui) / Di      =  IA - U U^T / D
+
+Featherstone 7.42 is the minus sign: the articulated-body inertia *loses* the
+rank-one term the joint cannot see. With the plus sign a child's inertia is
+*added twice* on its way up the tree.
+
+*How it was found.* With `v[i]` and the bias `c[i]` proven identical body by
+body, and `X`, `ci`, `D`, `U`, `IA` and `pA` compared body by body, the
+deepest body whose record differed was the abdomen tip (`abdomen_7__abdomen_abduct_7`):
+its parent-accumulated inertia was off by 2.44e-07 in the bottom-right block,
+which is 2 · (U Uᵀ / D) for its child — i.e. exactly the difference between
+adding and subtracting one rank-one term.
+
+**The judge, not the reference.** The reference solver is verified against
+MuJoCo (`--verify`: FK 4.4e-16, 20 ms free tumble, 1.5 s standing), so a
+disagreement between the two did not say which was wrong. `tools/judge_port.py`
+hands one state to all three implementations and reports who is closer. The
+comparison is on the **joint rates after one step**, not on `qacc`: MuJoCo
+handles joint damping implicitly inside its integrator, so its own `d.qacc` is
+off by tens of percent on a step that is right to 2.5e-6 relative.
+
+| one step, ten random states (joints moving, root moving, gravity on) | before | after |
+| --- | --- | --- |
+| port vs reference, worst over 10 states | 8.4e-01 rad/s | **1.6e-15 rad/s** |
+| port vs MuJoCo | 2.6e+00 rad/s | **8.7e-04 rad/s** |
+| reference vs MuJoCo | 8.7e-04 rad/s | 8.7e-04 rad/s |
+
+After the fix the port's distance to MuJoCo *is* the reference's, digit for
+digit, on all ten states — the two solvers are now the same solver. (The
+harness clips every state inside every joint's range first: the port's hard
+stops are a clamp, MuJoCo's are soft constraints, and comparing them on a state
+whose joints are already outside their range measures the convention, not the
+physics.)
+
+`local/main.swift` keeps the modes that found this — `facts`, `kin`, `pass`,
+`judge` — and `tools/fly_aba.py` now keeps the backward pass's working values
+(`_X`, `_ci`, `_D`, `_u`, `_U`, `_IA_used`, `_pA_used`) so the next
+disagreement can be read field by field instead of guessed at.
+
+**Bug 3 — the animal was standing in the air.** With the dynamics fixed, the
+golden trace reproduced exactly and the port's one-step rates matched the
+reference to 1.6e-15 rad/s — and the standing test still failed, with
+`com_z` **+0.038** (the reference: -0.023) and one foot on the floor out of six.
+The port's initial state had the root at `z = 0`; the reference's `reset()` puts
+it at `stance_root_z` (-0.004866 cm), the height the stance was measured at
+(`tools/stand_body.py` measures the hold torques at that compression).
+
+*How it was found.* The same state handed to both solvers:
+
+| initial root z | contacts, port | contacts, reference | worst rate, port | worst rate, reference |
+| --- | --- | --- | --- | --- |
+| `0` (the port's initialiser) | **0** | **0** | 0.1482 | 0.1482 |
+| `stance_root_z` (the reference's `reset`) | **4** | **4** | 0.2270 | 0.2270 |
+
+The two agreed perfectly in *both* states — the only difference was which state
+the port chose to start in. Forty-nine microns of clearance is enough that the
+floor never touches the feet, so the servo that holds the stance holds it
+against nothing and the animal launches itself within 2 ms. With `init` starting
+at `stance_root_z`, running the standing test's exact scenario on both solvers
+gives **identical** numbers: mean `com_z` -0.027384, first -0.026137, last
+-0.027331, six feet down at every step, worst joint rate 2.644 rad/s.
+
+Status of item 16 (`docs/AUDIT.md`): **DONE** — the trace is reproduced, the
+port is verified against MuJoCo in its own right, and the animal stands where
+the reference stands.
