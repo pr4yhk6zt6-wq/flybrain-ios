@@ -34,7 +34,7 @@ jobs:
           python-version: "3.12"
 
       - name: Python dependencies
-        run: python3 -m pip install --quiet numpy pandas pyarrow mujoco
+        run: python3 -m pip install --quiet -r requirements.txt
 
       # ---------------------------------------------------------------- data
       - name: Cache BANC v888

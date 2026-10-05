@@ -1,0 +1,8 @@
+# Everything the headless tools need. The iOS app itself needs none of this:
+# the Python side compiles the connectome into build/flybanc.bin and the Swift
+# side only reads that binary.
+numpy>=1.26
+pandas>=2.0
+pyarrow>=14
+scipy>=1.11      # step 2: clustering the chordotonal organ by its target profile
+mujoco>=3.1      # step 1: the body the circuits will eventually drive

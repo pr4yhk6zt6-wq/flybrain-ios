@@ -167,18 +167,26 @@ def main() -> int:
     sensory_here = meta.body_part_sensory.astype(str).str.contains(leg, na=False) | \
                    meta.body_part_sensory.astype(str).str.contains(
                        f"coxa,{leg}", regex=False, na=False)
-    src_mask = (proprio & on_leg & sensory_here).to_numpy()
+    # .to_numpy() over a pyarrow-backed column is a READ-ONLY view in some
+    # pandas builds, so an in-place |= raises ValueError: output array is
+    # read-only (this is how CI failed on 7b22dd1 while the same code passed
+    # locally). Build the mask as a fresh array and combine with | instead.
+    is_proprio = np.asarray(proprio, dtype=bool)
+    is_leg = np.asarray(on_leg, dtype=bool)
+    src_mask = is_proprio & is_leg & np.asarray(sensory_here, dtype=bool)
     # The thoracic chordotonal organs are annotated by body part; hair plates and
     # campaniform fields sometimes only by neuromere, so take those too.
-    src_mask |= (proprio & on_leg & (meta.neuromere.astype(str) == neuro)
-                 & meta.body_part_sensory.notna()
-                 & meta.region.astype(str).eq("ventral_nerve_cord")).to_numpy()
+    src_mask = src_mask | (
+        is_proprio & is_leg
+        & np.asarray(meta.neuromere.astype(str) == neuro, dtype=bool)
+        & np.asarray(meta.body_part_sensory.notna(), dtype=bool)
+        & np.asarray(meta.region.astype(str) == "ventral_nerve_cord", dtype=bool))
     sources = np.flatnonzero(src_mask)
 
     # ---- targets: the leg's own motor neurons, by muscle ------------------
-    is_motor = (meta.super_class.astype(str) == "motor").to_numpy()
-    tgt_mask = (is_motor & on_leg
-                & (meta.body_part_effector.astype(str) == leg)).to_numpy()
+    is_motor = np.asarray(meta.super_class.astype(str) == "motor", dtype=bool)
+    tgt_mask = (is_motor & is_leg
+                & np.asarray(meta.body_part_effector.astype(str) == leg, dtype=bool))
     targets = np.flatnonzero(tgt_mask)
     flexor = targets[np.isin(meta.peripheral_target_type.astype(str).to_numpy()[targets],
                              list(FLEXOR_MUSCLES))]
