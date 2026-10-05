@@ -57,23 +57,12 @@ final class BrainEngine: ObservableObject {
         didSet { renderer?.camera.invertY = invertLookY }
     }
 
-    /// World mode hands the simulation clock to WorldEngine: the brain view
-    /// becomes a picture-in-picture visualiser and stops stepping.
-    @Published var worldMode: Bool = false {
-        didSet {
-            renderer?.stepsSimulation = !worldMode
-            if worldMode { cameraEnabled = false }
-        }
-    }
-
     let device: MTLDevice
     private(set) var renderer: Renderer?
     private var connectome: Connectome?
     private(set) var simulation: SimulationEngine?
     private(set) var library: MTLLibrary?
     private(set) var commandQueue: MTLCommandQueue?
-    /// The embodied world. Built once the connectome is loaded.
-    private(set) var worldEngine: WorldEngine?
     /// Created eagerly: the preview window needs the AVCaptureSession to exist
     /// before capture starts, otherwise the first frames land nowhere visible.
     private(set) lazy var camera: CameraFeed = CameraFeed(device: device)
@@ -137,10 +126,6 @@ final class BrainEngine: ObservableObject {
             statsTimer = Timer.publish(every: 0.2, on: .main, in: .common)
                 .autoconnect()
                 .sink { [weak self] _ in self?.pollStats() }
-
-            if let q = commandQueue {
-                worldEngine = WorldEngine(device: device, queue: q)
-            }
 
             isReady = true
         } catch {

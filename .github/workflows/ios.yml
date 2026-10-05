@@ -24,7 +24,6 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version || true
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -34,7 +33,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Cache the BANC download
+      - name: Python dependencies
+        run: python3 -m pip install --quiet numpy pandas pyarrow mujoco
+
+      # ---------------------------------------------------------------- data
+      - name: Cache BANC v888
         id: banc-cache
         uses: actions/cache@v4
         with:
@@ -45,44 +48,73 @@ jobs:
         if: steps.banc-cache.outputs.cache-hit != 'true'
         run: bash tools/download_banc.sh
 
-      - name: Cache the flybody assets
+      - name: Cache the flybody model
         id: flybody-cache
         uses: actions/cache@v4
         with:
           path: data/flybody
-          key: flybody-assets-v1
+          key: flybody-main-v1
 
-      - name: Build the connectome binary
+      - name: Download the flybody body model
+        if: steps.flybody-cache.outputs.cache-hit != 'true'
+        run: bash tools/download_flybody.sh
+
+      # ------------------------------------------------------- step 1: body
+      # The anatomy inventory is the ground truth every later step is written
+      # against, so it runs BEFORE the app build and its failure fails the run.
+      - name: Step 1 — anatomy inventory (body + nerve structure)
+        run: python3 tools/step1_anatomy.py
+
+      - name: Step 1 — assert the anatomy matches the published animal
         run: |
-          python3 -m pip install --quiet numpy pandas pyarrow
+          python3 - <<'PY'
+          import json, sys
+          a = json.load(open('build/fly_anatomy.json'))
+          c = a['counts']
+          checks = [
+              ('body parts',          c['parts'],              67),
+              ('articulated joints',  c['joints_articulated'], 102),
+              ('articulated DOF',     c['dof_articulated'],    102),
+              ('actuators',           c['actuators'],          78),
+              ('adhesion actuators',  sum(1 for x in a['actuators']
+                                          if x['name'].startswith('adhere_')), 8),
+          ]
+          ok = True
+          for label, got, want in checks:
+              flag = 'ok ' if got == want else 'FAIL'
+              if got != want: ok = False
+              print(f'  {flag} {label:22s} {got}  (expected {want})')
+          mass = a['mass_total_kg'] * 1e6
+          if not (0.8 < mass < 1.2):
+              print(f'  FAIL mass {mass:.3f} mg is not a fruit fly'); ok = False
+          else:
+              print(f'  ok  mass                   {mass:.3f} mg')
+          length = a['size']['body_length_mm']
+          if not (2.0 < length < 3.5):
+              print(f'  FAIL trunk length {length:.2f} mm is not a fruit fly'); ok = False
+          else:
+              print(f'  ok  trunk length           {length:.2f} mm')
+          sys.exit(0 if ok else 1)
+          PY
+
+      # ----------------------------------------------------- step 1: physics
+      - name: Step 1 — the fly stands on its own six feet
+        run: python3 tools/step1_sim.py --seconds 3.0 --json reports/step1_stand.json
+
+      # -------------------------------------------------------------- the app
+      - name: Build the connectome binary for the app
+        run: |
           python3 tools/build_banc.py --raw data/banc --out build/flybanc.bin \
                                       --min-syn 3 --conduction-speed 0.25
+          python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
           mkdir -p FlyBrain/Resources
           cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
+          cp build/fly_anatomy.json FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
-
-      - name: Build the fly body mesh
-        run: |
-          python3 tools/build_flymodel.py --cache data/flybody \
-                                          --out build/flymodel.bin \
-                                          --budget 110000
-          cp build/flymodel.bin FlyBrain/Resources/
-          ls -lh FlyBrain/Resources/
-
-      - name: Validate the connectome
-        run: python3 tools/verify_banc.py --ms 120 --gain 12 --drive 1.5
-
-      # Round-5 phase 3: connectome-level probes T5-T7. These REPORT — a
-      # negative finding (e.g. no looming preference) is printed and written
-      # to reports/phase3_probes.json, never tuned away, so the step is green
-      # unless the probe itself crashes.
-      - name: Phase-3 connectome probes (T5-T7, report-only)
-        run: python3 tools/phase3_probes.py --ms 400 --gain 12
 
       - name: Generate the Xcode project
         run: |
           xcodegen generate --spec project.yml
-          grep -m1 objectVersion FlyBrain.xcodeproj/project.pbxproj
           xcodebuild -list -project FlyBrain.xcodeproj
 
       - name: Build for the simulator
@@ -95,20 +127,11 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            build | xcpretty || \
-          xcodebuild \
-            -project FlyBrain.xcodeproj \
-            -scheme FlyBrain \
-            -sdk iphonesimulator \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Run the test suite
         run: |
           set -o pipefail
-          xcrun simctl list devices available
           DEST=$(xcrun simctl list devices available | grep -Eo '[0-9A-F-]{36}' | head -1)
           test -n "$DEST" || { echo "no simulator available"; exit 1; }
           echo "testing on simulator $DEST"
@@ -138,26 +161,20 @@ jobs:
       - name: Package the .ipa
         run: |
           APP="build/dd/Build/Products/Release-iphoneos/FlyBrain.app"
-          test -d "$APP" || { echo "no .app at $APP"; find build/dd -name '*.app'; exit 1; }
+          test -d "$APP" || { echo "no .app at $APP"; exit 1; }
           rm -rf build/Payload && mkdir -p build/Payload
           cp -R "$APP" build/Payload/
           cd build && zip -qry FlyBrain-unsigned.ipa Payload
           ls -lh FlyBrain-unsigned.ipa
-          unzip -l FlyBrain-unsigned.ipa | tail -5
 
-      # A missing flymodel.bin does not fail the build, it fails the ANIMAL:
-      # FlyModel throws, the renderer draws the room and skips the fly, and the
-      # symptom is a screenshot of an empty world. That slipped through for two
-      # commits because nothing checked. Check it here.
-      - name: The .ipa must contain the fly
+      - name: The .ipa must contain its data
         run: |
           cd build
-          unzip -l FlyBrain-unsigned.ipa | grep -q 'FlyBrain.app/flymodel\.bin' \
-            || { echo "flymodel.bin is NOT in the .ipa — the fly will not be drawn"; \
-                 unzip -l FlyBrain-unsigned.ipa | grep -E '\.bin|\.json'; exit 1; }
-          unzip -l FlyBrain-unsigned.ipa | grep -q 'FlyBrain.app/flybanc\.bin' \
-            || { echo "flybanc.bin is NOT in the .ipa"; exit 1; }
-          echo "both data assets present"
+          for f in flybanc.bin flybanc_meta.json fly_anatomy.json; do
+            unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" \
+              || { echo "$f is NOT in the .ipa"; exit 1; }
+          done
+          echo "all data assets present"
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
@@ -166,12 +183,12 @@ jobs:
           path: build/FlyBrain-unsigned.ipa
           if-no-files-found: error
 
-      - name: Upload the connectome binary
+      - name: Upload the step-1 evidence
         uses: actions/upload-artifact@v4
         with:
-          name: flybanc-connectome
+          name: step1-evidence
           path: |
-            build/flybanc.bin
-            build/flybanc_meta.json
-            build/flymodel.bin
-            build/flymodel_meta.json
+            reports/step1_anatomy.md
+            reports/step1_stand.json
+            build/fly_anatomy.json
+            build/fly_motorunits.json

@@ -19,25 +19,6 @@ struct ContentView: View {
 
             if let error = engine.loadError {
                 FailureView(message: error)
-            } else if engine.isReady, engine.worldMode, let w = engine.worldEngine {
-                WorldView(brain: engine, world: w)
-
-                VStack {
-                    HStack {
-                        Button {
-                            withAnimation { engine.worldMode = false }
-                        } label: {
-                            Label("Brain", systemImage: "brain")
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .padding(.horizontal, 11).padding(.vertical, 6)
-                                .background(.ultraThinMaterial, in: Capsule())
-                        }
-                        .padding(.leading, 16)
-                        .padding(.top, 54)
-                        Spacer()
-                    }
-                    Spacer()
-                }
             } else if engine.isReady {
                 BrainMetalView(engine: engine)
                     .ignoresSafeArea()
@@ -80,18 +61,6 @@ struct ContentView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        if engine.worldEngine != nil {
-                            Button {
-                                withAnimation { engine.worldMode = true }
-                            } label: {
-                                Label("World", systemImage: "globe.americas.fill")
-                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .padding(.horizontal, 11).padding(.vertical, 6)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                            }
-                            .padding(.trailing, 10)
-                            .padding(.top, 54)
-                        }
                         Button {
                             withAnimation { showControls.toggle() }
                         } label: {
