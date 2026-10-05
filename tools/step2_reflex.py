@@ -105,6 +105,19 @@ NOISE = 0.015
 DT = 1.0
 
 
+def text(meta, name):
+    """
+    One column, as an object array of str, with missing values as "".
+
+    Do not use `meta[name].astype(str)`: pandas 2 turns a missing value into the
+    string "nan", pandas 3 keeps it missing, so a column that is fine locally
+    arrives in CI holding floats and dies on `leg in value`. Converting through
+    pandas' own `string` dtype and then filling is stable in both.
+    """
+    s = meta[name]
+    return s.astype("string").fillna("").astype(object).to_numpy()
+
+
 def load(banc: pathlib.Path, min_syn: int):
     import pandas as pd
     import pyarrow.feather as feather
@@ -131,7 +144,7 @@ def parse_positions(meta):
     """root_position_nm is 'x, y, z' in nanometres."""
     n = len(meta)
     pos = np.zeros((n, 3), dtype=np.float64)
-    raw = meta.root_position_nm.astype(str).to_numpy()
+    raw = text(meta, "root_position_nm")
     parsed = 0
     for i in range(n):
         s = raw[i]
@@ -262,18 +275,18 @@ def main() -> int:
 
     meta, pre, post, syn = load(a.banc, a.min_syn)
     n = len(meta)
-    ct = meta.cell_type.astype(str).to_numpy()
-    nt = meta.neurotransmitter_predicted.astype(str).str.lower() \
-             .str.split().str[0].to_numpy()
+    ct = text(meta, "cell_type")
+    nt = np.array([v.split()[0].lower() if v else "" for v in
+                   text(meta, "neurotransmitter_predicted")], dtype=object)
     sign = np.array([SIGN.get(x, 0.0) for x in nt], dtype="float32")
-    fn = meta.cell_function.astype(str).to_numpy()
-    det = meta.cell_function_detailed.astype(str).to_numpy()
-    part_s = meta.body_part_sensory.astype(str).to_numpy()
-    part_e = meta.body_part_effector.astype(str).to_numpy()
-    ptt = meta.peripheral_target_type.astype(str).to_numpy()
-    sc = meta.super_class.astype(str).to_numpy()
-    side = meta.side.astype(str).to_numpy()
-    neuroneme = meta.neuromere.astype(str).to_numpy()
+    fn = text(meta, "cell_function")
+    det = text(meta, "cell_function_detailed")
+    part_s = text(meta, "body_part_sensory")
+    part_e = text(meta, "body_part_effector")
+    ptt = text(meta, "peripheral_target_type")
+    sc = text(meta, "super_class")
+    side = text(meta, "side")
+    neuroneme = text(meta, "neuromere")
     log(f"{n:,} neurons, {len(pre):,} edges at >= {a.min_syn} synapses")
 
     leg, s = a.leg, a.side
@@ -515,7 +528,7 @@ def main() -> int:
     log(f"scale sweep done: {len(sweep)} values of N*")
 
     # ---- control: transmitter signs shuffled within cell class -------------
-    cls = meta.cell_class.astype(str).to_numpy()[nodes]
+    cls = text(meta, "cell_class")[nodes]
     rng = np.random.default_rng(7)
     shuf = sign[nodes].copy()
     for c in np.unique(cls):
