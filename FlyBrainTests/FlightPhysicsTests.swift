@@ -415,7 +415,7 @@ final class FlightPhysicsTests: XCTestCase {
         // Fixed material point: the tarsus tip, chosen ONCE as the vertex
         // farthest from the thorax origin in the assembled walking pose.
         var mats = [float4x4]()
-        model.solve(angles: body.jointAngles, root: float4x4.identity, into: &mats)
+        model.solve(angles: body.jointAngles, root: matrix_identity_float4x4, into: &mats)
         let M0 = mats[pi]
         var vert = 0
         var best: Float = -1
@@ -428,7 +428,7 @@ final class FlightPhysicsTests: XCTestCase {
         let tip = SIMD3<Float>(verts[vert * 6], verts[vert * 6 + 1], verts[vert * 6 + 2])
 
         func footX() -> Float {
-            model.solve(angles: body.jointAngles, root: float4x4.identity, into: &mats)
+            model.solve(angles: body.jointAngles, root: matrix_identity_float4x4, into: &mats)
             let w = mats[pi] * SIMD4<Float>(tip, 1)
             return w.x * 10                        // world units (cm) -> mm
         }
