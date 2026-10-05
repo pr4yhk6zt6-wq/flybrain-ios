@@ -39,8 +39,9 @@ struct SimParams {
     uint  flags;            // bit0 = use camera texture instead of flat drive
     float dtMillis;
 
-    float contrastGain;     // how hard camera contrast pushes the photoreceptors
-    float adaptationRate;   // per-step rate of the slow luminance adaptation
+    float contrastGain;     // LMC:photoreceptor gain ratio, 8-10x (Laughlin &
+                            // Hardie 1978) — a derived constant, not a slider
+    float adaptationTau;    // s, mean-luminance adaptation time constant
     float cameraBias;       // baseline drive when the scene is perfectly flat
     float pad1;
 };
@@ -225,14 +226,22 @@ kernel void sampleRetina(
     const float v = float(retinaUV[gid * 2 + 1]);
     const float lum = camera.sample(s, float2(u, v)).r;
 
-    // Slow luminance adaptation. The rate is a parameter rather than a constant
-    // so the UI can trade responsiveness against stability: adapt too fast and
-    // the cell goes blind to anything but flicker, too slow and it saturates.
+    // Mean-luminance adaptation with a real time constant instead of a
+    // per-step rate, so the filter no longer changes with the simulation
+    // step size. tau = 0.1 s: the rapid phase of photoreceptor light
+    // adaptation in flies runs ~100 ms and the lamina re-centres within
+    // ~200 ms (Laughlin & Hardie 1978, J Comp Physiol 132:139); sensitivity
+    // modulation onsets over 200-300 ms (Curr Biol 2023, "Multifaceted
+    // luminance gain control beyond photoreceptors in Drosophila"). This
+    // high-pass stands in for both.
+    const float alpha = 1.0f - exp(-(P.dtMillis * 0.001f) / P.adaptationTau);
     const float a = adaptation[gid];
-    const float aNext = a + (lum - a) * P.adaptationRate;
+    const float aNext = a + (lum - a) * alpha;
     adaptation[gid] = aNext;
 
-    // Contrast, not absolute brightness — this is what lamina monopolars encode.
+    // Contrast, not absolute brightness — this is what lamina monopolars
+    // encode. The gain is the measured LMC:photoreceptor slope ratio,
+    // 8-10x (Laughlin & Hardie 1978).
     const float contrast = (lum - aNext) * P.contrastGain;
     externalIn[retinaIdx[gid]] = clamp(P.cameraBias + contrast, 0.0f, 4.0f);
 }

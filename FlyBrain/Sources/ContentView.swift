@@ -211,12 +211,6 @@ struct ControlPanel: View {
             .toggleStyle(.button)
             .font(.system(size: 10, weight: .medium))
 
-            if engine.cameraEnabled {
-                labelledSlider("Camera contrast", value: $engine.contrastGain,
-                               range: 0...30,
-                               detail: engine.contrastGain < 2 ? "barely coupled" : nil)
-            }
-
             HStack {
                 Toggle("Camera", isOn: $engine.cameraEnabled)
                     .toggleStyle(.switch)

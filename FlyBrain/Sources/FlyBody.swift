@@ -95,6 +95,10 @@ enum FlyMorphology {
     static let eyeAzimuth: Float = 67.0 * .pi / 180
     static let eyeFieldOfView: Float = 140.0 * .pi / 180
     /// Half the distance between the two eyes, in world (cm-scale) units.
+    /// Derived: the CT head mesh's lateral half-width is 0.0216 world units
+    /// (rest-pose AABB of the `head` part in flymodel.bin), so 0.033 puts the
+    /// eye cameras OUTSIDE the head volume — no near-plane clipping into the
+    /// animal's own skull even where the culling mask is bypassed.
     static let eyeLateralOffset: Float = 0.033
 
     // --- wing (Lehmann & Dickinson 1997; Sun & Tang 2002) ---
@@ -905,10 +909,18 @@ final class FlyBody {
 
         func eye(_ azimuth: Float) -> (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>) {
             let y = yaw + azimuth
-            let f = SIMD3<Float>(sin(y) * cos(pitch), sin(pitch), -cos(y) * cos(pitch))
+            let f = normalize(SIMD3<Float>(sin(y) * cos(pitch), sin(pitch),
+                                           -cos(y) * cos(pitch)))
             let p = head + right * (azimuth >= 0 ? FlyMorphology.eyeLateralOffset
                                                  : -FlyMorphology.eyeLateralOffset)
-            return (p, normalize(f), SIMD3<Float>(0, 1, 0))
+            // The up vector rolls WITH the body (the old fixed (0,1,0) kept
+            // the horizon level while the animal banked): world up rotated
+            // about the eye's forward axis by the pose roll — Rodrigues with
+            // k = f, applied to (0,1,0).
+            let worldUp = SIMD3<Float>(0, 1, 0)
+            let up = normalize(worldUp * cos(pose.roll)
+                               + cross(f, worldUp) * sin(pose.roll))
+            return (p, f, up)
         }
         return (left: eye(-FlyMorphology.eyeAzimuth),
                 right: eye(FlyMorphology.eyeAzimuth))
@@ -931,11 +943,24 @@ final class FlyBody {
         sim.setGroupDrive("sensory_middle_leg", grounded ? 0.3 + (1 - gait) * 0.6 : 0)
         sim.setGroupDrive("sensory_hind_leg", grounded ? 0.3 + gait * 0.6 : 0)
 
-        // Halteres are gyroscopes: their load signal is proportional to the
-        // body's angular velocity. This is a real measurement, not a proxy.
-        sim.setGroupDrive("sensory_haltere",
-                          (grounded ? 0 : 1) * min(2.0, abs(pose.yawRate) * 0.12 + 0.3))
-        sim.setGroupDrive("sensory_wing", (grounded ? 0 : 1) * pose.strokeAmplitudeL * 0.4)
+        // Halteres are gyroscopes: each one's campaniform fields encode body
+        // rotation TOWARD that side (Dickinson 1999 — ablating one haltere
+        // unilaterally abolishes the corrective reflex for motions toward the
+        // ablated side). Signed and lateralised: the rectified yaw rate,
+        // normalised by the measured saccade peak (1600 deg/s), drives each
+        // side's afferents separately — the 0.3 baseline is their tonic
+        // stroke-locked firing, the 1.7 span saturates the 0-2 drive scale at
+        // the measured maximum yaw rate.
+        let wNorm = max(-1, min(1, pose.yawRate / FlyMorphology.maxYawRate))
+        let flying: Float = grounded ? 0 : 1
+        sim.setGroupDrive("sensory_haltere_left",
+                          flying * min(2.0, 0.3 + 1.7 * max(0, -wNorm)))
+        sim.setGroupDrive("sensory_haltere_right",
+                          flying * min(2.0, 0.3 + 1.7 * max(0, wNorm)))
+
+        // Wing-base campaniforms report each wing's own stroke amplitude.
+        sim.setGroupDrive("sensory_wing_left",  flying * pose.strokeAmplitudeL * 0.4)
+        sim.setGroupDrive("sensory_wing_right", flying * pose.strokeAmplitudeR * 0.4)
         sim.setGroupDrive("sensory_nociception", hurt * 3.0)
 
         sim.setGroupDrive("sensory_vision", visionActive ? nil : 0.4)

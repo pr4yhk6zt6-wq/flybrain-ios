@@ -119,6 +119,28 @@ groups have 12 neurons; the leg drive averages three groups whose smallest
 has 63). Listed here so nobody "tunes" them: they move only with the group
 sizes in the connectome or with #3.
 
+**#15 — Camera coupling constants (no longer sliders).**
+`contrastGain = 8` is the measured LMC:photoreceptor slope ratio, 8-10x
+(Laughlin & Hardie 1978, J Comp Physiol 132:139) — derived.
+`adaptationTau = 0.1 s` is the rapid phase of fly photoreceptor light
+adaptation (~100 ms; lamina re-centres within ~200 ms, same source; 200-300
+ms sensitivity-modulation onset, Curr Biol 2023) — derived, and now a real
+time constant (`1 - exp(-dt/tau)`), so it no longer changes meaning with the
+simulation step size. `cameraBias = 0.5` is the midpoint of the [0, 4] drive
+clamp, giving ON and OFF contrasts equal headroom — an assumption. All three
+were UI sliders; they are fixed constants now.
+
+**#16 — Haltere/wing sensory scaling.**
+Haltere afferent drive per side is `min(2, 0.3 + 1.7 * rect(±yawRate /
+maxYawRate))`: the rectification and the sign (each haltere loads during
+rotation toward its own side) are measured (Dickinson 1999, ablation
+unilaterally abolishes the corrective reflex; Chan & Dickinson 1996, dF2
+campaniform field); maxYawRate is the measured 1600 deg/s saccade peak. The
+0.3 tonic baseline and the 1.7 span that saturates the 0-2 drive scale at the
+saccade peak are assumptions about the drive scale, not measurements. Wing
+campaniform drive keeps its previous 0.4 per radian of stroke amplitude, now
+per side.
+
 ---
 
 ## Removed in round 5 (previously magic, now gone)

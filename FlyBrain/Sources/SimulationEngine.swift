@@ -30,8 +30,14 @@ struct SimParams {
     var flags: UInt32 = 0
     var dtMillis: Float = 1.0
 
+    /// Camera → photoreceptor coupling. All three are constants now, not
+    /// sliders (ASSUMPTIONS.md #15): the gain is the measured LMC:
+    /// photoreceptor slope ratio of 8-10x (Laughlin & Hardie 1978), the
+    /// adaptation time constant is the ~100 ms rapid phase of fly light
+    /// adaptation (same source), and the bias is the midpoint of the
+    /// [0, 4] drive clamp so ON and OFF contrasts get equal headroom.
     var contrastGain: Float = 8.0
-    var adaptationRate: Float = 0.0033
+    var adaptationTau: Float = 0.1
     var cameraBias: Float = 0.5
     var pad1: Float = 0
 }
@@ -63,11 +69,6 @@ final class SimulationEngine {
         didSet { recomputeDecays() }
     }
     var isPaused: Bool = false
-
-    /// How hard camera contrast drives the photoreceptors.
-    var contrastGain: Float = 8.0 {
-        didSet { params.contrastGain = contrastGain }
-    }
 
     private(set) var stats = SimulationStats()
 

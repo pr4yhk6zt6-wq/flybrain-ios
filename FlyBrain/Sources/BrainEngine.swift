@@ -43,9 +43,6 @@ final class BrainEngine: ObservableObject {
     @Published private(set) var retinalActivity: Float = 0
     @Published private(set) var cameraFrames: Int = 0
     @Published private(set) var cameraLuminance: Float = 0
-    @Published var contrastGain: Float = 8.0 {
-        didSet { simulation?.contrastGain = contrastGain }
-    }
 
     /// Orbit the brain, or fly through it.
     @Published var cameraMode: CameraMode = .orbit {
@@ -122,7 +119,6 @@ final class BrainEngine: ObservableObject {
                 guard let self, self.cameraEnabled else { return nil }
                 return self.camera.latestTexture()
             }
-            sim.contrastGain = contrastGain
 
             camera.$framesDelivered
                 .receive(on: DispatchQueue.main)

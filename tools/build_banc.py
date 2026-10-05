@@ -131,9 +131,21 @@ def build_group_specs():
     for part in ("front_leg", "middle_leg", "hind_leg"):
         specs.append((f"sensory_{part}",
                       lambda d, p=part: d["body_part_sensory"] == p))
-    specs.append(("sensory_wing",
-                  lambda d: d["body_part_sensory"].isin({"wing_margin", "wing_base"})))
-    specs.append(("sensory_haltere", fn("body_part_sensory", "haltere")))
+    # Wing and haltere mechanosensors are lateralised: the campaniform fields
+    # of each haltere encode rotation toward that side (Dickinson 1999 — the
+    # equilibrium reflex is unilaterally lost for motions toward an ablated
+    # haltere), so the body must be able to drive the two sides separately.
+    # BANC annotates side on essentially all of them (haltere 216L/212R/11
+    # unassigned; wing 272L/435R/45 unassigned).
+    for side in ("left", "right"):
+        specs.append((f"sensory_wing_{side}",
+                      lambda d, s=side:
+                          d["body_part_sensory"].isin({"wing_margin", "wing_base"}) &
+                          (d["side"] == s)))
+        specs.append((f"sensory_haltere_{side}",
+                      lambda d, s=side:
+                          (d["body_part_sensory"] == "haltere") &
+                          (d["side"] == s)))
     specs.append(("sensory_antenna", fn("body_part_sensory", "antenna")))
 
     # --- the relay layers ----------------------------------------------------

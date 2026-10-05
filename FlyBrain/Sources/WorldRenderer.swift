@@ -29,6 +29,16 @@ struct WorldInstance {
     var params = SIMD4<Float>(0, 0, 0, 0)
 }
 
+/// What a render pass includes. The eye pass renders `.scenery` only — the
+/// fly's own mesh is culled from its eyes by mask, the same job a render
+/// layer / culling mask does in a scene graph.
+struct RenderMask: OptionSet {
+    let rawValue: UInt8
+    static let scenery = RenderMask(rawValue: 1 << 0)
+    static let fly     = RenderMask(rawValue: 1 << 1)
+    static let all: RenderMask = [.scenery, .fly]
+}
+
 /// CPU-side primitive meshes: a cube, a subdivided icosphere and a quad.
 private struct Primitive {
     var vertexBuffer: MTLBuffer
@@ -397,7 +407,7 @@ final class WorldRenderer {
     // MARK: - Drawing
 
     private func encode(_ encoder: MTLRenderCommandEncoder, params p: WorldParams,
-                        drawFly: Bool = true) {
+                        mask: RenderMask = .all) {
         var pp = p
         let buf = instanceBuffers[frameIndex]
 
@@ -431,11 +441,12 @@ final class WorldRenderer {
         // --- the fly -------------------------------------------------------
         // One draw per body part: each has its own index range and its own
         // matrix, so they cannot be batched, but 41 calls is nothing.
-        // The eye pass opts out: the eye cameras sit inside the head mesh,
-        // so including it put the animal's own head in its field of view —
-        // a real compound eye cannot see the head it grows on. FlyVision and
-        // CompoundRay likewise render the fly's view of the world only.
-        if drawFly, let model = flyModel, flyInstanceStart < instances.count {
+        // The eye pass culls it via the mask: the eye cameras sit inside the
+        // head mesh, so including it put the animal's own head in its field
+        // of view — a real compound eye cannot see the head it grows on.
+        // FlyVision and CompoundRay likewise render the fly's view of the
+        // world only.
+        if mask.contains(.fly), let model = flyModel, flyInstanceStart < instances.count {
             encoder.setVertexBuffer(model.vertexBuffer, offset: 0, index: 0)
             var slot = flyInstanceStart
             for part in model.parts where part.indexCount > 0 {
@@ -521,7 +532,7 @@ final class WorldRenderer {
 
         if let e = cb.makeRenderCommandEncoder(descriptor: rpd) {
             e.label = "flyEye"
-            encode(e, params: p, drawFly: false)
+            encode(e, params: p, mask: .scenery)   // never the fly's own mesh
             e.endEncoding()
         }
     }
