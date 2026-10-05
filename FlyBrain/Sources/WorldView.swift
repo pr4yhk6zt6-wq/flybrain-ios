@@ -84,35 +84,23 @@ final class WorldRig {
         n.orientation = WorldRig.quaternion(x: x, y: y, z: z)
     }
 
-    /// A rotation matrix's columns, as the quaternion that is the same
-    /// rotation.
+    /// The rotation of a node whose local axes are `x`, `y`, `z` — the
+    /// columns of its rotation matrix — as SceneKit's orientation.
+    ///
+    /// The conversion lives in `FlyDynamics.swift` (`quatFromMat`), beside the
+    /// `quatToMat` it inverts, because it is testable there and because there
+    /// used to be two copies: this one, and one in `FlyWorld.swift` that
+    /// returned the conjugate and drew the animal in pieces
+    /// (uploads/IMG_2713.png). One implementation, one test.
     private static func quaternion(
         x: (Float, Float, Float),
         y: (Float, Float, Float),
         z: (Float, Float, Float)) -> SCNVector4 {
-        // columns x, y, z of the rotation; m_ab is row a, column b
-        let m00 = x.0, m10 = x.1, m20 = x.2
-        let m01 = y.0, m11 = y.1, m21 = y.2
-        let m02 = z.0, m12 = z.1, m22 = z.2
-
-        let tr = m00 + m11 + m22
-        if tr > 0 {
-            let s = 0.5 / sqrtf(tr + 1)
-            return SCNVector4((m21 - m12) * s, (m02 - m20) * s,
-                              (m10 - m01) * s, 0.25 / s)
-        } else if m00 > m11 && m00 > m22 {
-            let s = 2 * sqrtf(1 + m00 - m11 - m22)
-            return SCNVector4(0.25 * s, (m01 + m10) / s, (m02 + m20) / s,
-                              (m21 - m12) / s)
-        } else if m11 > m22 {
-            let s = 2 * sqrtf(1 + m11 - m00 - m22)
-            return SCNVector4((m01 + m10) / s, 0.25 * s, (m12 + m21) / s,
-                              (m02 - m20) / s)
-        } else {
-            let s = 2 * sqrtf(1 + m22 - m00 - m11)
-            return SCNVector4((m02 + m20) / s, (m12 + m21) / s, 0.25 * s,
-                              (m10 - m01) / s)
-        }
+        let m = Mat3(columns: (Vec3(Double(x.0), Double(x.1), Double(x.2)),
+                               Vec3(Double(y.0), Double(y.1), Double(y.2)),
+                               Vec3(Double(z.0), Double(z.1), Double(z.2))))
+        let q = quatFromMat(m)
+        return SCNVector4(Float(q.x), Float(q.y), Float(q.z), Float(q.w))
     }
 
     /// Where the camera you steer sits, in spherical coordinates about the

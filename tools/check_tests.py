@@ -42,6 +42,9 @@ REQUIRED = (
     "testTheChordotonalOrganReportsTheJointItSpans",
     "testReversingThePublishedPolarityReversesTheOrgan",
     "testTheCampaniformOrganReportsTheLoadTheLegCarries",
+    # the pose the meshes are drawn at (uploads/IMG_2713.png)
+    "testAQuaternionFromAMatrixIsTheRotationItself",
+    "testEveryPartIsDrawnWhereTheBodyCarriesIt",
     # the animal
     "testTheAnimalHasThePublishedAnatomy",
     "testTheAnimalIsTheRightSizeAndMass",

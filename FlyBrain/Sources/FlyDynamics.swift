@@ -284,6 +284,42 @@ typealias Quat = SIMD4<Double>
                 [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)])
 }
 
+/// A rotation matrix as the quaternion that is *the same rotation*, in
+/// SceneKit's (x, y, z, w) order — the inverse of `quatToMat`.
+///
+/// Shepperd's method: four branches, the same formula read from whichever of
+/// the four components is largest, which is what keeps it stable near 180°.
+/// The signs are the published ones and they are load-bearing. The version of
+/// this that lived in `FlyWorld.swift` returned the **conjugate** — x, y, z
+/// negated in the trace branch and w negated in the other three, which is the
+/// same rotation as the inverse — so every part of the animal was drawn spun
+/// the wrong way about its own origin: the scatter of fragments in
+/// `uploads/IMG_2713.png`, while the positions, the asset and the solver were
+/// all right to 1e-15 cm (`tools/audit_meshes.py`).
+/// `FlyDynamicsTests.testAQuaternionFromAMatrixIsTheRotationItself` is the test.
+@inline(__always) func quatFromMat(_ m: Mat3)
+    -> (x: Double, y: Double, z: Double, w: Double) {
+    // `c0`, `c1`, `c2` are the *columns* of the operator, so row I of it is
+    // (c0[I], c1[I], c2[I]) — hence the naming: rIJ is row I, column J.
+    let r00 = m.c0.x, r10 = m.c0.y, r20 = m.c0.z
+    let r01 = m.c1.x, r11 = m.c1.y, r21 = m.c1.z
+    let r02 = m.c2.x, r12 = m.c2.y, r22 = m.c2.z
+    let trace = r00 + r11 + r22
+    if trace > 0 {
+        let s = (trace + 1).squareRoot() * 2
+        return ((r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, s / 4)
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1 + r00 - r11 - r22).squareRoot() * 2
+        return (s / 4, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s)
+    } else if r11 > r22 {
+        let s = (1 + r11 - r00 - r22).squareRoot() * 2
+        return ((r01 + r10) / s, s / 4, (r12 + r21) / s, (r02 - r20) / s)
+    } else {
+        let s = (1 + r22 - r00 - r11).squareRoot() * 2
+        return ((r02 + r20) / s, (r12 + r21) / s, s / 4, (r10 - r01) / s)
+    }
+}
+
 @inline(__always) func quatMul(_ a: Quat, _ b: Quat) -> Quat {
     Quat(a.x * b.x - a.y * b.y - a.z * b.z - a.w * b.w,
          a.x * b.y + a.y * b.x + a.z * b.w - a.w * b.z,

@@ -97,6 +97,37 @@ if args.count > 3 && args[3] == "kin" {
     exit(0)
 }
 
+// `visual`: the stance, and every visual part where the app puts it.
+//
+// The phone draws the animal from `FlyDynamics.visualWorld()`, so when the
+// screen shows a scatter (uploads/IMG_2713.png) the question is whether those
+// two arrays are wrong or whether the renderer is. This prints them, in the
+// same shape `tools/audit_meshes.py` compares MuJoCo against:
+//
+//   K i name x y z r00 r01 r02 r10 r11 r12 r20 r21 r22   the link's world pose
+//   V k name x y z r00 r01 r02 r10 r11 r12 r20 r21 r22   the part's world pose
+//
+if args.count > 3 && args[3] == "visual" {
+    // the animal's own floor and its own stance, not the trace's vacuum
+    body.floorZ = asset.floorZ
+    body.reset()
+    body.kinematics()
+    let nums: ([Double]) -> String = { $0.map { String(format: "%.17e", $0) }.joined(separator: " ") }
+    func mat9(_ r: Mat3) -> String {
+        nums([r.c0.x, r.c0.y, r.c0.z, r.c1.x, r.c1.y, r.c1.z, r.c2.x, r.c2.y, r.c2.z])
+    }
+    for (i, b) in asset.bodies.enumerated() {
+        let w = body.linkWorld(i)
+        print("K \(i) \(b.name) " + nums([w.pos.x, w.pos.y, w.pos.z]) + " " + mat9(w.rot))
+    }
+    let (vp, vr) = body.visualWorld()
+    for k in 0..<vp.count {
+        let name = k < body.visualName.count ? body.visualName[k] : "?"
+        print("V \(k) \(name) " + nums([vp[k].x, vp[k].y, vp[k].z]) + " " + mat9(vr[k]))
+    }
+    exit(0)
+}
+
 // `pass`: the backward pass's own numbers, body by body, so a disagreement in
 // the recursion can be read directly instead of inferred from a joint angle.
 func dumpPass() {

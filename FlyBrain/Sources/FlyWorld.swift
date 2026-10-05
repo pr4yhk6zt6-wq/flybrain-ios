@@ -407,8 +407,12 @@ final class FlyWorld: @unchecked Sendable {
             guard i >= 0, i < positions.count else { continue }
             let p = positions[i]
             node.position = SCNVector3(Float(p.x), Float(p.y), Float(p.z))
-            let q = quaternion(rotations[i])
-            node.orientation = SCNVector4(q.x, q.y, q.z, q.w)
+            // `quatFromMat` (FlyDynamics.swift) is the one conversion in the
+            // app: it is the inverse of `quatToMat`, it is tested, and the
+            // local copy this file used to carry returned the conjugate.
+            let q = quatFromMat(rotations[i])
+            node.orientation = SCNVector4(Float(q.x), Float(q.y), Float(q.z),
+                                          Float(q.w))
             // Scale stays what node creation pinned it to (1): the solver
             // gives a pose, and the vertices are already life size.
         }
@@ -440,43 +444,9 @@ final class FlyWorld: @unchecked Sendable {
 
 // MARK: - Small maths
 
-/// A rotation matrix as a quaternion (x, y, z, w) — Shepperd's method, the
-/// numerically stable branch of the four.
-func quaternion(_ m: Mat3) -> (x: Float, y: Float, z: Float, w: Float) {
-    let r00 = m.c0.x, r10 = m.c0.y, r20 = m.c0.z
-    let r01 = m.c1.x, r11 = m.c1.y, r21 = m.c1.z
-    let r02 = m.c2.x, r12 = m.c2.y, r22 = m.c2.z
-    let trace = r00 + r11 + r22
-    var w = 0.0, x = 0.0, y = 0.0, z = 0.0
-    if trace > 0 {
-        let s = (trace + 1).squareRoot() * 2
-        w = s / 4
-        x = (r12 - r21) / s
-        y = (r20 - r02) / s
-        z = (r01 - r10) / s
-    } else if r00 > r11 && r00 > r22 {
-        let s = (1 + r00 - r11 - r22).squareRoot() * 2
-        w = (r12 - r21) / s
-        x = s / 4
-        y = (r01 + r10) / s
-        z = (r20 + r02) / s
-    } else if r11 > r22 {
-        let s = (1 + r11 - r00 - r22).squareRoot() * 2
-        w = (r20 - r02) / s
-        x = (r01 + r10) / s
-        y = s / 4
-        z = (r12 + r21) / s
-    } else {
-        let s = (1 + r22 - r00 - r11).squareRoot() * 2
-        w = (r01 - r10) / s
-        x = (r20 + r02) / s
-        y = (r12 + r21) / s
-        z = s / 4
-    }
-    let n = (w * w + x * x + y * y + z * z).squareRoot()
-    if n < 1e-12 { return (0, 0, 0, 1) }
-    return (Float(x / n), Float(y / n), Float(z / n), Float(w / n))
-}
+/// The quaternion of a rotation matrix lives in FlyDynamics.swift beside
+/// `quatToMat` — one implementation, tested where the tests can reach it — and
+/// the interpolation below is what the (unused) recording path needs.
 
 @inline(__always) private func mix(_ a: Float32, _ b: Float32,
                                    _ t: Float) -> Float {

@@ -67,6 +67,63 @@ The fix is to scale by **1** — the vertices packed by `tools/step4_world.py`
 are already in model centimetres, which is also what `geom_size` and
 `geom_rbound` are computed from.
 
+### The bug the second screenshot showed: a conjugate quaternion
+
+![the same stance drawn with the conjugate (left) and with the rotation itself (right)](img/pose_conjugate_ab.png)
+
+`IMG_2713` is from the step-6 build, and its HUD says the physics is fine —
+`feet 6/6 · COM z −0.0228 cm · 6 contacts` — while the picture above the HUD is
+the animal in pieces. The physics was fine. The **drawing** was not: the app's
+matrix → quaternion conversion returned the **conjugate** of the rotation (x, y,
+z negated in the trace branch and w negated in the other three, which is the
+inverse rotation), so SceneKit spun every part the wrong way about its own
+origin. Positions were right to 1e-15 cm and parts stayed on their own bodies;
+only the orientation of each part was wrong, by up to **171.5°** — enough for a
+wing to point backwards and a thorax to look like a detached wedge.
+
+How it was found, in order, because the order is the point:
+
+1. `tools/audit_meshes.py` (new, now a CI step) compares the asset's own
+   `visual` table — `pos`, `quat`, and the body each part names — against
+   MuJoCo at the stance: **0 parts off by more than 1e-6 cm, worst 7.7e-15 cm,
+   worst rotation error 0.000°, 0 parts on the wrong body.** So the asset the
+   app draws from was not the problem, and neither was the solver.
+2. `local/main.swift` grew a `visual` mode that dumps the pose the renderer is
+   handed. Drawing the app's own packed vertices with that pose reproduces
+   MuJoCo's geometry to **9.7e-15 cm on all 85 parts** — if the nine numbers are
+   read as `FlyDynamics.Mat3` reads them (three *columns*); read row-major they
+   are wrong by up to 7.4e-2 cm, which is what a transposed matrix looks like.
+3. That left only the conversion at the end of the chain. `FlyWorld.quaternion`
+   and `WorldRig.quaternion` were two copies of the same routine; the first one
+   had its signs swapped in **all four** Shepperd branches. A/B on the stance,
+   rotating a probe vector the way SceneKit does:
+
+   | | worst miss, per unit vector |
+   |---|---|
+   | the conjugate (what shipped) | **1.994 cm** = 171.5° of error (`wing_left_brown`) |
+   | the rotation itself (fixed) | 2.1e-15 cm |
+
+Fixes, all of them gates rather than promises:
+
+* `quatFromMat` now lives in `FlyDynamics.swift`, beside the `quatToMat` it
+  inverts — one implementation, and the one the Linux test runner can reach.
+  `FlyWorld`'s copy is deleted; `WorldRig` calls the shared one.
+* `FlyBrainTests/MeshPoseTests.swift` (new, both tests in
+  `tools/check_tests.py`'s REQUIRED list) checks the round trip on nine
+  rotations that hit every Shepperd branch including 180°, and then checks the
+  renderer's whole contract on the animal's real stance pose: every part on its
+  own body, and the quaternion turning three probe vectors exactly as the
+  solver's matrix does — a conjugate fails that by twice the angle.
+* `tools/audit_meshes.py` runs in CI, so the asset can never drift from the
+  model in a way that only shows up on a screen.
+
+**Still open from the same screenshot**, and not a drawing bug: the HUD reads
+`0/42 pools firing · 0.0 Hz` at `desc 2.5`, i.e. on the device the connectome's
+motor pools were silent while the cord was driving the descending population.
+That is the closest thing yet to a device measurement of item 27, and it says
+the loop's *input* is not yet doing anything through the app's engine. It is
+the next thing on the list.
+
 ### The solver's own gap (found by run 54, 2026-10-05 — closed the same day)
 
 Run 54 is the first run where the body asset reached the bundle. It is also the
@@ -128,7 +185,7 @@ multiplying by it is what produced the sliver screenshot.
 | 19 | Emergent behaviours | **PARTIAL** | Standing + postural stability emerge from tone + physics (`testTheAnimalStandsWithMuscleToneOnly`). Reflex arc validated offline (step 2/3: ρ = +0.125/+0.186, polarity control reverses it). Walking/grooming/feeding/escape all follow items 9→17. |
 | 20 | iPhone optimisation | **DONE** (brain), **PARTIAL** (body) | GPU LIF, packed CSR, zero-copy connectome, camera-sampled retina; body solver is CPU scalar Swift at 100 µs substeps with adaptive throughput (`realtime` readout). A GPU/Metal port of the ABA solve is possible later; not yet needed — device runs at a measured fraction of real time and reports it. |
 | 21 | Graphics budget | **DONE** | Point-cloud brain, SceneKit flat lambert body, no shadows/post-effects; perf beats pixels in every trade so far. |
-| 22 | Debug / observability | **PARTIAL** | Brain: FPS/spikes/rate/power, voltage/spiking/regions render modes, tap-to-inspect, stimulate. Body: feet-down, contacts, COM height, substep/RTF readouts, plus the cord's own line (`n/m pools firing · Hz · organs`) and how fast the connectome is actually running (`cord × real time`). **Gap:** a per-pool readout, and the muscle excitation per joint. |
+| 22 | Debug / observability | **PARTIAL** | Brain: FPS/spikes/rate/power, voltage/spiking/regions render modes, tap-to-inspect, stimulate. Body: feet-down, contacts, COM height, substep/RTF readouts, plus the cord's own line (`n/m pools firing · Hz · organs`) and how fast the connectome is actually running (`cord × real time`). The device build that produced `IMG_2713` printed `85 meshes · 262180 triangles · 102 joints`, `feet 6/6 · COM z −0.0228 cm · 6 contacts`, `0/42 pools firing · 0.0 Hz · organs campaniform+chordotonal · desc 2.5` and `cord 621 updates · 0.09× real time` — every number this item asks for except the per-pool breakdown and the muscle excitation. **Gap:** a per-pool readout, and the muscle excitation per joint. |
 | 23 | Biological data policy | **DONE** | `docs/ASSUMPTIONS.md` is the registry (every constant: source + test); CI reproduces published checks (Azevedo 2020 monosynaptic absence, Phelps 2021 campaniform presence, corrected-sign guard for 7b22dd1). Placeholders are named `placeholder` in the asset. |
 | 24 | Modular, headless-capable architecture | **DONE** | Connectome / SimulationEngine / Renderer / FlyDynamics / FlyLiveBody / FlyWorld / WorldView are separate files with narrow seams; Python tools run the whole science pipeline headless; brain sim runs with no body and vice versa. |
 | 25 | Incremental phases | **ON TRACK** | Phases 1–5 of the 12-phase plan complete and measured (reports/step1–5); current position ≈ phase 6–7 (VNC pathways, walking circuitry). |
@@ -147,6 +204,12 @@ multiplying by it is what produced the sliver screenshot.
    as a small asset, LIF pools on the body side, `proprioception → pools →
    motor pool rates → drive offsets → muscles`. Test: the animal still stands,
    and a pushed leg resists (the step-3 result, now on the phone).
+3a. **Why the device's motor pools are silent** — the screenshot reads
+   `0/42 pools firing · 0.0 Hz` at `desc 2.5` while the cord drives the
+   descending population every millisecond. The LIF parameters the app's
+   kernel runs with and the Python reference's are a table diff, not a device
+   experiment, so this is doable offline; the answer decides whether item 27's
+   acceptance test can pass at all.
 3. **VNC pathways & descending drive** — **done in the commit that carries
    this**: the cord injects the brain's tone into the descending population
    every millisecond (`FlyCord.update`), the injection is pinned by

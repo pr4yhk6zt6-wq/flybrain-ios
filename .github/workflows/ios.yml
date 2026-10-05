@@ -360,6 +360,13 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      # Every mesh the app draws is positioned by the asset's own `visual`
+      # table. This checks that table against the model it was read out of —
+      # `pos`, `quat`, and which body each part belongs to — because the screen
+      # is the only place a mistake in it would otherwise show up.
+      - name: Step 5 — every drawn part must sit where the model puts it
+        run: python3 tools/audit_meshes.py
+
       - name: Step 5 — pack the body into the app bundle
         run: |
           rm -f FlyBrain/World/fly_body.json
