@@ -82,16 +82,20 @@ POOLS = s2.POOLS
 ORGAN_FUNCTIONS = s2.ORGANS
 
 
-def pool_slug(pool: str) -> str:
-    return pool.replace(" ", "_")
+# The names the app asks the connectome for. They come from the table that
+# *writes* the connectome (tools/motor_pools.py), not from a second spelling
+# here: a pool called `motor_front_leg_left_tibia_flexor` in this asset and
+# `pool:T1_left:tibia_flexor` in flybanc.bin is a loop that reads silence, and
+# silence looks exactly like an animal doing nothing.
+import motor_pools as _mp                                          # noqa: E402
 
 
-def organ_group(leg: str, side: str, organ: str) -> str:
-    return f"organ_{leg}_{side}_{organ}"
+def motor_pool_group(part: str, side: str, pool: str) -> str:
+    return _mp.pool_slug(_mp.LEGS[part], side, pool)
 
 
-def motor_pool_group(leg: str, side: str, pool: str) -> str:
-    return f"motor_{leg}_{side}_{pool_slug(pool)}"
+def organ_group(part: str, side: str, organ: str) -> str:
+    return _mp.organ_slug(_mp.LEGS[part], side, organ)
 
 
 # ---------------------------------------------------------------------------

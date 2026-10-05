@@ -80,6 +80,26 @@ final class BrainEngine: ObservableObject {
     /// BANC v888: 1,372 left + 1,412 right.
     var retinaCells: Int { connectome?.retinaCount ?? 0 }
 
+    /// The named populations the connectome carries — every group in
+    /// flybanc_meta.json, including one per leg motor pool and one per sense
+    /// organ. The cord (FlyCord.swift) asks by name, and a name it does not
+    /// find is reported rather than read as a silent pool.
+    var groupNames: [String] { simulation?.groupNames ?? [] }
+
+    /// Advance the nervous system without drawing it.
+    ///
+    /// The Map screen's renderer drives the simulation from its own draw call,
+    /// which is right while the Map is on screen and useless the moment the Body
+    /// screen covers it: a covered MTKView stops drawing, so the connectome
+    /// would stop with it. This is the headless pump — the same kernels, no
+    /// drawable — for the screen whose subject is the animal and not the cloud.
+    @discardableResult
+    func pump(count steps: Int) -> Int {
+        guard isReady, let sim = simulation, !isPaused, steps > 0 else { return 0 }
+        sim.step(count: steps, leftEye: nil, rightEye: nil)
+        return steps
+    }
+
     init() {
         guard let d = MTLCreateSystemDefaultDevice() else {
             // The simulator before iOS 13 / an unsupported device.

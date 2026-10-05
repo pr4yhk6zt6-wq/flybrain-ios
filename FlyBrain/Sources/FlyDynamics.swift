@@ -409,10 +409,34 @@ struct FlyBodyAsset: Decodable {
     }
 
     struct Leg: Decodable {
+        /// One of the three joints per leg the cord can address, with the
+        /// standing angle and the anatomical range the organ's drive is scaled
+        /// over.
+        struct Joint: Decodable {
+            let name: String
+            let rest: Double
+            let range: [Double]
+        }
+
+        /// A muscle pool as the connectome carries it: which joint it moves,
+        /// which way, and the name `SimulationEngine.groupRate()` answers to.
+        /// The group name is written by `tools/motor_pools.py` — the same
+        /// function that names the group inside `flybanc.bin` — so the two
+        /// cannot disagree about what a pool is called.
+        struct Pool: Decodable {
+            let joint: String
+            let action: String
+            /// +1: a bigger pool rate opens this joint's qpos.
+            let qposSign: Int
+            let group: String
+        }
+
         let part: String
         let segment: String
         let side: String
         let feetBodies: [String]
+        let joints: [String: Joint]
+        let pools: [String: Pool]
         let organs: [String: Organ]
     }
 

@@ -46,6 +46,9 @@ struct FlyProprioception {
 /// The animal, live.
 final class FlyLiveBody {
 
+    /// The asset it was built from, so the cord can be built from the same one
+    /// (FlyCord.swift).
+    let asset: FlyBodyAsset
     let dynamics: FlyDynamics
     let dt: Double
 
@@ -58,6 +61,20 @@ final class FlyLiveBody {
     /// The nerve cord. Give it the state, get back an excitation offset per
     /// joint. Set from the world screen once the connectome is up.
     var drive: ((FlyProprioception) -> [Double])?
+
+    /// How often the cord is asked, in simulated milliseconds.
+    ///
+    /// The physics runs at 100 µs, which is the body's own scale; a ventral
+    /// nerve cord is a 1 kHz machine and does not re-decide at 10 kHz. Asking
+    /// it every substep would also rebuild the proprioception dictionary ten
+    /// thousand times a simulated second for nothing. Between updates the
+    /// excitation it returned is held, which is what a muscle sees anyway: it
+    /// fuses twitches over tens of milliseconds (docs/ASSUMPTIONS.md #7).
+    var cordIntervalMs: Double = 1.0
+    /// Cord updates run so far, for the readout.
+    private(set) var cordUpdates = 0
+    private var nextCordAtMS: Double = 0
+    private var cordOffset: [Double] = []
 
     // -- what the HUD reads ------------------------------------------------
 
@@ -83,6 +100,7 @@ final class FlyLiveBody {
     private var throughput = 4000.0
 
     init(asset: FlyBodyAsset) {
+        self.asset = asset
         dynamics = FlyDynamics(asset: asset)
         dt = asset.timestepS
         posture = dynamics.holdExcitation()
@@ -109,13 +127,16 @@ final class FlyLiveBody {
         let count = max(1, Int(min(want, affordable).rounded(.down)))
 
         for _ in 0..<count {
+            // --- the cord, once per millisecond of simulated time ---------
+            if let drive, simulatedMS >= nextCordAtMS {
+                nextCordAtMS = simulatedMS + cordIntervalMs
+                cordOffset = drive(proprioception())
+                cordUpdates += 1
+            }
             var exc = posture
-            if let drive {
-                let offset = drive(proprioception())
-                for j in 0..<exc.count {
-                    if j < offset.count {
-                        exc[j] = min(1, max(-1, exc[j] + offset[j]))
-                    }
+            for j in 0..<exc.count {
+                if j < cordOffset.count {
+                    exc[j] = min(1, max(-1, exc[j] + cordOffset[j]))
                 }
             }
             excitation = exc

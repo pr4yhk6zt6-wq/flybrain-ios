@@ -78,7 +78,10 @@ struct ContentView: View {
             .onPreferenceChange(BarHeightKey.self) { bars = $0 }
         }
         .fullScreenCover(isPresented: $showWorld) {
-            WorldContainer { showWorld = false }
+            // The animal's screen gets the engine, not a copy of it: the cord
+            // runs on the same connectome the Map shows (FlyCord.swift), and
+            // the Map is not drawing while this screen is up.
+            WorldContainer(engine: engine) { showWorld = false }
         }
         .preferredColorScheme(.dark)
         .task { await engine.load() }

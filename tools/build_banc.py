@@ -83,7 +83,7 @@ NOT_NEURONS = {"glia", "not_a_neuron", "trachea"}
 # can ask the question it actually has -- "how fast is the pool that extends
 # this leg's tibia firing?" -- without new Metal code, and without the app
 # carrying its own copy of which neurons are in which pool.
-from motor_pools import pool_groups   # noqa: E402
+from motor_pools import pool_groups, organ_groups   # noqa: E402
 
 
 def build_group_specs():
@@ -164,7 +164,12 @@ def build_group_specs():
     # These are the groups a closed loop reads: each one is the set of motor
     # neurons that innervates one muscle set on one leg, and the muscle set is
     # what makes one joint move one way.
+    # The pools, and the sense organs they are closed onto. The organism's loop
+    # is: organ -> cord -> pool -> muscle -> joint -> organ, and every arrow of
+    # it is a name in this file, so both ends of the loop are read out of the
+    # connectome the app is running rather than named on the phone.
     specs.extend(pool_groups())
+    specs.extend(organ_groups())
     return specs
 
 
@@ -205,10 +210,15 @@ R = args.raw
 
 # ================================================================= load meta
 log("reading banc_888_meta.feather ...")
+# `cell_function_detailed` is here for the sense organs: the pools are selected
+# by muscle (`peripheral_target_type`), and the organs by what kind of
+# proprioceptor they are (`cell_function_detailed` — joint_angle, stretch,
+# mechanical_strain), which is the predicate step 2 measured the reflex through.
 cols = ["root_id", "root_position_nm", "side", "region", "neuromere", "nerve",
         "flow", "super_class", "cell_class", "cell_type",
         "body_part_sensory", "body_part_effector", "peripheral_target_type",
-        "cell_function", "neurotransmitter_predicted", "proofread"]
+        "cell_function", "cell_function_detailed",
+        "neurotransmitter_predicted", "proofread"]
 meta = feather.read_table(f"{R}/banc_888_meta.feather", columns=cols).to_pandas()
 log(f"  {len(meta):,} rows")
 

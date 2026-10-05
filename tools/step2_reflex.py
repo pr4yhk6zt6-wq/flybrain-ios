@@ -70,11 +70,9 @@ LEGS = {"front_leg": "T1", "middle_leg": "T2", "hind_leg": "T3"}
 SIGN = {"acetylcholine": +1.0, "ach": +1.0, "gaba": -1.0,
         "glutamate": -1.0, "glut": -1.0, "histamine": -1.0}
 
-ORGANS = {
-    "chordotonal": {"joint_angle", "vibro_position", "stretch"},
-    "campaniform": {"mechanical_strain", "vibro_tactile"},
-    "hairplate":   {"position", "direction"},
-}
+# The organ table lives with the pools now (tools/motor_pools.py), because the
+# phone closes the loop with the same organs this tool measures the reflex in.
+from motor_pools import ORGANS   # noqa: E402
 
 # The motor pools live in one file, because step 6 needs the same table on the
 # phone (tools/motor_pools.py). Re-exported here so every caller in this file

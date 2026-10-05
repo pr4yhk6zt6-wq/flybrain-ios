@@ -153,13 +153,31 @@ final class WorldModel: ObservableObject {
     let live: FlyLiveBody
     let rig = WorldRig()
 
+    /// The brain the animal's cord runs on, if the app has loaded one. The Map
+    /// screen is not drawing while this screen is up, so this screen has to
+    /// advance the connectome itself (BrainEngine.pump).
+    private let engine: BrainEngine?
+    /// The loop: organs out, pools back in (FlyCord.swift).
+    private(set) var cord: FlyCord?
+    @Published private(set) var cordLine = "the cord is not attached"
+    /// Simulated milliseconds of cord per wall second, measured — 1.0 is real
+    /// time. Reported, never assumed.
+    @Published private(set) var cordRealtime: Double = 0
+
+    /// How many 1 ms steps of connectome this screen asks for per frame. Started
+    /// at 4 and moved by what the device actually manages, the same way the Map
+    /// screen's renderer moves its own.
+    private var cordStepsPerFrame = 4
+    private var lastCordMS = 0
+
     private var link: CADisplayLink?
     private var last: CFTimeInterval = 0
     private var lastPublish: CFTimeInterval = 0
 
-    init(world: FlyWorld, live: FlyLiveBody) {
+    init(world: FlyWorld, live: FlyLiveBody, engine: BrainEngine?) {
         self.world = world
         self.live = live
+        self.engine = engine
         world.scene.rootNode.addChildNode(rig.root)
         world.apply(live: live)
     }
@@ -168,6 +186,7 @@ final class WorldModel: ObservableObject {
 
     func start() {
         guard link == nil else { return }
+        attachCord()
         last = 0
         let l = CADisplayLink(target: self, selector: #selector(tick(_:)))
         l.add(to: .main, forMode: .common)
@@ -179,12 +198,84 @@ final class WorldModel: ObservableObject {
         link = nil
     }
 
+    /// Build the loop and give it to the animal, once the connectome is up.
+    ///
+    /// From here on nothing on this screen decides anything: the body advances,
+    /// asks the cord what its muscles should be doing, and the cord answers from
+    /// the pools of the connectome that is running behind it. If the connectome
+    /// is not loaded yet the animal keeps its tone and the HUD says so.
+    private func attachCord() {
+        guard cord == nil, let engine, engine.isReady,
+              let sim = engine.simulation else {
+            if engine == nil || engine?.isReady != true {
+                cordLine = "no connectome loaded — muscle tone only"
+            }
+            return
+        }
+        let source = SimulationRateSource(engine: sim, groups: engine.groupNames)
+        let c = FlyCord(asset: live.asset, source: source)
+        cord = c
+        live.cordIntervalMs = 1.0
+        live.drive = { [weak c] p in c?.update(dtMs: 1.0, proprio: p) ?? [] }
+        if c.missingGroups.isEmpty {
+            cordLine = c.summary
+        } else {
+            // A name the connectome does not have would read as a silent pool,
+            // which looks exactly like an animal doing nothing. Say so instead.
+            cordLine = "\(c.missingGroups.count) of "
+                     + "\(c.missingGroups.count + c.poolsPresent) groups missing"
+        }
+    }
+
+    /// Advance the connectome by as much as this frame can afford, and measure
+    /// what that turned out to be. The cord runs in the same 1 ms steps the
+    /// connectome's own timestep is; there is no interpolation and no skipping.
+    private func pumpCord(wallSeconds: Double) {
+        guard let engine, engine.isReady else { return }
+        // A frame may ask for at most the cord's nominal rate plus a fifth, so a
+        // long frame (a rotation, a background app coming back) cannot turn into
+        // a hundred-step catch-up that stalls the next one.
+        let affordable = Int((wallSeconds * 1000.0 * 1.2).rounded(.up))
+        engine.pump(count: min(cordStepsPerFrame, max(1, affordable)))
+
+        // Adapt on what the connectome actually managed over the last window, so
+        // a slow phone runs the cord slowly and says so rather than pretending.
+        let now = CFAbsoluteTimeGetCurrent()
+        if lastCordAdapt == 0 {
+            lastCordAdapt = now
+            lastCordPulse = engine.stats.simulatedMilliseconds
+            return
+        }
+        let window = now - lastCordAdapt
+        if window >= 0.5 {
+            let advanced = Double(engine.stats.simulatedMilliseconds - lastCordPulse)
+            cordRealtime = advanced / 1000.0 / window
+            lastCordAdapt = now
+            lastCordPulse = engine.stats.simulatedMilliseconds
+            if cordRealtime < 0.85 && cordStepsPerFrame > 1 {
+                cordStepsPerFrame -= 1
+            } else if cordRealtime > 1.0 && cordStepsPerFrame < 24 {
+                cordStepsPerFrame += 1
+            }
+        }
+        if let c = cord { cordLine = c.summary }
+    }
+
+    private var lastCordAdapt: CFTimeInterval = 0
+    private var lastCordPulse = 0
+
     @objc private func tick(_ l: CADisplayLink) {
         let now = l.timestamp
         let dt = last == 0 ? 0.0 : min(0.1, now - last)
         last = now
 
-        if running { live.advance(wallSeconds: dt) }
+        if running {
+            // The body first: that writes this millisecond's organ drives, and
+            // then the connectome is stepped so those drives are what it fires
+            // on. The rates come back on the next frame's completion.
+            live.advance(wallSeconds: dt)
+            pumpCord(wallSeconds: dt)
+        }
         render()
 
         // 60 Hz publishing would rebuild the whole HUD sixty times a second.
@@ -221,12 +312,13 @@ struct WorldContainer: View {
     @State private var message: String?
     @State private var started = false
     @State private var stage = "reading the model"
+    let engine: BrainEngine?
     let onClose: () -> Void
 
     var body: some View {
         Group {
             if let w = world, let b = animal {
-                WorldScreen(world: w, live: b, onClose: onClose)
+                WorldScreen(world: w, live: b, engine: engine, onClose: onClose)
             } else if let m = message {
                 WorldUnavailableView(message: m, onClose: onClose)
             } else {
@@ -286,8 +378,10 @@ struct WorldScreen: View {
     private static let paneSize = CGSize(width: 134, height: 106)
     private static let paneGap: CGFloat = 8
 
-    init(world: FlyWorld, live: FlyLiveBody, onClose: @escaping () -> Void) {
-        _model = StateObject(wrappedValue: WorldModel(world: world, live: live))
+    init(world: FlyWorld, live: FlyLiveBody, engine: BrainEngine?,
+         onClose: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: WorldModel(world: world, live: live,
+                                                      engine: engine))
         self.onClose = onClose
     }
 
@@ -545,13 +639,24 @@ struct WorldHUD: View {
                         model.live.contacts))
             line("\(model.world.meshCount) meshes · "
                  + "\(model.world.faceCount) triangles · 102 joints")
-            // Said plainly, because it is the difference between an animal and
-            // a statue: the muscles are holding a stance, and the cord is what
-            // will move it.
-            Text("muscle tone only — the cord is next")
-                .font(.system(size: 9))
+            // The loop, in one line: what the pools are doing, and how fast the
+            // connectome that owns them is actually running on this device.
+            Text(model.cordLine)
+                .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if model.cord != nil {
+                Text(String(format: "cord %d updates · %.2f× real time",
+                            model.live.cordUpdates, model.cordRealtime))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("muscle tone only — no cord attached")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         // The readouts give way before they push the buttons, and never
         // overlap them: they are one row, and the text scales down inside it
