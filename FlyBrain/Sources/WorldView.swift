@@ -274,9 +274,11 @@ final class WorldModel: ObservableObject {
             // group tallies the per-pool rates are divided out of. A screenshot
             // of this line is comparable, number for number, with
             // `python3 tools/pool_probe.py --only device` on the same binary.
+            // `engine` is this screen's BrainEngine, and it is not optional
+            // here — the readout line lives on the SimulationEngine it owns.
             cordDetail = String(format: "over %d ms · %@ · loudest %@",
-                                engine?.stats.simulatedMilliseconds ?? 0,
-                                engine?.readoutLine ?? "no engine",
+                                engine.stats.simulatedMilliseconds,
+                                engine.simulation?.readoutLine ?? "no simulation",
                                 loudest.isEmpty ? "—" : loudest)
         }
     }
