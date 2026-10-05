@@ -417,9 +417,14 @@ def main():
     ap.add_argument("--cam", type=float, default=0.9)
     ap.add_argument("--scale-fix", action="store_true")
     ap.add_argument("--rest", action="store_true", help="all joint angles 0")
+    ap.add_argument("--eye", choices=["left", "right"], default=None,
+                    help="render from one compound-eye camera instead of the "
+                         "chase camera (FlyBody.eyeTransforms, 140 deg fov)")
     ap.add_argument("--W", type=int, default=390)
     ap.add_argument("--H", type=int, default=844)
     args = ap.parse_args()
+    if args.eye:
+        args.W = args.H = 128        # eyeSize, WorldRenderer.swift
 
     parts, joints, V, I = load_flymodel(args.model)
     lo, hi = V[:, :3].min(0), V[:, :3].max(0)
@@ -510,11 +515,26 @@ def main():
                                        p["colour"][2], 0.22 if is_wing else 0.0),
                                checker=0.0, fly=True)))
 
-    distance = args.cam
-    back = np.array([-math.sin(heading), 0.0, math.cos(heading)])
-    camPos = pos + back * distance + np.array([0.0, 0.3, 0.0])
-    view = lookAt(camPos, pos, np.array([0.0, 1.0, 0.0]))
-    proj = perspective(math.radians(55), args.W / args.H, 0.01, 8000)
+    if args.eye:
+        # FlyBody.eyeTransforms, transcribed: head is 1/3 body length ahead,
+        # the eye sits 0.033 world units lateral, optical axis 67 deg off the
+        # body axis, 140 deg field, up is world +y (no roll term — that is
+        # exactly what the Swift code does).
+        az = math.radians(67.0) * (1.0 if args.eye == "right" else -1.0)
+        ahead = 2.5e-3 * 0.33 * 100.0
+        headp = pos + np.array([math.sin(heading), 0.12, -math.cos(heading)]) * ahead
+        rightv = np.array([math.cos(heading), 0.0, math.sin(heading)])
+        camPos = headp + rightv * (0.033 if args.eye == "right" else -0.033)
+        y = heading + az
+        fwd = np.array([math.sin(y), 0.0, -math.cos(y)])
+        view = lookAt(camPos, camPos + fwd, np.array([0.0, 1.0, 0.0]))
+        proj = perspective(math.radians(140.0), 1.0, 0.02, 6000.0)
+    else:
+        distance = args.cam
+        back = np.array([-math.sin(heading), 0.0, math.cos(heading)])
+        camPos = pos + back * distance + np.array([0.0, 0.3, 0.0])
+        view = lookAt(camPos, pos, np.array([0.0, 1.0, 0.0]))
+        proj = perspective(math.radians(55), args.W / args.H, 0.01, 8000)
     colour, depth, flymask = render(args.W, args.H, draws, camPos, view, proj, env)
 
     Image.fromarray((np.clip(colour, 0, 1) * 255).astype(np.uint8)).save(args.out)

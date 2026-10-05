@@ -11,8 +11,16 @@
 //  connectome data alone is not possible — not here, not anywhere, yet.
 //
 //  What IS possible, and what this file now does, is to make every physical
-//  constant a MEASURED one from the Drosophila literature, and to reduce the
-//  unmeasured part to a single, explicitly stated link.
+//  constant a MEASURED one from the Drosophila literature, to DERIVE the
+//  rest from the CT-based flybody model, and to reduce the unmeasured part
+//  to a small set of explicitly listed links (docs/ASSUMPTIONS.md).
+//
+//  Nothing in this file scripts behaviour. There is no gait clock imposed on
+//  the legs beyond the phase of a step cycle, no bout timer, no grooming
+//  routine, no arousal variable, no adapted steering baseline. Whether the
+//  animal walks, stops, turns or takes off is decided entirely by the motor
+//  groups the connectome fires; this file only turns those rates into forces
+//  through measured muscle and wing mechanics.
 //
 //  MEASURED (each constant below carries its source):
 //    body mass, wing length, wing area, radius of the second moment of area,
@@ -21,41 +29,40 @@
 //    walking speed range, step frequency, body length, leg joint axes and
 //    angular limits (the last from the flybody MJCF, which is a real CT model).
 //
-//  Flight force is then computed, not fudged: a quasi-steady blade-element
+//  DERIVED (computed from the CT model, provenance in the constant's comment):
+//    leg track width, per-segment fore-aft foot gains of the swing joints.
+//
+//  Flight force is computed, not fudged: a quasi-steady blade-element
 //  estimate, the standard model in insect flight aerodynamics.
 //
 //        F = 1/2 * rho * C * S * U^2,     U = 2 * Phi * f * r2
 //
-//  THE ONE REMAINING ASSUMPTION:
+//  THE LINKS THAT REMAIN ASSUMPTIONS are listed, each with its reason, in
+//  docs/ASSUMPTIONS.md. The headline one:
 //    motor-neuron firing rate -> wing stroke amplitude Phi.
-//    Nobody has published a transfer function for this, because it would
-//    require simultaneous recording of identified motor neurons and wing
-//    kinematics across the full dynamic range. What IS measured is both
-//    endpoints: a fly in stable hovering beats at Phi ~ 2.1 rad, and at
-//    maximum effort at Phi ~ 3.1 rad (morphological limit). We map the
-//    population rate of the power muscle motor neurons linearly between those
-//    two measured values. The endpoints are real; the straight line between
-//    them is the assumption. It is isolated in `strokeAmplitude(from:)` and
-//    nowhere else.
+//    Both endpoints are measured (hover 2.47 rad, morphological max 3.1 rad);
+//    the straight line between them is the assumption.
 //
 //  Note also that Drosophila power muscles are ASYNCHRONOUS: their motor
 //  neurons fire at 5-20 Hz while the wing beats at ~200 Hz, because firing
 //  sets the activation level, not the rhythm. The wingbeat frequency here is
-//  therefore a measured constant, not something the spiking drives — which is
-//  biologically correct, and is why the simulation does not need to resolve
+//  therefore a measured constant, not something the spiking drives — which
+//  is biologically correct, and is why the simulation does not need to resolve
 //  200 Hz.
 //
 //  References
 //    Fry, Sayaman & Dickinson 2003, Science 300:495  (free-flight dynamics,
-//        body mass 0.96 mg, I_yaw 5.2e-13 kg m^2, flapping counter-torque)
+//        body mass 0.96 mg, I_yaw 5.2e-13 kg m^2, flapping counter-torque,
+//        saccades toward the weaker wing)
 //    Lehmann & Dickinson 1997, J Exp Biol 200:1133   (stroke amplitude range,
-//        wingbeat frequency, force production)
+//        wingbeat frequency, force production, b1/b2 steering range)
 //    Dickinson, Lehmann & Sane 1999, Science 284:1954 (unsteady lift)
 //    Sane & Dickinson 2001, J Exp Biol 204:2607      (C_L, C_D vs kinematics)
 //    Sun & Tang 2002, J Exp Biol 205:2413            (hovering force balance,
 //        r2 = 0.58 R, mean drag 1.27x lift)
 //    Mendes et al. 2013, eLife 2:e00231              (walking speed, step
 //        frequency, tripod gait, duty factor)
+//    Card & Dickinson 2008, Curr Biol 18:1081        (escape take-off 0.9 m/s)
 //    Vaxenburg et al. 2025, Nature                   (flybody CT skeleton,
 //        joint axes and limits)
 //  ======================================================================
@@ -65,7 +72,8 @@ import Foundation
 import simd
 
 /// Every measured constant, in SI. Nothing here was chosen to make the
-/// simulation behave; each is a published value for D. melanogaster.
+/// simulation behave; each is a published value for D. melanogaster or a
+/// geometric fact derived from the CT-based flybody model.
 enum FlyMorphology {
     // --- mass and inertia (Fry et al. 2003) ---
     /// 0.96 mg.
@@ -110,7 +118,9 @@ enum FlyMorphology {
     static let strokeAmplitudeMax: Float = 3.1       // rad
     /// How far the steering muscles (b1/b2) can shift the stroke amplitude of
     /// their own side: ~20 degrees (Lehmann & Dickinson 1997). This is a hard
-    /// limit on the muscle, not a gain we chose, so the bias saturates here.
+    /// limit on the muscle, not a gain we chose. It is ALSO the bound the
+    /// decoded left/right asymmetry saturates at — an asymmetry index of 1
+    /// asks for the maximum the muscle can deliver, and no more.
     static let steeringRange: Float = 20.0 * .pi / 180
     /// Peak yaw rate recorded in free-flight saccades: ~1600 deg/s, held for a
     /// few tens of milliseconds (Fry, Sayaman & Dickinson 2003). Sustaining a
@@ -168,6 +178,79 @@ enum FlyMorphology {
     /// Tripod duty factor: fraction of the cycle a leg is in stance.
     static let dutyFactor: Float = 0.55
 
+    // --- walking geometry, DERIVED from the flybody CT model ---------------
+    //
+    // Both numbers below were computed from build/flymodel.bin with the same
+    // forward-kinematics chain the renderer uses (FlyModel.solve, mirrored in
+    // tools/softrender.py); the derivations are re-run by tools/phase0_probes.py
+    // and tools/gait_geometry.py.
+
+    /// Lateral distance between the left and right tarsus lines: the rest-pose
+    /// tarsus spreads of the three leg pairs are 0.746, 1.283 and 0.856 mm,
+    /// mean 0.96 mm. This is the track of the differential drive that turns
+    /// the walking animal: yaw rate = (v_right - v_left) / track.
+    static let legTrack: Float = 0.96e-3             // m
+
+    /// Secant fore-aft gain of the tarsus tip: travel(A*) / (2 A*) per
+    /// radian, where A* is the amplitude that carries the foot through the
+    /// no-slip travel R = stride * duty (or the range-limited amplitude,
+    /// where the morphology runs out — T1 and T2). Derived through the FK
+    /// chain from the CT model by tools/gait_geometry.py; a small-angle
+    /// tangent gain is NOT valid at stride-scale amplitudes and was
+    /// over-optimistic by ~2x.
+    static let gaitGainT1: Float = 0.630e-3          // m/rad
+    static let gaitGainT2: Float = 0.490e-3
+    static let gaitGainT3: Float = 1.218e-3
+
+    /// Walking-posture neutral joint angles (coxa, femur, tibia), in radians.
+    /// Chosen by searching the measured joint ranges for the posture that
+    /// maximises TRUE fore-aft foot travel through the FK chain; the search
+    /// is tools/gait_geometry.py, the ranges are the flybody MJCF's.
+    static let gaitNeutralT1 = SIMD3<Float>(0.25, 1.55, -0.85)
+    static let gaitNeutralT2 = SIMD3<Float>(0.15, 1.55, -1.00)
+    static let gaitNeutralT3 = SIMD3<Float>(0.15, 1.00, -0.85)
+
+    /// Largest swing amplitude that keeps all three joints inside their
+    /// measured ranges from the neutral posture above (= the solved A*).
+    static let gaitAmpT1: Float = 0.45               // rad
+    static let gaitAmpT2: Float = 0.35
+    static let gaitAmpT3: Float = 0.45
+
+    /// Which joint direction protracts the foot, per joint, at those
+    /// postures. NOT uniform across segments — the flybody joint axes differ;
+    /// driving all segments with one sign is what made the old walk look
+    /// reversed. Measured, per segment, in tools/gait_geometry.py.
+    static let gaitSignT1 = SIMD3<Float>(1, -1, 1)
+    static let gaitSignT2 = SIMD3<Float>(1, -1, 1)
+    static let gaitSignT3 = SIMD3<Float>(-1, 1, -1)
+
+    /// Stance inverse-map knots: the sweep multiplier q at equal eighths of
+    /// the foot's travel, so the planted foot advances at constant speed
+    /// even though the FK tip displacement is strongly nonlinear in joint
+    /// angle. Piecewise-linear between knots; derived (bisected through the
+    /// FK chain) in tools/gait_geometry.py.
+    static let gaitKnotT1: [Float] = [1.000, 0.213, -0.016, -0.202, -0.369,
+                                      -0.526, -0.681, -0.836, -1.000]
+    static let gaitKnotT2: [Float] = [1.000, 0.355, 0.079, -0.139, -0.330,
+                                      -0.506, -0.674, -0.837, -1.000]
+    static let gaitKnotT3: [Float] = [1.000, 0.753, 0.552, 0.368, 0.190,
+                                      0.006, -0.194, -0.438, -0.986]
+
+
+    // --- escape (Card & Dickinson 2008) ---
+    /// Peak take-off speed of the giant-fibre escape, ~0.9 m/s reached within
+    /// a few milliseconds of the tergotrochanteral motoneurons firing.
+    static let escapeTakeoffSpeed: Float = 0.9       // m/s
+    /// motor_jump_escape is the two tergotrochanteral (TT/PDMN) motoneurons —
+    /// the final common path of the giant fibre escape (BANC v888
+    /// cell_function == "jump_escape"; King & Valoroso 2017). One spike from
+    /// one of these two neurons inside one 60 fps frame reports as
+    /// 1 / (2 * 1/60) = 30 Hz of group-mean rate, and the engine's 0.35 EMA
+    /// peaks that single-spike event at ~10.5 Hz. A rising edge through
+    /// 10 Hz therefore means "at least one TT spike per frame" — the
+    /// measured command for take-off.
+    static let jumpEventRate: Float = 10.0           // Hz
+
     /// Weight, for convenience. ~9.4 microNewtons.
     static var weight: Float { mass * gravity }
 
@@ -210,6 +293,8 @@ struct FlyPose {
     var roll: Float = 0
     var velocity = SIMD3<Float>.zero            // world units / s
 
+    /// Animation state only: a smoothed 0/1 of "not touching anything".
+    /// Physics does NOT read this — contact comes from the collision solver.
     var airborne: Float = 0
     /// Instantaneous stroke phase, for drawing. The real wing beats at 218 Hz,
     /// far above the display rate, so the renderer draws a stroboscopic sample
@@ -260,170 +345,89 @@ final class FlyBody {
     private(set) var liftMicroNewtons: Float = 0
     private(set) var weightMicroNewtons: Float = FlyMorphology.weight * 1e6
 
+    /// True while any leg is touching the floor or an object top. Decided by
+    /// the collision solver each frame — never by a lift threshold, which is
+    /// what used to make the animal flicker between flight and walking ten
+    /// times a second whenever the wing drive sat near hover.
+    private(set) var grounded = false
+
+    /// Escape take-offs actually launched, and when. The giant-fibre signal
+    /// is never discarded: events are counted whether the animal is on the
+    /// ground or already flying; only the impulse needs contact.
+    private(set) var jumpEvents = 0
+    private(set) var lastJumpTime: Float = -1000
+
     /// Joint angles for FlyModel, indexed by its joint table.
     private(set) var jointAngles: [Float] = []
     private var model: FlyModel?
 
-    // MARK: - The one assumption, isolated
+    // MARK: - The decode, and its one headline assumption
 
     /// Motor-neuron population rate -> wing stroke amplitude.
     ///
     /// Both endpoints are measured: at the hovering amplitude the blade-element
     /// force equals body weight exactly, and the maximum is the morphological
-    /// limit of 3.1 rad. The straight line between them is the assumption.
+    /// limit of 3.1 rad. The straight line between them is the assumption
+    /// (docs/ASSUMPTIONS.md #1).
     ///
-    /// `referenceRate` — the firing rate that means "hover" — is not a number
-    /// typed in by hand. It is a slow running average of the power-muscle
-    /// group's own rate, so whatever the network happens to settle at becomes
-    /// the equilibrium, and the fly responds to CHANGES around it.
-    ///
-    /// That is not a convenience: it is the equilibrium reflex. Real flies hold
+    /// `referenceRate` — the firing rate that means "hover" — is a slow
+    /// running average of the power-muscle COLLECTIVE, used only for the
+    /// symmetric lift channel. It is the equilibrium reflex: real flies hold
     /// lift against weight through haltere and visual feedback onto the same
-    /// steering muscles (Sherman & Dickinson 2003; Dickinson 1999), and those
-    /// pathways are present in BANC. What we cannot do is calibrate that loop's
-    /// gain, because nobody has measured it — so the loop is closed here, at
-    /// the muscle, instead.
-    ///
-    /// The time constant is a behaviour choice, and 2 s turned out wrong: the
-    /// trim chased the fly's own climb command so tightly that lift stayed
-    /// glued to weight — on the phone the animal beat its wings harder and
-    /// harder yet its eye view never rose. At 10 s a sustained (seconds-long)
-    /// power change still moves the fly up or down, while a stuck saturation
-    /// still re-trims instead of holding 178 degrees forever.
+    /// steering muscles (Sherman & Dickinson 2003), and those pathways are
+    /// present in BANC. What we cannot do is calibrate that loop's gain, so
+    /// the loop is closed here, at the muscle. It must never be applied to a
+    /// left/right DIFFERENCE — that is what the opponent decode below is for.
     private(set) var referenceRate: Float = 120.0
     private let referenceTau: Float = 10.0      // s
 
-    /// Adapted baseline of the left/right leg-rate asymmetry while walking.
+    /// Neuromuscular low-pass on the decoded wing command (ASSUMPTIONS.md #3).
     ///
-    /// The two leg populations of the connectome do not fire perfectly evenly,
-    /// and the raw difference used to turn the body forever — the animal
-    /// circled at a steady ~11 deg/s instead of walking straight. This is the
-    /// same equilibrium idea as `referenceRate`: only *changes* in asymmetry
-    /// around the adapted mean steer the body, so an intended turn still
-    /// works but a constant baseline bias dies away (tau ~1.5 s, the order of
-    /// the optomotor straightening a real fly gets from balanced optic flow).
-    private(set) var turnBias: Float = 0
-    private let turnBiasTau: Float = 1.5
+    /// The stroke amplitude a muscle delivers tracks its motoneuron population
+    /// with a lag; more importantly here, the smallest wing motor group has
+    /// 12 neurons, so its reported rate jumps 5.2 Hz per single spike. A
+    /// one-pole filter of 0.2 s averages ~144 spikes per group at 60 Hz
+    /// firing, bringing spike-counting noise under 10% before it reaches the
+    /// wing. The exact tau is not published for population-level decoding and
+    /// is listed as an assumption.
+    private let muscleTau: Float = 0.2          // s
 
-    /// Flight twin of `turnBias`: an adapted baseline on the left/right wing
-    /// drag difference. In the open world nothing interrupted a sustained
-    /// steering asymmetry, so the animal spun at the 1600 deg/s yaw clamp —
-    /// the flight version of the old walking circles. Cancelling the
-    /// sustained part (tau 1.5 s, the order of the haltere/optomotor
-    /// straightening a real fly gets) leaves genuine saccades intact.
-    private(set) var yawBias: Float = 0
-    private let yawBiasTau: Float = 1.5
+    /// Opponent-decode noise floors: the rate change one spike makes in a
+    /// group over the low-pass window. Wing groups have 12 neurons; the leg
+    /// drive is the mean of three groups whose smallest has 63, further
+    /// averaged over the three, so one spike moves it 1/(3*63*tau).
+    private var wingEps: Float { 1 / (12 * muscleTau) }
+    private var legEps: Float { 1 / (3 * 63 * muscleTau) }
 
-    // MARK: - Habits (measured ethology, imposed at the body) ---------------
-    //
-    // A real fly does not walk continuously: walking is organised in bouts
-    // separated by stops — walk/stop transitions behave like Poisson events
-    // with a baseline walk-initiation rate of ~0.29/s (Demir, Kadakia,
-    // Anderson, Clark & Carey 2020, eLife 5:e57524) — and ~13% of waking time
-    // is grooming in bouts of a few tenths of a second to a couple of seconds,
-    // sweeping anterior-to-posterior (Seeds et al. 2014, eLife 3:e02951;
-    // Lazopulo & Syed 2018, eLife 7:e34497; leg-sweep cycles ~150 ms, Ray et
-    // al. 2019, PLOS Comput Biol 15:e1007105). Dusting or a bump triggers
-    // grooming strongly. A 1 ms LIF connectome does not spontaneously emit
-    // that bout structure, so — like the tripod gait oscillator — it is
-    // imposed here and labelled as modelled. The rng is deterministic so the
-    // physics tests reproduce exactly.
+    /// Escape refractory floor. Card & Dickinson (2008) measure the whole
+    /// take-off sequence in ~14 ms; a tenth of a second between launches is a
+    /// conservative floor that keeps a rattling TT population from machine-
+    /// gunning the animal. Listed in ASSUMPTIONS.md #7.
+    private let jumpRefractory: Float = 0.1     // s
 
-    enum Habit: Int { case walk = 0, stop, groom }
-    private(set) var habit: Habit = .walk
-    private var habitTimer: Float = 0
-    private var groomDuration: Float = 0
-    private var groomElapsed: Float = 0
-    private(set) var groomPhase: Float = 0
-    /// 1 when the legs may carry the body, 0 during stops and grooming (and
-    /// while feeding — a drinking fly stands still).
-    private(set) var habitGate: Float = 1
-    private var wasAirborne = false
-    private var wasBumped = false
-    private var rngState: UInt32 = 0x9E3779B9
+    // smoothed decode state
+    private var phiL: Float = 0
+    private var phiR: Float = 0
+    private var legIndex: Float = 0
+    private var jumpWasHot = false
+    private var simTime: Float = 0
+    /// Stride of the current step cycle, in millimetres; the gait animation
+    /// reads this so the stance foot matches body speed instead of skating.
+    private var strideMillimetres: Float = 0
 
-    /// Endogenous arousal tone. A real fly's vigour is not constant: the
-    /// propensity to move drifts on its own over tens of seconds (Cohn et al.
-    /// 2019, Cell 176:254 — spontaneous walking and flight in 3-D), brain-wide
-    /// imaging finds arousal-like signals with time constants from under 4 s
-    /// to over 20 s (Nat Commun 2023, 14:5420), and the walk/stop statistics
-    /// themselves only close when a slowly varying internal state modulates
-    /// the transition rates (Demir et al. 2020). The brain page's Synaptic
-    /// gain slider is the *experimenter's* knob; this is the animal's own
-    /// state, imposed as an Ornstein-Uhlenbeck process (tau 15 s, bounded to
-    /// [0.5, 1.5]) on the same deterministic rng, so tests stay exact.
-    private(set) var arousal: Float = 1.0
-    private let arousalTau: Float = 15.0
-    private let arousalSigma: Float = 0.16      // stationary sd ~0.44
+    /// Seconds since the last escape launch; the HUD flashes while it is
+    /// small. Never negative, even before the first jump.
+    var secondsSinceLastJump: Float { simTime - lastJumpTime }
 
-    private func habitRandom() -> Float {
-        rngState ^= rngState << 13
-        rngState ^= rngState >> 17
-        rngState ^= rngState << 5
-        return Float(rngState >> 8) / Float(1 << 24)
-    }
-
-    private func enterHabit(_ h: Habit) {
-        habit = h
-        let u = max(habitRandom(), 0.02)
-        // Arousal stretches walk bouts and shortens stops — the slowly
-        // varying state term that closes the walk/stop statistics
-        // (Demir et al. 2020: transitions are modulated, not memoryless
-        // at a fixed rate).
-        switch h {
-        case .walk:  habitTimer = min(8, -log(u) * 3.0 * arousal)        // ~3 s bouts
-        case .stop:  habitTimer = min(6, max(0.3, -log(u) / (0.29 * arousal)))  // lambda0 = 0.29/s
-        case .groom:
-            habitTimer = min(4, max(0.4, -log(u) * 1.0))                 // 0.15-2 s+ bouts
-            groomDuration = habitTimer
-            groomElapsed = 0
-        }
-    }
-
-    private func updateHabit(dt: Float) {
-        // Ornstein-Uhlenbeck arousal: mean-reverting drift on the seconds-to-
-        // tens-of-seconds scale. Four uniform draws sum to a crude gaussian,
-        // keeping the port bit-compatible with the Python simcheck.
-        let g = (habitRandom() + habitRandom() + habitRandom() + habitRandom()) * 0.5 - 1
-        arousal += (1 - arousal) * min(1, dt / arousalTau) + arousalSigma * sqrt(dt) * g
-        arousal = min(1.5, max(0.5, arousal))
-
-        let grounded = pose.airborne < 0.5
-        if !grounded {
-            wasAirborne = true
-            habit = .walk
-            habitGate = 1
-            return
-        }
-        if wasAirborne {
-            // Landing kicks up dust: a strong grooming urge, the virtual
-            // version of the dusting assays.
-            wasAirborne = false
-            if habitRandom() < 0.5 { enterHabit(.groom) }
-        }
-        if bumped, !wasBumped, habit != .groom, habitRandom() < 0.4 { enterHabit(.groom) }
-        wasBumped = bumped
-
-        habitTimer -= dt
-        if isEating {
-            if habit != .stop { enterHabit(.stop) }
-            habitTimer = max(habitTimer, 0.2)
-        } else if habitTimer <= 0 {
-            switch habit {
-            // Probabilities tuned so grooming lands at ~13% of active time,
-            // the share Lazopulo & Syed 2018 measured in undisturbed flies.
-            case .walk: enterHabit(habitRandom() < 0.5 ? .groom : .stop)
-            case .stop:
-                if habitRandom() < 0.45 { enterHabit(.groom) }
-                else { enterHabit(.walk) }
-            case .groom: enterHabit(.walk)
-            }
-        }
-        habitGate = habit == .walk ? 1 : 0
-        if habit == .groom {
-            groomElapsed += dt
-            groomPhase += dt * 2 * .pi * 6.5        // ~150 ms per leg sweep
-        }
+    /// Opponent decode of a left/right pair: the collective (what both sides
+    /// agree on) and a bounded asymmetry index in [-1, 1]. The epsilon is the
+    /// one-spike-per-window noise floor of the group, so a single stray spike
+    /// cannot masquerade as a command, and the index saturates at 1 no matter
+    /// how lopsided the rates get — the muscle limit, not the spike count,
+    /// decides how hard the animal turns.
+    static func opponent(_ l: Float, _ r: Float, eps: Float)
+        -> (collective: Float, index: Float) {
+        ((l + r) * 0.5, (r - l) / (l + r + eps))
     }
 
     private func strokeAmplitude(from rateHz: Float) -> Float {
@@ -434,7 +438,18 @@ final class FlyBody {
         return hover + (maxPhi - hover) * min(1, (t - 1) / 0.5)
     }
 
-    /// Advance the slow equilibrium estimate.
+    /// Stroke-plane forward tilt as a function of the thrust ratio F/W.
+    /// Hovering flies hold the stroke plane horizontal — at exactly one body
+    /// weight the tilt is zero, so the vertical force equals weight exactly
+    /// and the equilibrium reflex (`referenceRate`) converges on a true hover
+    /// instead of a slowly sinking one. The measured forward-flight
+    /// inclination of ~29 deg (strokePlaneAngle) is reached at 1.5 body
+    /// weights; the straight line between is an assumption (ASSUMPTIONS.md #2).
+    private func strokeTilt(for ratio: Float) -> Float {
+        FlyMorphology.strokePlaneAngle * max(0, min(1, (ratio - 1) / 0.5))
+    }
+
+    /// Advance the slow equilibrium estimate (collective lift channel only).
     private func updateReference(_ rateHz: Float, dt: Float) {
         guard rateHz > 1 else { return }
         let a = min(1, dt / referenceTau)
@@ -444,8 +459,8 @@ final class FlyBody {
 
     // MARK: - Setup
 
-    /// Drive the body directly, bypassing the brain. Used by the test suite
-    /// and by scripted demos; the app always goes through `readMotorDrives`.
+    /// Drive the body directly, bypassing the brain. Used by the test suite;
+    /// the app always goes through `readMotorDrives`.
     func setDrives(_ d: FlyDrives) { drives = d }
 
     func attach(model: FlyModel) {
@@ -457,19 +472,22 @@ final class FlyBody {
         pose = FlyPose(position: p)
         energy = 1.0
         hurt = 0
-        turnBias = 0
-        yawBias = 0
-        habit = .walk
-        habitTimer = 0
-        groomDuration = 0
-        groomElapsed = 0
-        groomPhase = 0
-        habitGate = 1
-        wasAirborne = false
-        wasBumped = false
-        arousal = 1.0
-        rngState = 0x9E3779B9     // deterministic habit sequences after reset
+        grounded = p.y <= contactRadius + contactEpsilon
+        phiL = 0
+        phiR = 0
+        legIndex = 0
+        jumpEvents = 0
+        lastJumpTime = -1000
+        jumpWasHot = false
+        simTime = 0
+        strideMillimetres = 0
     }
+
+    /// Half a body length, the collision radius used everywhere.
+    private var contactRadius: Float { FlyMorphology.bodyLength * 0.5 * metresToWorld }
+    /// 20 micrometres: how close to the contact radius still counts as
+    /// standing on the surface. A fly leg is not a mathematical point.
+    private let contactEpsilon: Float = 0.002
 
     func readMotorDrives(from sim: SimulationEngine) {
         drives.wingPowerL = sim.groupRate("motor_wing_power_left")
@@ -495,33 +513,35 @@ final class FlyBody {
 
     func update(dt rawDt: Float, world: World) {
         let dt = min(max(rawDt, 1.0 / 480.0), 1.0 / 20.0)
+        simTime += dt
         bumped = false
         hurt = max(0, hurt - dt * 1.5)
 
-        updateReference((drives.wingPowerL + drives.wingPowerR) * 0.5, dt: dt)
-
-        // ---- what the wings are being told to do --------------------------
-        // Steering muscles bias the stroke amplitude of their own side; this is
-        // the measured mechanism of yaw control in Drosophila (b1/b2 muscles
-        // shift stroke amplitude by up to ~20 deg, Lehmann & Dickinson 1997).
+        // ---- decode the wing command ---------------------------------------
         //
-        // Both ends of this are now clamped, and neither was. A steering group
-        // firing at 300 Hz on one side and silent on the other — which is what
-        // a saturating motor population does — used to ask for 100 deg of bias,
-        // five times what the muscle can deliver, and the result ran the wing
-        // past its morphological limit to 248 deg of sweep. That is the number
-        // the yaw-rate test caught at 14,895 deg/s.
-        let steerBiasL = max(-FlyMorphology.steeringRange,
-                             min(FlyMorphology.steeringRange,
-                                 (drives.wingSteerL - drives.wingSteerR) / 60.0
-                                 * FlyMorphology.steeringRange))
-        let steerBiasR = -steerBiasL
-        // A wing is a joint. It cannot be commanded past 178 deg, whatever the
-        // power muscles are shouting.
-        let phiL = max(0, min(FlyMorphology.strokeAmplitudeMax,
-                              strokeAmplitude(from: drives.wingPowerL) + steerBiasL))
-        let phiR = max(0, min(FlyMorphology.strokeAmplitudeMax,
-                              strokeAmplitude(from: drives.wingPowerR) + steerBiasR))
+        // Collective power sets the symmetric stroke amplitude through the
+        // measured hover->max map. The asymmetry — from the power difference
+        // AND from the steering muscles — is decoded as an opponent index in
+        // [-1, 1] and mapped onto the measured 20-degree steering authority.
+        // Decoding asymmetry as a raw difference of two noisy means is what
+        // used to saturate the yaw channel: a 10% power difference asks for
+        // 2.8x the maximum torque a fly can make, so every frame was full
+        // left or full right and the animal spun at the 1600 deg/s clamp.
+        let wingPower = opponent(drives.wingPowerL, drives.wingPowerR, eps: wingEps)
+        let wingSteer = opponent(drives.wingSteerL, drives.wingSteerR, eps: wingEps)
+        updateReference(wingPower.collective, dt: dt)
+
+        let asymmetry = wingPower.index + wingSteer.index
+        let phi0 = strokeAmplitude(from: wingPower.collective)
+        let phiTargetL = max(0, min(FlyMorphology.strokeAmplitudeMax,
+                                    phi0 - asymmetry * FlyMorphology.steeringRange))
+        let phiTargetR = max(0, min(FlyMorphology.strokeAmplitudeMax,
+                                    phi0 + asymmetry * FlyMorphology.steeringRange))
+
+        // Muscle low-pass: the wing sees activation, not spikes.
+        let aMuscle = min(1, dt / muscleTau)
+        phiL += (phiTargetL - phiL) * aMuscle
+        phiR += (phiTargetR - phiR) * aMuscle
         pose.strokeAmplitudeL = phiL
         pose.strokeAmplitudeR = phiR
 
@@ -533,34 +553,71 @@ final class FlyBody {
         let totalForce = fL + fR
         liftMicroNewtons = totalForce * 1e6
 
-        let weight = FlyMorphology.weight
-        let airborneNow: Float = totalForce > weight * 0.98 ? 1 : 0
-        pose.airborne += (airborneNow - pose.airborne) * min(1, dt * 4)
-
-        // Yaw torque from the left/right force difference. The moment arm is
-        // the radius of the second moment of area, which is where the
-        // resultant aerodynamic force acts on a flapping wing.
+        // Yaw torque from the left/right drag difference, moment arm r2.
+        // SIGN: a stronger LEFT wing drags more on the left, which yaws the
+        // body toward the RIGHT — toward the weaker wing. That is the
+        // direction Fry et al. (2003) measured for real saccades, and it now
+        // agrees with the walking decode below (the faster leg side swings
+        // the body toward the slower side). The previous build had this
+        // inverted: it turned the animal toward the STRONGER wing, and with
+        // the saturated channel that meant a permanent spin.
         let dragL = FlyMorphology.wingForce(strokeAmplitude: phiL,
                                             coefficient: FlyMorphology.dragCoefficient)
         let dragR = FlyMorphology.wingForce(strokeAmplitude: phiR,
                                             coefficient: FlyMorphology.dragCoefficient)
-        // The steering torque saturates at the largest a melanogaster has been
-        // measured producing. Without it the model answers an extreme
-        // left/right asymmetry with a steady spin of several thousand deg/s —
-        // the quasi-steady blade-element estimate keeps scaling with the stroke
-        // amplitude, but the animal does not.
-        //
-        // The sustained part of the asymmetry is cancelled by the adapted
-        // baseline (see `yawBias`); otherwise a constant left/right drive
-        // difference pins the fly at the yaw clamp forever — which is exactly
-        // the 1464 deg/s spin the open world made visible.
-        let rawYawDrag = dragR - dragL
-        yawBias += (rawYawDrag - yawBias) * min(1, dt / yawBiasTau)
         let yawTorque = max(-FlyMorphology.maxYawTorque,
-                            min(FlyMorphology.maxYawTorque,
-                                (rawYawDrag - yawBias) * FlyMorphology.r2))
+                            min(FlyMorphology.maxYawTorque, (dragL - dragR) * FlyMorphology.r2))
 
-        if pose.airborne > 0.5 {
+        // ---- legs: step frequency and the differential-drive turn ----------
+        // Leg motor rate sets step frequency; step frequency and the measured
+        // stride set speed (Mendes et al. 2013: near-linear up to ~13 Hz and
+        // 30 mm/s, i.e. a stride of about 2.3 mm). Turning is differential
+        // drive through the opponent leg index over the CT-derived track.
+        let legs = opponent(drives.legL, drives.legR, eps: legEps)
+        legIndex += (legs.index - legIndex) * min(1, dt / muscleTau)
+        let f = min(FlyMorphology.stepFrequencyMax,
+                    legs.collective / referenceRate * FlyMorphology.stepFrequencyMax * 2.2)
+        pose.stepFrequency = grounded ? f : 0
+        let stride = FlyMorphology.walkSpeedMax / FlyMorphology.stepFrequencyMax
+        let speedMS = min(f * stride, FlyMorphology.walkSpeedMax)
+        strideMillimetres = f > 0.01 ? speedMS / f * 1000 : 0
+
+        // ---- one continuous dynamics model ----------------------------------
+        // Flight forces apply whether or not anything is touching; ground
+        // contact (from the collision solver, never from a lift threshold)
+        // adds the legs' kinematic drive and the floor's normal force.
+        if grounded {
+            // The floor normal force cancels gravity exactly — unless the
+            // wings' VERTICAL component out-pulls the weight, in which case
+            // the animal is taking off and the net upward force accelerates
+            // it. The vertical component uses the same stroke-plane tilt the
+            // flight branch flies with, so the take-off condition and the
+            // in-air equilibrium are one consistent surface: no hover can
+            // flicker across it.
+            let weight = FlyMorphology.weight
+            let tilt = strokeTilt(for: totalForce / weight)
+            let verticalForce = totalForce * cos(max(0, tilt))
+            if verticalForce > weight {
+                let vy = pose.velocity.y * worldToMetres
+                     + (verticalForce - weight) / FlyMorphology.mass * dt
+                pose.velocity.y = vy * metresToWorld
+            } else {
+                pose.velocity.y = 0
+            }
+
+            // Differential drive: the body rotates about the slower tripod.
+            // yaw rate = (vR - vL)/track, and (vR - vL) = 2 * index * v.
+            let yaw = -2 * legIndex * speedMS / FlyMorphology.legTrack
+            pose.yawRate = yaw
+            pose.heading += yaw * dt
+
+            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
+            pose.velocity.x = fwd.x * speedMS * metresToWorld
+            pose.velocity.z = fwd.z * speedMS * metresToWorld
+            pose.gaitPhase += dt * f * 2 * .pi
+            pose.roll += (0 - pose.roll) * min(1, dt * 8)
+            pose.pitch += (0 - pose.pitch) * min(1, dt * 8)
+        } else {
             // Angular: torque, inertia, and flapping counter-torque damping.
             // Semi-implicit on the damping term: the yaw time constant
             // (I / c = 5.2e-13 / 3.1e-11 = 17 ms) is comparable to a frame, so
@@ -571,8 +628,8 @@ final class FlyBody {
             pose.heading += pose.yawRate * dt
 
             // Linear: the resultant acts normal to the stroke plane, which the
-            // fly tilts forward to convert lift into thrust.
-            let tilt = FlyMorphology.strokePlaneAngle * min(1, totalForce / weight - 0.6)
+            // fly tilts forward to convert lift into thrust (see strokeTilt).
+            let tilt = strokeTilt(for: totalForce / FlyMorphology.weight)
             pose.pitch += (-max(0, tilt) - pose.pitch) * min(1, dt * 6)
 
             let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
@@ -587,58 +644,32 @@ final class FlyBody {
             // time constant is m/c = 0.96e-6 / 8.0e-6 = 120 ms, so this is the
             // term that decides how fast the animal can actually go. With it,
             // full throttle settles at 0.89 m/s; without it the fly
-            // accelerated without limit, which is the bug you saw.
+            // accelerated without limit.
             let k = FlyMorphology.translationalDamping / FlyMorphology.mass
             vMetres /= (1 + k * dt)
             pose.velocity = vMetres * metresToWorld
 
+            // Visual banking only (ASSUMPTIONS.md #11): the body lists away
+            // from the harder-beating wing.
             pose.roll += ((phiR - phiL) * 0.5 - pose.roll) * min(1, dt * 6)
-            pose.stepFrequency = 0
-        } else {
-            // ---- walking ---------------------------------------------------
-            // Leg motor rate sets step frequency; step frequency and the
-            // measured stride length set speed. Mendes et al. report a near
-            // linear speed/step-frequency relation up to ~13 Hz and 30 mm/s,
-            // i.e. a stride of about 2.3 mm, close to one body length.
-            let legMean = (drives.legL + drives.legR) * 0.5
-            let f = min(FlyMorphology.stepFrequencyMax,
-                        legMean / referenceRate * FlyMorphology.stepFrequencyMax * 2.2)
-            // Stop-and-go: the habit gate zeroes step frequency while the fly
-            // stands still or grooms, exactly like a real walking bout ending.
-            let fg = f * habitGate
-            pose.stepFrequency = fg
-            let stride = FlyMorphology.walkSpeedMax / FlyMorphology.stepFrequencyMax
-            // Arousal scales walking vigour, capped at the measured 30 mm/s.
-            let speedMS = min(fg * stride * arousal, FlyMorphology.walkSpeedMax)  // m/s
-
-            // Turning on foot: the two tripods step at different rates, and the
-            // body rotates about the slower side. Differential stride is the
-            // measured mechanism. The adapted baseline (see `turnBias`) keeps a
-            // constant left/right bias from circling the animal forever.
-            let legDiff = (drives.legR - drives.legL) / max(referenceRate, 1)
-            turnBias += (legDiff - turnBias) * min(1, dt / turnBiasTau)
-            // The pivot is NOT gated by the habit: stopped flies still perform
-            // reorientation turns in place (measured behaviour), they just do
-            // not advance.
-            pose.yawRate = -(legDiff - turnBias) * f * 2.0
-            pose.heading += pose.yawRate * dt
-
-            let fwd = SIMD3<Float>(sin(pose.heading), 0, -cos(pose.heading))
-            var v = fwd * speedMS * metresToWorld
-            v.y = min(pose.velocity.y, 0) - FlyMorphology.gravity * metresToWorld * dt * 0.02
-            pose.velocity = v
-
-            pose.gaitPhase += dt * fg * 2 * .pi
-            pose.roll += (0 - pose.roll) * min(1, dt * 8)
-            pose.pitch += (0 - pose.pitch) * min(1, dt * 8)
         }
 
-        // The giant fibre. Two neurons; when they fire the fly is simply gone.
-        // Card & Dickinson 2008 measure escape take-off at ~0.9 m/s within 5 ms.
-        if drives.jump > 8 && pose.airborne < 0.6 {
-            pose.velocity.y += 0.9 * metresToWorld
-            pose.airborne = 1
+        // ---- the giant fibre ------------------------------------------------
+        // A rising edge of the TT-motoneuron rate through the one-spike-per-
+        // frame level launches the escape — 0.9 m/s within milliseconds (Card
+        // & Dickinson 2008) — if the legs are on something to push against.
+        // In the air the event is still counted (the signal is not discarded),
+        // it just has nothing to push.
+        let jumpHot = drives.jump > FlyMorphology.jumpEventRate
+        if jumpHot, !jumpWasHot, simTime - lastJumpTime > jumpRefractory {
+            jumpEvents += 1
+            lastJumpTime = simTime
+            if grounded {
+                pose.velocity.y += FlyMorphology.escapeTakeoffSpeed * metresToWorld
+                grounded = false
+            }
         }
+        jumpWasHot = jumpHot
 
         pose.wingPhase += dt * FlyMorphology.wingbeatHz * 2 * .pi
         if pose.wingPhase > 2 * .pi { pose.wingPhase -= 2 * .pi * floor(pose.wingPhase / (2 * .pi)) }
@@ -646,11 +677,15 @@ final class FlyBody {
         pose.position += pose.velocity * dt
         resolveCollisions(dt: dt, world: world)
         handleFeeding(dt: dt, world: world)
-        // Runs last so the habit machine sees this frame's bump and feeding
-        // flags; the gate it sets takes effect on next frame's walking.
-        updateHabit(dt: dt)
 
-        // Head and abdomen follow their own motor groups.
+        // Animation state: a smoothed copy of the contact flag. Wing folding
+        // and leg tucking read this; the dynamics above never do.
+        let airborneTarget: Float = grounded ? 0 : 1
+        pose.airborne += (airborneTarget - pose.airborne) * min(1, dt * 4)
+
+        // Head and abdomen follow their own motor groups. The divisors are
+        // the population-rate scales at which each reaches its measured
+        // angular limit (ASSUMPTIONS.md #9).
         pose.headYaw += (max(-0.35, min(0.35, (drives.neck - 20) / 60.0)) - pose.headYaw)
                       * min(1, dt * 5)
         pose.headPitch += (max(-0.3, min(0.3, (drives.neck - 25) / 90.0)) - pose.headPitch)
@@ -665,8 +700,12 @@ final class FlyBody {
     // MARK: - Collisions
 
     private func resolveCollisions(dt: Float, world: World) {
-        // The fly is a 2.5 mm ellipsoid; use half a body length as the radius.
-        let radius = FlyMorphology.bodyLength * 0.5 * metresToWorld
+        let radius = contactRadius
+
+        // Contact is decided here, by geometry — the only place that knows
+        // where the surfaces are. Start pessimistic (airborne) and let the
+        // floor, an object top, or the containment clamp prove contact.
+        grounded = false
 
         // Backstop first: a fast fly can cross a wall between two frames, so
         // the room is also enforced analytically.
@@ -675,11 +714,12 @@ final class FlyBody {
         if roomNormal != .zero {
             pose.position = p
             bumped = true
+            if roomNormal.y > 0 { grounded = true }
             let n = normalize(roomNormal)
             let into = dot(pose.velocity, n)
             if into < 0 { pose.velocity -= n * into }
             // Hitting a surface costs most of the momentum; flies stall, they
-            // do not bounce.
+            // do not bounce (coefficients: ASSUMPTIONS.md #12).
             pose.velocity *= 0.3
             pose.yawRate *= 0.5
         }
@@ -687,6 +727,7 @@ final class FlyBody {
         if let hit = world.collision(at: pose.position, radius: radius) {
             bumped = true
             pose.position = hit.correctedPosition
+            if hit.normal.y > 0.7 { grounded = true }
             let into = dot(pose.velocity, hit.normal)
             if into < 0 {
                 // Flies do not bounce; they stall and drop, or cling.
@@ -697,13 +738,16 @@ final class FlyBody {
                 pose.velocity.y = max(0, pose.velocity.y)
             }
         }
+
+        // Standing exactly on the floor (or a hair above it) is contact too.
+        if pose.position.y <= radius + contactEpsilon { grounded = true }
     }
 
     private func handleFeeding(dt: Float, world: World) {
         isEating = false
         if let food = world.nearestFood(to: pose.position),
            length(food.position - pose.position) < 0.35,
-           pose.airborne < 0.4 {
+           grounded {
             isEating = drives.proboscis > 1.5
             if isEating {
                 world.consume(food.id, amount: dt * 0.25)
@@ -744,22 +788,67 @@ final class FlyBody {
         set("wing_pitch_left",  folded ? 0.0 : flipL)
         set("wing_pitch_right", folded ? 0.0 : flipR)
 
-        // --- halteres beat antiphase to the wings at the same frequency -----
+        // --- halteres beat antiphase to the wings at the same frequency ----
         set("haltere_left",  sin(pose.wingPhase + .pi) * 0.5)
         set("haltere_right", sin(pose.wingPhase + .pi) * 0.5)
 
         // --- legs ------------------------------------------------------------
         // Tripod gait: L1,R2,L3 swing while R1,L2,R3 stance. Duty factor 0.55
-        // is the measured value. In flight the legs tuck.
+        // is the measured value (Mendes et al. 2013). In flight the legs tuck.
+        //
+        // The stance foot must not skate: the stride comes from the body's
+        // own speed (stride = v / step frequency), and the swing joints sweep
+        // exactly that far — the amplitude is stride * duty / (2 * secant
+        // gain), both derived per segment through the FK chain by
+        // tools/gait_geometry.py. Where the joint range runs out the foot
+        // slips at top speed — measured: T1 55%, T2 73%, T3 14% at 30 mm/s;
+        // reported, not hidden (ASSUMPTIONS.md #6).
+        //
+        // Sign: the flybody joint axes are NOT uniform. Measured through the
+        // renderer's own FK chain at the walking postures, the protraction
+        // direction per joint is gaitSignT1/T2/T3 below — mirrored
+        // consistently on both body sides, but different per segment. The old
+        // code drove all segments with one sign, which is why the walking fly
+        // looked like it was moving in reverse.
         let tuck = 1 - pose.airborne
+        let stride = strideMillimetres
+        let duty = FlyMorphology.dutyFactor
         for (side, sign) in [("left", Float(1)), ("right", Float(-1))] {
             for (segment, tIndex) in [("T1", 0), ("T2", 1), ("T3", 2)] {
                 let tripod = (tIndex + (side == "left" ? 0 : 1)) % 2
-                let phase = pose.gaitPhase + (tripod == 0 ? 0 : .pi)
-                // Swing phase occupies (1 - dutyFactor) of the cycle.
-                let c = (sin(phase) + 1) * 0.5
-                let swinging = c > FlyMorphology.dutyFactor
-                let protraction = sin(phase)
+                var u = pose.gaitPhase / (2 * .pi) + (tripod == 0 ? 0 : 0.5)
+                u -= floor(u)
+                let swinging = u > duty
+
+                // Stance: follow the derived inverse-map knots so the planted
+                // foot advances at constant speed despite the nonlinear FK.
+                // Swing: the foot is airborne, a plain ramp is fine.
+                let neutral: SIMD3<Float> = segment == "T1" ? FlyMorphology.gaitNeutralT1
+                                          : segment == "T2" ? FlyMorphology.gaitNeutralT2
+                                          : FlyMorphology.gaitNeutralT3
+                let dirSign: SIMD3<Float> = segment == "T1" ? FlyMorphology.gaitSignT1
+                                          : segment == "T2" ? FlyMorphology.gaitSignT2
+                                          : FlyMorphology.gaitSignT3
+                let ampCap: Float = segment == "T1" ? FlyMorphology.gaitAmpT1
+                                  : segment == "T2" ? FlyMorphology.gaitAmpT2
+                                  : FlyMorphology.gaitAmpT3
+                let gainMM: Float = segment == "T1" ? FlyMorphology.gaitGainT1 * 1000
+                                  : segment == "T2" ? FlyMorphology.gaitGainT2 * 1000
+                                  : FlyMorphology.gaitGainT3 * 1000
+                let knots: [Float] = segment == "T1" ? FlyMorphology.gaitKnotT1
+                                   : segment == "T2" ? FlyMorphology.gaitKnotT2
+                                   : FlyMorphology.gaitKnotT3
+                let shape: Float
+                if swinging {
+                    shape = -1 + 2 * (u - duty) / (1 - duty)
+                } else {
+                    let n = Float(knots.count - 1)
+                    let p = u / duty * n
+                    let i = min(Int(p), knots.count - 2)
+                    shape = knots[i] + (knots[i + 1] - knots[i]) * (p - Float(i))
+                }
+                let amp = min(ampCap, stride * duty / (2 * gainMM))
+                let sweep = shape * amp
 
                 let s = "\(segment)_\(side)"
                 // Flight posture: legs folded back under the body.
@@ -768,13 +857,13 @@ final class FlyBody {
                 let flightTibia: Float = 1.1
 
                 set("coxa_\(s)",
-                    tuck * (protraction * 0.35) + (1 - tuck) * flightCoxa)
+                    tuck * (neutral.x + dirSign.x * sweep) + (1 - tuck) * flightCoxa)
                 set("coxa_abduct_\(s)",
                     tuck * (0.1 * sign) + (1 - tuck) * (0.3 * sign))
                 set("femur_\(s)",
-                    tuck * (-0.5 + (swinging ? 0.45 : 0.0)) + (1 - tuck) * flightFemur)
+                    tuck * (neutral.y + dirSign.y * sweep) + (1 - tuck) * flightFemur)
                 set("tibia_\(s)",
-                    tuck * (0.4 - (swinging ? 0.5 : 0.0)) + (1 - tuck) * flightTibia)
+                    tuck * (neutral.z + dirSign.z * sweep) + (1 - tuck) * flightTibia)
                 set("tarsus_\(s)",
                     tuck * (swinging ? -0.3 : 0.1))
             }
@@ -784,35 +873,6 @@ final class FlyBody {
         set("head_abduct", pose.headYaw)
         set("head", pose.headPitch)
         set("head_twist", pose.roll * 0.3)
-
-        // --- grooming (Seeds et al. 2014): anterior-to-posterior leg sweeps --
-        // The first half of a bout rubs the head and eyes with the front legs,
-        // the second half sweeps the abdomen with the hind legs; each sweep
-        // cycle runs ~150 ms (Ray et al. 2019). Placed last so it overrides
-        // the walking gait and the default head posture above.
-        if habit == .groom, pose.airborne < 0.5 {
-            let sweep = sin(groomPhase)
-            let anterior = groomElapsed < groomDuration * 0.5
-            for side in ["left", "right"] {
-                if anterior {
-                    set("coxa_T1_\(side)",   0.55 + sweep * 0.25)
-                    set("femur_T1_\(side)", -0.10 + sweep * 0.40)
-                    set("tibia_T1_\(side)",  1.00 - sweep * 0.35)
-                    set("coxa_T3_\(side)",  -0.25)
-                    set("femur_T3_\(side)", -0.60)
-                    set("tibia_T3_\(side)",  0.50)
-                } else {
-                    set("coxa_T1_\(side)",   0.15)
-                    set("femur_T1_\(side)", -0.55)
-                    set("tibia_T1_\(side)",  0.35)
-                    set("coxa_T3_\(side)",  -0.45 + sweep * 0.30)
-                    set("femur_T3_\(side)",  0.30 + sweep * 0.35)
-                    set("tibia_T3_\(side)", -0.40 - sweep * 0.30)
-                }
-            }
-            set("head_twist", sweep * 0.22)
-            set("head_abduct", anterior ? sweep * 0.15 : pose.headYaw)
-        }
 
         // --- proboscis, driven by the 35 proboscis motor neurons -------------
         set("rostrum", -1.2 + 1.3 * pose.proboscisExtension)
@@ -832,10 +892,7 @@ final class FlyBody {
     ///
     /// The flybody model puts the eye cameras at +/- 0.0219 in head-local
     /// units with their optical axes 67 degrees off the body axis, each with
-    /// a 140-degree field. We used to render ONE cyclopean camera from the
-    /// midpoint and feed that single image to both hemispheres — which gave
-    /// the brain no left/right difference to steer with, and the eye preview
-    /// showed a one-eyed fly. Now each hemisphere gets its own eye.
+    /// a 140-degree field. Each hemisphere gets its own eye.
     var eyeTransforms: (left: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>),
                         right: (position: SIMD3<Float>, forward: SIMD3<Float>, up: SIMD3<Float>)) {
         let yaw = pose.heading + pose.headYaw
@@ -865,7 +922,6 @@ final class FlyBody {
                                                  + abs(odourBias) * 0.4))
         sim.setGroupDrive("sensory_gustatory", isEating ? 1.8 : 0)
 
-        let grounded = pose.airborne < 0.5
         sim.setGroupDrive("sensory_tactile", (grounded ? 0.6 : 0) + (bumped ? 1.4 : 0))
 
         let gait = 0.5 + 0.5 * sin(pose.gaitPhase)
@@ -878,8 +934,8 @@ final class FlyBody {
         // Halteres are gyroscopes: their load signal is proportional to the
         // body's angular velocity. This is a real measurement, not a proxy.
         sim.setGroupDrive("sensory_haltere",
-                          pose.airborne * min(2.0, abs(pose.yawRate) * 0.12 + 0.3))
-        sim.setGroupDrive("sensory_wing", pose.airborne * pose.strokeAmplitudeL * 0.4)
+                          (grounded ? 0 : 1) * min(2.0, abs(pose.yawRate) * 0.12 + 0.3))
+        sim.setGroupDrive("sensory_wing", (grounded ? 0 : 1) * pose.strokeAmplitudeL * 0.4)
         sim.setGroupDrive("sensory_nociception", hurt * 3.0)
 
         sim.setGroupDrive("sensory_vision", visionActive ? nil : 0.4)

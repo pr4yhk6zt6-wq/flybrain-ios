@@ -1,5 +1,6 @@
 import XCTest
 import simd
+import Metal
 @testable import FlyBrain
 
 /// These tests exist because of a real failure. Shipped build 0.3 flew the fly
@@ -9,6 +10,36 @@ import simd
 /// Every number asserted below is a published measurement of *Drosophila
 /// melanogaster*, not a value read back off our own simulation. If a future
 /// change breaks the animal, these fail.
+///
+/// This suite mirrors tools/simcheck.py check-for-check (round 5). simcheck
+/// re-implements FlyBody.update in Python so the physics can also be verified
+/// on a Linux CI runner; where the two disagree, that is a bug in one of them.
+///
+/// ROUND-5 REMOVALS. Four tests that encoded the deleted adaptation layer are
+/// gone on purpose, not by accident:
+///
+///   - testSustainedLegAsymmetryDoesNotCircleForever and
+///     testSustainedFlightAsymmetryDoesNotSpinAtTheClamp asserted that a
+///     CONSTANT asymmetric drive stops turning the fly after a few seconds.
+///     That behaviour came from the adapted yaw/turn baselines (yawBias /
+///     turnBias). The baselines were the H2 bang-bang bug's cover-up: they
+///     silently cancelled any command the animal held for long enough. A
+///     sustained asymmetric drive IS a sustained turn command — the brain
+///     gets to decide how long it lasts, not a leaky integrator inside the
+///     body. Replaced by the sign tests (a turn must go the RIGHT way) and
+///     the noise/step tests (noise must not turn it, a real step must, and
+///     the spin must stop when the command does).
+///
+///   - testWalkBoutsAlternateWithStops,
+///     testGroomingOccupiesAboutThirteenPercentOfActiveTime,
+///     testArousalDriftsSpontaneouslyAndStaysBounded and
+///     testArousalStretchesWalkBouts tested the scripted habit/arousal layer
+///     (Poisson-flavoured walk/stop/groom timers plus an OU arousal). The
+///     round-5 brief classifies that layer as scripted behaviour: walk, stop
+///     and grooming must come out of the connectome's own activity, so the
+///     layer and its tests were deleted together. When the brain drives the
+///     legs, bout structure is measured in the connectome tests (Phase 3),
+///     not asserted on a timer in the body.
 final class FlightPhysicsTests: XCTestCase {
 
     // MARK: - the constant set itself
@@ -172,78 +203,6 @@ final class FlightPhysicsTests: XCTestCase {
         XCTAssertLessThan(abs(body.pose.velocity.y), 1.0, "still moving")
     }
 
-    /// The regression behind the two-eye / open-world change: a constant
-    /// left/right leg bias used to circle the fly forever at a steady yaw
-    /// rate (the "walks weird, always turning" complaint). The adapted turn
-    /// baseline must straighten it out.
-    func testSustainedLegAsymmetryDoesNotCircleForever() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        var d = FlyDrives()
-        d.legL = 30; d.legR = 45          // sustained asymmetric drive
-        body.setDrives(d)
-        for _ in 0..<(60 * 12) { body.update(dt: 1.0 / 60, world: world) }
-
-        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
-        XCTAssertLessThan(degPerSec, 5, "still circling after 12 s of bias")
-    }
-
-    /// The flight twin of the same complaint, from the user's video of the
-    /// open world: a sustained steering asymmetry pinned the fly at the
-    /// 1600 deg/s yaw clamp (the HUD read 1464). The adapted yaw baseline
-    /// must unwind the spin.
-    func testSustainedFlightAsymmetryDoesNotSpinAtTheClamp() {
-        let world = World()
-        let body = FlyBody()
-        body.reset()
-        var d = FlyDrives()
-        d.wingPowerL = 300; d.wingPowerR = 300
-        d.wingSteerL = 300; d.wingSteerR = 0
-        body.setDrives(d)
-        for _ in 0..<(60 * 12) { body.update(dt: 1.0 / 60, world: world) }
-
-        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
-        XCTAssertLessThan(degPerSec, 300, "still spinning after 12 s of bias")
-    }
-
-    /// ...while a fresh steering command still yaws the flying animal.
-    func testFlightSteeringStillResponds() {
-        let world = World()
-        let body = FlyBody()
-        body.reset()
-        var d = FlyDrives()
-        d.wingPowerL = 300; d.wingPowerR = 300
-        body.setDrives(d)
-        for _ in 0..<(60 * 6) { body.update(dt: 1.0 / 60, world: world) }
-
-        d.wingSteerL = 300; d.wingSteerR = 0
-        body.setDrives(d)
-        for _ in 0..<30 { body.update(dt: 1.0 / 60, world: world) }
-
-        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
-        XCTAssertGreaterThan(degPerSec, 200, "flight steering dead")
-    }
-
-    /// ...while a fresh asymmetry must still steer, or the adaptation would
-    /// have lobotomised the animal's turning.
-    func testTurnsStillRespondToNewAsymmetry() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        var d = FlyDrives()
-        d.legL = 30; d.legR = 30
-        body.setDrives(d)
-        for _ in 0..<(60 * 6) { body.update(dt: 1.0 / 60, world: world) }
-
-        d.legL = 20; d.legR = 45          // a new, stronger asymmetry
-        body.setDrives(d)
-        for _ in 0..<30 { body.update(dt: 1.0 / 60, world: world) }
-
-        let degPerSec = abs(body.pose.yawRate) * 180 / .pi
-        XCTAssertGreaterThan(degPerSec, 5, "steering no longer responds")
-    }
-
     /// Walking is bounded by the measured preferred speed, ~25 mm/s
     /// (Mendes et al. 2013), so our 30 mm/s ceiling must actually bind.
     func testWalkSpeedStaysBelowThirtyMillimetresPerSecond() {
@@ -271,6 +230,302 @@ final class FlightPhysicsTests: XCTestCase {
 
         XCTAssertFalse(length(body.pose.position).isNaN)
         XCTAssertLessThanOrEqual(abs(body.pose.position.x), world.bounds + 0.01)
+    }
+
+    // MARK: - round 5: the sign of a turn (T1)
+
+    /// A stronger left wing yaws the fly toward the WEAKER side — a real fly
+    /// turns away from the harder-beating wing (Fry et al. 2003; the drag on
+    /// the stronger wing pushes that shoulder back). The flight branch used
+    /// to have this inverted (H1): left wing stronger turned LEFT.
+    func testYawSignStrongerWingTurnsTowardWeakerSide() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.5, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 126; d.wingPowerR = 126      // +5%: a real hover
+        body.setDrives(d)                           // command, reference adapts
+        for _ in 0..<(60 * 6) { body.update(dt: 1.0 / 60, world: world) }
+        XCTAssertFalse(body.grounded, "setup did not reach a hover")
+
+        d.wingPowerL = 164; d.wingPowerR = 88       // +30%/-30%: left stronger
+        body.setDrives(d)
+        let h0 = body.pose.heading
+        for _ in 0..<30 { body.update(dt: 1.0 / 60, world: world) }
+        let dh = body.pose.heading - h0
+        XCTAssertGreaterThan(dh, 0,
+                             "stronger left wing turned the wrong way (right expected)")
+    }
+
+    /// ...and the walking decode must agree with flight: faster RIGHT legs
+    /// turn the animal LEFT, the differential-drive sign.
+    func testYawSignWalkingAgreesWithFlight() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.0125, 0))
+        var d = FlyDrives()
+        d.legL = 90; d.legR = 150                   // right legs faster
+        body.setDrives(d)
+        let h0 = body.pose.heading
+        for _ in 0..<60 { body.update(dt: 1.0 / 60, world: world) }
+        XCTAssertLessThan(body.pose.heading - h0, 0,
+                          "faster right legs turned the wrong way (left expected)")
+    }
+
+    // MARK: - round 5: gain, not bang-bang (T2)
+
+    /// iid ±10% left/right wing noise must not spin the animal. One spike in
+    /// a 12-neuron wing group reads as 5.2 Hz through the engine EMA; the
+    /// opponent decode plus the muscle low-pass keep that counting noise
+    /// under the 200 deg/s bar instead of slamming the yaw clamp.
+    func testYawNoiseFloorUnderNoisyDrive() {
+        let rng = SeededGenerator(seed: 11)
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.5, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 126; d.wingPowerR = 126
+        body.setDrives(d)
+        for _ in 0..<(60 * 4) { body.update(dt: 1.0 / 60, world: world) }
+
+        var sq: Float = 0
+        var n = 0
+        for _ in 0..<(60 * 3) {
+            let base = body.referenceRate * 1.05
+            d.wingPowerL = base * (1 + rng.gaussian() * 0.10)
+            d.wingPowerR = base * (1 + rng.gaussian() * 0.10)
+            body.setDrives(d)
+            body.update(dt: 1.0 / 60, world: world)
+            sq += body.pose.yawRate * body.pose.yawRate
+            n += 1
+        }
+        let rms = sqrt(sq / Float(n)) * 180 / .pi
+        XCTAssertLessThan(rms, 200, "spike-counting noise spins the fly")
+        XCTAssertFalse(body.grounded, "the noisy hover fell out of the air")
+    }
+
+    /// ...while a REAL asymmetric command still yanks: a 60% left/right step
+    /// peaks above 800 deg/s (measured body saccades run to ~1600, Fry et al.
+    /// 2003), and the spin STOPS when the command goes symmetric again.
+    func testSixtyPercentStepYanksAndStops() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.5, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 126; d.wingPowerR = 126
+        body.setDrives(d)
+        for _ in 0..<(60 * 4) { body.update(dt: 1.0 / 60, world: world) }
+
+        let base = body.referenceRate * 1.05
+        var peak: Float = 0
+        for _ in 0..<60 {
+            d.wingPowerL = base * 1.3
+            d.wingPowerR = base * 0.7
+            body.setDrives(d)
+            body.update(dt: 1.0 / 60, world: world)
+            peak = max(peak, abs(body.pose.yawRate))
+        }
+        for _ in 0..<60 {
+            d.wingPowerL = base; d.wingPowerR = base
+            body.setDrives(d)
+            body.update(dt: 1.0 / 60, world: world)
+        }
+        let after = abs(body.pose.yawRate) * 180 / .pi
+        XCTAssertGreaterThan(peak * 180 / .pi, 800, "real command barely turns the fly")
+        XCTAssertLessThan(after, 100, "spin never stopped after the command ended")
+    }
+
+    // MARK: - round 5: one continuous dynamics model (T3)
+
+    /// No mode flicker: a noisy collective drive near hover, above the floor,
+    /// must not touch down once in 5 s. The old lift>0.98W mode switch sat on
+    /// a knife edge and flipped ~10x/s under 10% rate noise (H3). Contact is
+    /// now geometry — the collision solver — so there is nothing to flicker.
+    func testNoModeFlickerUnderNoisyHover() {
+        let rng = SeededGenerator(seed: 7)
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.5, 0))
+        var d = FlyDrives()
+        d.wingPowerL = 126; d.wingPowerR = 126
+        body.setDrives(d)
+        for _ in 0..<(60 * 4) { body.update(dt: 1.0 / 60, world: world) }
+
+        var touchdowns = 0
+        for _ in 0..<(60 * 5) {
+            let base = body.referenceRate * 1.05
+            d.wingPowerL = base * (1 + rng.gaussian() * 0.10)
+            d.wingPowerR = base * (1 + rng.gaussian() * 0.10)
+            body.setDrives(d)
+            body.update(dt: 1.0 / 60, world: world)
+            if body.grounded { touchdowns += 1 }
+        }
+        XCTAssertEqual(touchdowns, 0, "noisy hover touched down")
+        XCTAssertGreaterThan(body.pose.position.y, 0.1, "noisy hover sank")
+    }
+
+    /// ...and the converse: a wingless fly standing on the floor must never
+    /// lift off. The old walking branch had no ground check and applied
+    /// 2%-gravity "hovering" forever; contact now comes from the floor.
+    func testGroundedFlyWithoutWingDriveNeverLiftsOff() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.0125, 0))
+        var d = FlyDrives()
+        d.legL = 60; d.legR = 60                    // wings silent
+        body.setDrives(d)
+        var liftoffs = 0
+        for _ in 0..<(60 * 5) {
+            body.update(dt: 1.0 / 60, world: world)
+            if !body.grounded { liftoffs += 1 }
+        }
+        XCTAssertEqual(liftoffs, 0, "wingless fly left the floor")
+        XCTAssertLessThan(body.pose.airborne, 0.1, "animation says airborne")
+    }
+
+    // MARK: - round 5: the stance foot must not skate (T4)
+
+    /// During stance the planted foot's body-frame fore-aft velocity must
+    /// equal -v (no skating): the gait amplitude AND its inverse-map knots
+    /// are derived from the body's own stride through the CT model's FK
+    /// (tools/gait_geometry.py). Needs the Metal-backed FlyModel, so it
+    /// skips where there is no GPU; simcheck.py check 19 is the same test
+    /// and runs everywhere.
+    func testStanceFootDoesNotSkate() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("FlyModel needs a Metal device; simcheck.py owns this check headlessly")
+        }
+        let model = try FlyModel(device: device)
+        let world = World()
+        let body = FlyBody()
+        body.attach(model: model)
+        body.reset(at: SIMD3<Float>(0, 0.0125, 0))
+        var d = FlyDrives()
+        d.legL = 120; d.legR = 120
+        body.setDrives(d)
+        for _ in 0..<(60 * 3) { body.update(dt: 1.0 / 60, world: world) }
+
+        guard let pi = model.partIndex["tarsus_T3_left"] else {
+            return XCTFail("tarsus_T3_left missing from the model")
+        }
+        let part = model.parts[pi]
+        let verts = model.vertexBuffer.contents()
+            .bindMemory(to: Float.self, capacity: Int(part.vertexCount) * 6)
+
+        // Fixed material point: the tarsus tip, chosen ONCE as the vertex
+        // farthest from the thorax origin in the assembled walking pose.
+        var mats = [float4x4]()
+        model.solve(angles: body.jointAngles, root: float4x4.identity, into: &mats)
+        let M0 = mats[pi]
+        var vert = 0
+        var best: Float = -1
+        for k in 0..<Int(part.vertexCount) {
+            let v = SIMD3<Float>(verts[k * 6], verts[k * 6 + 1], verts[k * 6 + 2])
+            let w = M0 * SIMD4<Float>(v, 1)
+            let n = w.x * w.x + w.y * w.y + w.z * w.z
+            if n > best { best = n; vert = k }
+        }
+        let tip = SIMD3<Float>(verts[vert * 6], verts[vert * 6 + 1], verts[vert * 6 + 2])
+
+        func footX() -> Float {
+            model.solve(angles: body.jointAngles, root: float4x4.identity, into: &mats)
+            let w = mats[pi] * SIMD4<Float>(tip, 1)
+            return w.x * 10                        // world units (cm) -> mm
+        }
+
+        var samples: [Float] = []
+        var prevX: Float?
+        var prevU: Float?
+        let dt: Float = 1.0 / 60
+        for _ in 0..<(60 * 2) {
+            body.update(dt: dt, world: world)
+            // T3-left is tripod group 0: u = gaitPhase / 2 pi
+            var u = body.pose.gaitPhase / (2 * .pi)
+            u -= floor(u)
+            let x = footX()
+            // Mid-stance only, and only across frames of the SAME stance
+            // phase: at 13 Hz / 60 fps a frame can straddle the swing->
+            // stance transition, where the finite difference would mix
+            // airborne swing with planted stance.
+            if let px = prevX, let pu = prevU, 0.05 < u, u < 0.5, pu < u {
+                let vfoot = (x - px) / dt                    // mm/s
+                let vbody = length(body.pose.velocity) * 10  // cm/s -> mm/s
+                samples.append(vfoot / vbody)
+            }
+            prevX = x; prevU = u
+        }
+        XCTAssertGreaterThan(samples.count, 20, "no mid-stance samples")
+        let rel = samples.map { abs($0 + 1) }.reduce(0, +) / Float(samples.count)
+        XCTAssertLessThan(rel, 0.25, "stance foot skates: mean |v_foot/v_body + 1| = \(rel)")
+    }
+
+    // MARK: - round 5: the giant fibre escape
+
+    /// A rising edge of the TT-motoneuron rate through the one-spike-per-
+    /// frame level launches the escape ONCE (0.9 m/s, Card & Dickinson
+    /// 2008), the 0.1 s refractory swallows the rattle of a continuing
+    /// burst, and an event in mid-air is counted (the signal is never
+    /// discarded) but has nothing to push against.
+    func testEscapeSpikeLaunchesOnceWithRefractory() {
+        let world = World()
+        let body = FlyBody()
+        body.reset(at: SIMD3<Float>(0, 0.0125, 0))
+        body.setDrives(FlyDrives())
+        body.update(dt: 1.0 / 60, world: world)
+        XCTAssertTrue(body.grounded, "setup: fly is not on the floor")
+
+        var d = FlyDrives()
+        d.jump = 31.25                    // one of the two TT neurons spiking
+        body.setDrives(d)
+        body.update(dt: 1.0 / 60, world: world)
+        XCTAssertEqual(body.jumpEvents, 1, "no launch on the spike event")
+        XCTAssertGreaterThan(body.pose.velocity.y, 80, "launch impulse missing")
+        XCTAssertFalse(body.grounded, "still glued to the floor")
+
+        body.update(dt: 1.0 / 60, world: world)   // still hot: no retrigger
+        body.update(dt: 1.0 / 60, world: world)
+        XCTAssertEqual(body.jumpEvents, 1, "retriggered while the drive stayed hot")
+
+        body.setDrives(FlyDrives())
+        body.update(dt: 1.0 / 60, world: world)
+        d.jump = 31.25
+        body.setDrives(d)                 // t = 0.067 s: inside the refractory
+        body.update(dt: 1.0 / 60, world: world)
+        XCTAssertEqual(body.jumpEvents, 1, "refractory did not swallow the rattle")
+
+        body.setDrives(FlyDrives())
+        for _ in 0..<2 {                  // cool down, stay airborne: the
+            body.update(dt: 1.0 / 60, world: world)   // measured 0.9 m/s
+        }                                 // jump lands again at ~0.25 s
+        d.jump = 31.25
+        body.setDrives(d)                 // t = 0.15 s: past the refractory
+        let vyBefore = body.pose.velocity.y
+        body.update(dt: 1.0 / 60, world: world)
+        XCTAssertEqual(body.jumpEvents, 2, "mid-air event was discarded")
+        XCTAssertLessThan(body.pose.velocity.y, vyBefore + 1.0,
+                          "mid-air event fired the impulse again")
+    }
+}
+
+/// Deterministic gaussian noise for the drive-noise tests (Box-Muller over a
+/// splitmix64 stream), so a flicker regression fails reproducibly.
+final class SeededGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed &+ 0x9E3779B97F4A7C15 }
+
+    func uniform() -> Double {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        z ^= z >> 31
+        return Double(z >> 11) / Double(1 << 53)
+    }
+
+    func gaussian() -> Float {
+        let u1 = max(uniform(), 1e-12)
+        let u2 = uniform()
+        return Float(sqrt(-2 * log(u1)) * cos(2 * .pi * u2))
     }
 }
 
@@ -359,149 +614,5 @@ final class WorldContainmentTests: XCTestCase {
         let ratio = lift / (FlyMorphology.mass * FlyMorphology.gravity)
         XCTAssertEqual(ratio, 1.0, accuracy: 0.05,
                        "trim never re-caught the climb command")
-    }
-
-    // MARK: - ethology: the habits layer
-
-    /// Real walking is bout-structured: walk/stop transitions behave like
-    /// Poisson events (Demir et al. 2020, eLife 5:e57524: baseline walk
-    /// initiation ~0.29/s, stops at least 300 ms). A fly that walked without
-    /// ever stopping would not be a fly.
-    func testWalkBoutsAlternateWithStops() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        var d = FlyDrives()
-        d.legL = 60; d.legR = 60
-        body.setDrives(d)
-
-        // Durations are counted in whole frames: subtracting two Float32
-        // timestamps can read 0.2999878 s for an exact 18-frame stop.
-        var walkFrames: [Int] = []
-        var stopFrames: [Int] = []
-        var current = body.habit
-        var start = 0
-        for i in 0..<(60 * 300) {
-            body.update(dt: 1.0 / 60, world: world)
-            if body.habit != current {
-                switch current {
-                case .walk:  walkFrames.append(i - start)
-                case .stop:  stopFrames.append(i - start)
-                case .groom: break
-                }
-                current = body.habit
-                start = i
-            }
-        }
-        XCTAssertFalse(walkFrames.isEmpty, "the fly never walked")
-        XCTAssertFalse(stopFrames.isEmpty, "the fly never stopped")
-        let meanWalk = Float(walkFrames.reduce(0, +)) / Float(walkFrames.count) / 60
-        XCTAssertGreaterThan(meanWalk, 1.5, "walk bouts shorter than measured")
-        XCTAssertLessThan(meanWalk, 5.0, "walk bouts longer than measured")
-        let minStop = Float(stopFrames.min() ?? 0) / 60
-        XCTAssertGreaterThanOrEqual(minStop, 0.3,
-                                    "stop shorter than the 300 ms floor")
-    }
-
-    /// Grooming occupies ~13% of waking time (Lazopulo & Syed 2018, eLife
-    /// 7:e34497), in bouts of a few tenths of a second to a couple of
-    /// seconds sweeping anterior-to-posterior (Seeds et al. 2014; Ray et al.
-    /// 2019). The layer is deterministic, so this share is exact.
-    func testGroomingOccupiesAboutThirteenPercentOfActiveTime() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        var d = FlyDrives()
-        d.legL = 60; d.legR = 60
-        body.setDrives(d)
-
-        var groomFrames = 0
-        var totalFrames = 0
-        for _ in 0..<(60 * 300) {
-            body.update(dt: 1.0 / 60, world: world)
-            totalFrames += 1
-            if body.habit == .groom { groomFrames += 1 }
-        }
-        let share = Float(groomFrames) / Float(totalFrames)
-        XCTAssertGreaterThan(share, 0.08, "fly almost never grooms")
-        XCTAssertLessThan(share, 0.20, "fly grooms far more than measured")
-    }
-
-    // MARK: - endogenous arousal
-
-    /// Vigour is not constant: spontaneous walking/flight drifts through
-    /// arousal states over tens of seconds (Cohn et al. 2019, Cell 176:254;
-    /// brain-wide imaging Nat Commun 2023, 14:5420 — arousal-like time
-    /// constants from <4 s to >20 s). The fly's own arousal must therefore
-    /// move on its own, stay bounded, and stay slow (an Ornstein-Uhlenbeck
-    /// process, not per-frame white noise).
-    func testArousalDriftsSpontaneouslyAndStaysBounded() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        var d = FlyDrives()
-        d.legL = 60; d.legR = 60
-        body.setDrives(d)
-
-        var samples: [Float] = []
-        samples.reserveCapacity(60 * 300)
-        for _ in 0..<(60 * 300) {
-            body.update(dt: 1.0 / 60, world: world)
-            samples.append(body.arousal)
-        }
-        let lo = samples.min() ?? 0
-        let hi = samples.max() ?? 0
-        let mean = samples.reduce(0, +) / Float(samples.count)
-        // Slow: a one-second lag difference must stay far smaller than the
-        // full drift range (white noise would jump the whole range per frame).
-        var maxOneSecJump: Float = 0
-        for i in 0..<(samples.count - 60) {
-            maxOneSecJump = max(maxOneSecJump, abs(samples[i + 60] - samples[i]))
-        }
-        XCTAssertGreaterThanOrEqual(lo, 0.5, "arousal left its physiological floor")
-        XCTAssertLessThanOrEqual(hi, 1.5, "arousal left its physiological ceiling")
-        XCTAssertGreaterThan(hi - lo, 0.1, "arousal never moved on its own")
-        XCTAssertEqual(mean, 1.0, accuracy: 0.25, "arousal drifts away from its mean")
-        XCTAssertLessThan(maxOneSecJump, 0.9, "arousal jumps like white noise")
-    }
-
-    /// Aroused walking must come out in longer bouts: the walk timer is
-    /// scaled by arousal, the state term that closes the measured walk/stop
-    /// statistics (Demir et al. 2020). Zero leg drive on purpose — the habit
-    /// machine is drive-independent, and a walking fly would bump scenery,
-    /// and bump-evoked grooming would truncate the bouts.
-    func testArousalStretchesWalkBouts() {
-        let world = World()
-        let body = FlyBody()
-        body.reset(at: SIMD3<Float>(0, 0.02, 0))
-        body.setDrives(FlyDrives())
-
-        var boutArousal: [Float] = []
-        var boutLength: [Float] = []
-        var current = body.habit
-        var start = 0
-        var startArousal = body.arousal
-        for i in 0..<(60 * 300) {
-            body.update(dt: 1.0 / 60, world: world)
-            if body.habit != current {
-                if current == .walk {
-                    boutArousal.append(startArousal)
-                    boutLength.append(Float(i - start) / 60)
-                }
-                current = body.habit
-                start = i
-                startArousal = body.arousal
-            }
-        }
-        XCTAssertGreaterThan(boutArousal.count, 20, "too few walk bouts to fit")
-        let ma = boutArousal.reduce(0, +) / Float(boutArousal.count)
-        let mb = boutLength.reduce(0, +) / Float(boutLength.count)
-        var cov: Float = 0, va: Float = 0
-        for (a, l) in zip(boutArousal, boutLength) {
-            cov += (a - ma) * (l - mb)
-            va += (a - ma) * (a - ma)
-        }
-        let slope = va > 0 ? cov / va : 0
-        XCTAssertGreaterThan(slope, 0, "arousal does not lengthen walk bouts")
     }
 }

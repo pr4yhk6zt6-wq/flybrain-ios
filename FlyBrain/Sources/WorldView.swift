@@ -272,16 +272,18 @@ struct WorldView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 11) {
                 stat("FPS", String(format: "%.0f", world.fps))
-                stat(world.pose.airborne > 0.5 ? "FLIGHT"
-                         : (world.habit == 2 ? "GROOM"
-                         : world.habit == 1 ? "STOP" : "WALK"),
+                // Stance comes from the collision solver; speed from the pose.
+                stat(world.grounded ? "GROUND" : "AIR",
                      String(format: "%.0f mm/s", world.speed * 10))
                 // Measured quasi-steady lift against measured body weight.
                 stat("LIFT/W", String(format: "%.2f",
                                       world.weightUN > 0 ? world.liftUN / world.weightUN : 0))
                 stat("STROKE", String(format: "%.0f°", world.strokeAmplitudeDeg))
                 stat("YAW", String(format: "%.0f°/s", world.yawRateDegPerSec))
-                stat("AROUSAL", String(format: "%.2f", world.arousal))
+                // Giant-fibre escape launches; flashes for half a second
+                // after each one so a take-off is visible in the HUD.
+                stat("ESCAPE", world.secondsSinceJump < 0.5
+                     ? "JUMP!" : String(world.jumpEvents))
                 stat("ODOUR", String(format: "%.2f", world.odourStrength))
             }
             // The motor channels actually steering the animal.
