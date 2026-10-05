@@ -426,6 +426,15 @@ jobs:
             exit 1
           fi
 
+      # Item 4 is the walking circuits, and it has a substrate in the dataset:
+      # 788 cells in BANC v888 synapse onto the motor pools of more than one
+      # leg (69,543 synapses into them), while the sense organs' own route to
+      # the pools is 85:1 private to the leg it serves (this same tool's first
+      # section). A gait built on the cord therefore needs those cells to still
+      # be there in the packed binary — this is the gate that says so.
+      - name: Step 6 — the connectome must couple the legs beyond the sense organs
+        run: python3 tools/coupling_probe.py --structural-only --require-coupling
+
       - name: Step 6 — the motor pools must be in the connectome
         run: python3 tools/verify_pools.py
 
