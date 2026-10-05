@@ -264,53 +264,10 @@ struct WorldContainer: View {
 
 // MARK: - The screen
 
-/// What a floating pane is allowed to occupy, in the screen's own coordinates:
-/// x within its own half, y between the two bars. Values rather than a closure,
-/// so a pane can notice when the box changes — a rotation, or a text-size change
-/// that grows a bar — and put itself back inside it.
-struct PaneBand: Equatable {
-    var halfWidth: CGFloat
-    var edge: CGFloat
-    var top: CGFloat
-    var bottom: CGFloat
-
-    func clamp(_ o: CGSize, side: Double) -> CGSize {
-        // `side < 0` is the left pane: its right edge stops at the middle, so
-        // the two panes cannot be dragged onto each other either.
-        let x = side < 0 ? min(-edge, max(-halfWidth, o.width))
-                         : max(edge, min(halfWidth, o.width))
-        let y = bottom > top ? min(bottom, max(top, o.height)) : o.height
-        return CGSize(width: x, height: y)
-    }
-}
-
-/// The height of whichever bar is reporting, so the panes can stay clear of
-/// both without either of them guessing how tall the other is.
-struct BarHeight: Equatable {
-    var top: CGFloat = 0
-    var bottom: CGFloat = 0
-}
-
-struct BarHeightKey: PreferenceKey {
-    static let defaultValue = BarHeight()
-    static func reduce(value: inout BarHeight, nextValue: () -> BarHeight) {
-        let n = nextValue()
-        value = BarHeight(top: max(value.top, n.top),
-                          bottom: max(value.bottom, n.bottom))
-    }
-}
-
-extension View {
-    /// Report this view's height as the top or the bottom bar's.
-    func reportBarHeight(top: Bool) -> some View {
-        background(GeometryReader { g in
-            Color.clear.preference(key: BarHeightKey.self,
-                                   value: BarHeight(top: top ? g.size.height : 0,
-                                                    bottom: top ? 0 : g.size.height))
-        })
-    }
-}
-
+/// `PaneBand`, `BarHeight` and the height-reporting preference live in
+/// LayoutBand.swift: the Map screen floats a window over the same two bars, and
+/// the two screens clamp their floating windows the same way rather than each
+/// keeping its own guess.
 struct WorldScreen: View {
     @StateObject private var model: WorldModel
     @State private var leftOffset = CGSize(width: -104, height: 120)
@@ -341,13 +298,10 @@ struct WorldScreen: View {
     /// overlap each other — and both are confined vertically to the gap
     /// between the bars, which is measured from the bars themselves.
     private func band(_ size: CGSize) -> PaneBand {
-        let edge = WorldScreen.paneSize.width / 2
-        let gap = WorldScreen.paneSize.height / 2 + WorldScreen.paneGap
-        return PaneBand(
-            halfWidth: max(edge, size.width / 2 - edge - 14),
-            edge: edge,
-            top: -size.height / 2 + bars.top + gap,
-            bottom: size.height / 2 - bars.bottom - gap)
+        PaneBand.between(bars: bars, within: size,
+                         pane: WorldScreen.paneSize,
+                         gap: WorldScreen.paneGap,
+                         split: true)
     }
 
     var body: some View {
@@ -576,21 +530,19 @@ struct WorldHUD: View {
     @ObservedObject var model: WorldModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("the fly, running here")
+        VStack(alignment: .leading, spacing: 2) {
+            Text("the fly, running on this phone")
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
+            line(String(format: "feet %d/6 · COM z %+.4f cm · %d contacts",
+                        model.live.feetDown, model.live.centreHeight,
+                        model.live.contacts))
             line("\(model.world.meshCount) meshes · "
-                 + "\(model.world.faceCount) triangles")
-            line("103 bodies · 102 joints · 74 contact geoms")
-            Text(String(format: "feet down %d/6 · contacts %d · COM z %+.4f cm",
-                        model.live.feetDown, model.live.contacts,
-                        model.live.centreHeight))
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(String(format: "tone only: %d of 102 joints · the cord is next",
-                        model.live.posture.filter { abs($0) > 1e-9 }.count))
+                 + "\(model.world.faceCount) triangles · 102 joints")
+            // Said plainly, because it is the difference between an animal and
+            // a statue: the muscles are holding a stance, and the cord is what
+            // will move it.
+            Text("muscle tone only — the cord is next")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

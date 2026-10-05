@@ -46,6 +46,11 @@ struct FloatingCameraWindow: View {
     let retinalDrive: Float
     let framesDelivered: Int
     let meanLuminance: Float
+    /// Where this window is allowed to be: the gap between the readouts at the
+    /// top and the controls at the bottom, measured from the bars themselves by
+    /// the screen that owns it (LayoutBand.swift). A window clamped with a
+    /// guessed inset can be dropped onto a button, which is what it used to do.
+    let band: PaneBand
     let onClose: () -> Void
 
     /// Persisted across launches so the window reappears where it was left.
@@ -154,21 +159,27 @@ struct FloatingCameraWindow: View {
                     storedY += value.translation.height
                     dragOffset = .zero
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                        clampToScreen()
+                        clampToBand()
                     }
                 }
         )
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDragging)
+        .onAppear { clampToBand() }
+        // The band moves when a bar grows — a rotation, a larger text size, a
+        // longer readout — and a window outside its band puts itself back.
+        .onChange(of: band) { _ in clampToBand() }
     }
 
-    /// Keep the window on screen after a fling.
-    private func clampToScreen() {
-        let bounds = UIScreen.main.bounds
-        let halfW = size.width / 2
-        let maxX = bounds.width / 2 - halfW - 8
-        let maxY = bounds.height / 2 - size.height / 2 - 100
-        storedX = min(max(storedX, -maxX), maxX)
-        storedY = min(max(storedY, -maxY), maxY)
+    /// Keep the window in the gap between the two bars, whatever the screen.
+    ///
+    /// This replaces a clamp against `UIScreen.main.bounds` with a fixed
+    /// 100-point allowance for the controls, which was right on one phone and
+    /// let the window cover the readouts or the buttons on every other.
+    private func clampToBand() {
+        let p = band.clamp(CGSize(width: CGFloat(storedX),
+                                  height: CGFloat(storedY)))
+        storedX = Double(p.width)
+        storedY = Double(p.height)
     }
 }
 
