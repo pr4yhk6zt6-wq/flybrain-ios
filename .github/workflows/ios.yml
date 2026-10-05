@@ -102,14 +102,16 @@ jobs:
         run: python3 tools/step1_sim.py --seconds 3.0 --json reports/step1_stand.json
 
       # ------------------------------------------------------ step 2: reflex
-      # Report-only on purpose. The probe found a NEGATIVE result — driving the
-      # chordotonal organ does not move the tibia pools — and a negative result
-      # is a finding, not a build failure. The step fails only if the tool
-      # itself crashes or the connectome stops containing the pathway.
+      # The exact command docs/STEP2.md documents, so CI reproduces the numbers
+      # the write-up quotes. The probe is report-only on the reflex DIRECTION —
+      # that is state-dependent in the real animal too, and step 2 reports the
+      # condition under which it flips rather than hiding it. It fails the build
+      # only if the connectome stops containing the pathway, or if the corrected
+      # sign regresses to the old, wrong one.
       - name: Step 2 — the leg reflex, out of the connectome
         run: |
           python3 tools/step2_legcircuit.py --leg front_leg --side left --hops 3
-          python3 tools/step2_reflex.py --leg front_leg --side left --ms 800
+          python3 tools/step2_reflex.py --leg front_leg --side left --ms 700 --desc 2.5 --stim 3.0
 
       - name: Step 2 — the pathway must be present in the connectome
         run: |
@@ -124,6 +126,20 @@ jobs:
                r['disynaptic'].get('tibia flexor', {}).get('arcs', 0) > 0),
               ('the tibia routes are reached through interneurons',
                r['disynaptic'].get('tibia flexor', {}).get('interneurons', 0) > 0),
+              # the bug behind commit 7b22dd1: the table was computed against
+              # the wrong neurons and came out positive. Guard the corrected sign.
+              ('the tibia flexor pathway is net inhibitory (corrected sign)',
+               r['disynaptic']['tibia flexor']['net_weight'] < -20000),
+              # published anatomy, reproduced in the connectome (docs/STEP2.md §2)
+              ('no direct chordotonal path to a tibia motor neuron (Azevedo 2020)',
+               r['monosynaptic']['chordotonal']['tibia flexor']['arcs'] == 0),
+              ('a direct campaniform path to the flexor (Phelps 2021)',
+               r['monosynaptic']['campaniform']['tibia flexor']['arcs'] >= 1),
+              # the failure this step fixed: the network used to be silent
+              ('the standing fly has an active nerve cord',
+               r['runs']['standing']['_population_hz'] > 1.0),
+              ('the answer is reported across scales, not at one',
+               len(r['scale_sweep']) >= 2 and 'control_sign_shuffled' in r),
           ]
           ok = True
           for label, cond in checks:
