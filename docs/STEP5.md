@@ -94,6 +94,23 @@ time for it to stay standing. It is not yet *behaving*: the excitation offset
 per joint comes from `FlyLiveBody.drive`, which is where the cord goes next, and
 until then the HUD says so rather than implying otherwise.
 
+The app's own start-up was reproduced step for step in Python before it was
+believed (`tmp/app_start.py`): `startUp()` runs 20 ms at a tenth of the step and
+then hands the animal to `advance()`, which steps at the model's own timestep
+with the tone alone and *no* servo — and the animal stands. Measured: after
+`startUp()` the pose sits 0.0003 rad from the stance with six feet down, and
+400 ms of free running at dt = 1e-4 leaves COM z at −0.02307 cm with the floor
+carrying 0.9998 of the weight, 6 of 6 feet down, and no joint more than 0.001 rad
+from the stance. The tone alone is enough because the tone *is* the measured
+stance excitation; the servo only has to make the first 20 ms hit the stance
+instead of overshooting it.
+
+This matters because the start-up is also where a renderer can be mistaken for
+physics: the app that was on the phone until this commit never ran any of this —
+it was built from before the Map screen was rewired, so it played the recorded
+world back, and a recorded fly standing still with its wings moving is
+indistinguishable from a video. It is the *build* that was the video.
+
 Two honest gaps, both declared rather than hidden:
 
 * **The stance servo is a test harness.** Nothing in the app holds a pose; the
@@ -114,3 +131,4 @@ Two honest gaps, both declared rather than hidden:
 | `tools/pack_body.py` | puts the asset into the app bundle, and refuses a half-written one |
 | `FlyBrain/Sources/FlyDynamics.swift` | the port; `FlyDynamicsTests` pins it to the golden trace |
 | `FlyBrain/Sources/FlyLiveBody.swift` | the real-time loop and the nerve-cord hook |
+| `tmp/app_start.py` | the app's own start-up, reproduced in Python and measured |

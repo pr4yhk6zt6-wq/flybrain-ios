@@ -11,8 +11,12 @@
 //  anywhere on screen.
 //
 //  There is no gait here, no schedule and no clock in the controller. The
-//  animal fell over and lay on its side for the last 26 ms of the
-//  recording, and this plays that back as it happened.
+//  screen advances `FlyLiveBody` — the solver in FlyDynamics, on this device,
+//  with the floor under it and gravity through it — and poses the meshes from
+//  the state that produces. Nothing here is a recording and nothing here
+//  decides a step: the posture comes from the animal's own muscle tone, and
+//  the behaviour, when it comes, will come from the nerve cord through
+//  `FlyLiveBody.drive`.
 //
 
 import SwiftUI
@@ -126,7 +130,7 @@ final class WorldRig {
 
 // MARK: - Playback
 
-/// Owns the recording and the clock that plays it.
+/// Owns the world and the clock that advances the animal in it.
 final class WorldModel: ObservableObject {
     /// Running, or paused mid-stance.
     @Published var running: Bool = true
@@ -207,7 +211,10 @@ final class WorldModel: ObservableObject {
 /// world to the screen.
 struct WorldContainer: View {
     @State private var world: FlyWorld?
-    @State private var body: FlyLiveBody?
+    /// The animal. Not called `body`: `View` already has one of those, and a
+    /// stored property wins the redeclaration before the computed `body` ever
+    /// gets a chance — which is a build failure, not a shadowing warning.
+    @State private var animal: FlyLiveBody?
     @State private var message: String?
     @State private var started = false
     @State private var stage = "reading the model"
@@ -215,7 +222,7 @@ struct WorldContainer: View {
 
     var body: some View {
         Group {
-            if let w = world, let b = body {
+            if let w = world, let b = animal {
                 WorldScreen(world: w, live: b, onClose: onClose)
             } else if let m = message {
                 WorldUnavailableView(message: m, onClose: onClose)
@@ -247,7 +254,7 @@ struct WorldContainer: View {
             switch r {
             case .success(let pair):
                 world = pair.0
-                body = pair.1
+                animal = pair.1
             case .failure(let e):
                 message = e.localizedDescription
             }
@@ -257,91 +264,152 @@ struct WorldContainer: View {
 
 // MARK: - The screen
 
+/// What a floating pane is allowed to occupy, in the screen's own coordinates:
+/// x within its own half, y between the two bars. Values rather than a closure,
+/// so a pane can notice when the box changes — a rotation, or a text-size change
+/// that grows a bar — and put itself back inside it.
+struct PaneBand: Equatable {
+    var halfWidth: CGFloat
+    var edge: CGFloat
+    var top: CGFloat
+    var bottom: CGFloat
+
+    func clamp(_ o: CGSize, side: Double) -> CGSize {
+        // `side < 0` is the left pane: its right edge stops at the middle, so
+        // the two panes cannot be dragged onto each other either.
+        let x = side < 0 ? min(-edge, max(-halfWidth, o.width))
+                         : max(edge, min(halfWidth, o.width))
+        let y = bottom > top ? min(bottom, max(top, o.height)) : o.height
+        return CGSize(width: x, height: y)
+    }
+}
+
+/// The height of whichever bar is reporting, so the panes can stay clear of
+/// both without either of them guessing how tall the other is.
+struct BarHeight: Equatable {
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
+}
+
+struct BarHeightKey: PreferenceKey {
+    static let defaultValue = BarHeight()
+    static func reduce(value: inout BarHeight, nextValue: () -> BarHeight) {
+        let n = nextValue()
+        value = BarHeight(top: max(value.top, n.top),
+                          bottom: max(value.bottom, n.bottom))
+    }
+}
+
+extension View {
+    /// Report this view's height as the top or the bottom bar's.
+    func reportBarHeight(top: Bool) -> some View {
+        background(GeometryReader { g in
+            Color.clear.preference(key: BarHeightKey.self,
+                                   value: BarHeight(top: top ? g.size.height : 0,
+                                                    bottom: top ? 0 : g.size.height))
+        })
+    }
+}
+
 struct WorldScreen: View {
     @StateObject private var model: WorldModel
-    @State private var leftOffset = CGSize(width: -110, height: -150)
-    @State private var rightOffset = CGSize(width: 110, height: -150)
+    @State private var leftOffset = CGSize(width: -104, height: 120)
+    @State private var rightOffset = CGSize(width: 104, height: 120)
     @State private var showPanes = true
+    /// Measured, not assumed: the bars report their own heights and the panes
+    /// are confined to the gap between them.
+    @State private var bars = BarHeight()
     let onClose: () -> Void
+
+    /// The floating panes are one size, fixed here and used by everything that
+    /// has to reason about where they fit.
+    private static let paneSize = CGSize(width: 134, height: 106)
+    private static let paneGap: CGFloat = 8
 
     init(world: FlyWorld, live: FlyLiveBody, onClose: @escaping () -> Void) {
         _model = StateObject(wrappedValue: WorldModel(world: world, live: live))
         self.onClose = onClose
     }
 
-    /// What a floating pane is allowed to occupy.
+    /// The box a pane may occupy, given the screen and the two bars.
     ///
-    /// The panes used to be free: they could be dragged onto each other, onto
-    /// the readouts at the top, or under the transport at the bottom, and the
-    /// result looked like a broken screen. Now each one is confined to its own
-    /// half — the left pane can never cross to the right of the middle, the
-    /// right pane can never cross to the left of it — and neither can reach
-    /// the 150 points at the top where the readouts and the buttons live, or
-    /// the 160 at the bottom where the transport does.
-    private func limit(_ size: CGSize, side: Double) -> (CGSize) -> CGSize {
-        let halfWidth = max(70.0, size.width / 2 - 78)
-        let top = -size.height / 2 + 150
-        let bottom = size.height / 2 - 160
-        return { o in
-            let x = side < 0 ? min(-8.0, max(-halfWidth, o.width))
-                             : max(8.0, min(halfWidth, o.width))
-            let y = bottom > top ? min(bottom, max(top, o.height)) : o.height
-            return CGSize(width: x, height: y)
-        }
+    /// The panes used to be free to go anywhere: they could be dragged onto
+    /// each other, onto the readouts at the top, or under the transport at the
+    /// bottom, and the result looked like a broken screen. Now each one is
+    /// confined to its own half — the left pane's right edge stops at the
+    /// middle and the right pane's left edge at the same line, so they cannot
+    /// overlap each other — and both are confined vertically to the gap
+    /// between the bars, which is measured from the bars themselves.
+    private func band(_ size: CGSize) -> PaneBand {
+        let edge = WorldScreen.paneSize.width / 2
+        let gap = WorldScreen.paneSize.height / 2 + WorldScreen.paneGap
+        return PaneBand(
+            halfWidth: max(edge, size.width / 2 - edge - 14),
+            edge: edge,
+            top: -size.height / 2 + bars.top + gap,
+            bottom: size.height / 2 - bars.bottom - gap)
     }
 
     var body: some View {
         GeometryReader { geo in
-        ZStack {
-            // The animal, which you can orbit and pinch.
-            WorldMainView(model: model)
-                .ignoresSafeArea()
-                .gesture(orbit)
-                .simultaneousGesture(pinch)
+            ZStack {
+                // The animal, which you can orbit and pinch.
+                WorldMainView(model: model)
+                    .ignoresSafeArea()
+                    .gesture(orbit)
+                    .simultaneousGesture(pinch)
 
-            VStack {
-                HStack(alignment: .top) {
-                    WorldHUD(model: model)
-                    Spacer()
-                    VStack(spacing: 10) {
-                        roundButton("xmark") { onClose() }
-                        roundButton(showPanes ? "rectangle.on.rectangle"
-                                              : "rectangle") {
-                            withAnimation(.spring(response: 0.35,
-                                                  dampingFraction: 0.8)) {
-                                showPanes.toggle()
-                            }
-                        }
+                VStack(spacing: 0) {
+                    topBar
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .reportBarHeight(top: true)
+
+                    Spacer(minLength: 8)
+
+                    WorldTransport(model: model)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 20)
+                        .reportBarHeight(top: false)
+                }
+
+                // The two flanking cameras, floating over the scene — each
+                // confined to its own half of the gap between the bars.
+                if showPanes {
+                    DraggablePane(offset: $leftOffset, title: "left eye",
+                                  band: band(geo.size), side: -1) {
+                        SideSceneView(scene: model.world.scene,
+                                      pointOfView: model.rig.left)
+                    }
+                    DraggablePane(offset: $rightOffset, title: "right eye",
+                                  band: band(geo.size), side: 1) {
+                        SideSceneView(scene: model.world.scene,
+                                      pointOfView: model.rig.right)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
-
-                Spacer(minLength: 8)
-
-                WorldTransport(model: model)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 24)
-            }
-
-            // The two flanking cameras, floating over everything — each
-            // confined to its own half by `limit`.
-            if showPanes {
-                DraggablePane(offset: $leftOffset, title: "left eye",
-                              limit: limit(geo.size, side: -1)) {
-                    SideSceneView(scene: model.world.scene,
-                                  pointOfView: model.rig.left)
-                }
-                DraggablePane(offset: $rightOffset, title: "right eye",
-                              limit: limit(geo.size, side: 1)) {
-                    SideSceneView(scene: model.world.scene,
-                                  pointOfView: model.rig.right)
-                }
             }
         }
-        }
+        .onPreferenceChange(BarHeightKey.self) { bars = $0 }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+    }
+
+    /// The readouts on the left, the two buttons on the right. They are one
+    /// row, so they cannot overlap each other; the readouts give way first when
+    /// the screen is narrow.
+    private var topBar: some View {
+        HStack(alignment: .top, spacing: 8) {
+            WorldHUD(model: model)
+            Spacer(minLength: 8)
+            VStack(spacing: 8) {
+                roundButton("xmark") { onClose() }
+                roundButton(showPanes ? "rectangle.on.rectangle" : "rectangle") {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        showPanes.toggle()
+                    }
+                }
+            }
+        }
     }
 
     private func roundButton(_ system: String,
@@ -433,21 +501,23 @@ struct WorldMainView: UIViewRepresentable {
 struct DraggablePane<Content: View>: View {
     @Binding var offset: CGSize
     let title: String
-    /// Where this pane is allowed to be. Nil means anywhere.
-    let limit: ((CGSize) -> CGSize)?
+    /// Where this pane is allowed to be, and which side of the middle it
+    /// belongs to.
+    let band: PaneBand
+    let side: Double
     let content: Content
     @State private var settled = CGSize.zero
 
-    init(offset: Binding<CGSize>, title: String,
-         limit: ((CGSize) -> CGSize)? = nil,
+    init(offset: Binding<CGSize>, title: String, band: PaneBand, side: Double,
          @ViewBuilder content: () -> Content) {
         _offset = offset
         self.title = title
-        self.limit = limit
+        self.band = band
+        self.side = side
         self.content = content()
     }
 
-    private func clamp(_ o: CGSize) -> CGSize { limit?(o) ?? o }
+    private func clamp(_ o: CGSize) -> CGSize { band.clamp(o, side: side) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -490,6 +560,13 @@ struct DraggablePane<Content: View>: View {
             offset = clamp(offset)
             settled = offset
         }
+        // The band changes when the bars do — a rotation, or a larger text
+        // size — and a pane sitting where the band used to be would be sitting
+        // on a readout. It goes back inside.
+        .onChange(of: band) { _ in
+            offset = clamp(offset)
+            settled = offset
+        }
     }
 }
 
@@ -502,27 +579,38 @@ struct WorldHUD: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("the fly, running here")
                 .font(.system(size: 12, weight: .semibold))
-            Text("the real model · \(model.world.meshCount) meshes · "
+                .lineLimit(1)
+            line("\(model.world.meshCount) meshes · "
                  + "\(model.world.faceCount) triangles")
-                .font(.system(size: 9))
-            Text("simulated on this device — 103 bodies, 102 joints, "
-                 + "74 contact geoms")
-                .font(.system(size: 9))
+            line("103 bodies · 102 joints · 74 contact geoms")
             Text(String(format: "feet down %d/6 · contacts %d · COM z %+.4f cm",
                         model.live.feetDown, model.live.contacts,
                         model.live.centreHeight))
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary)
-            Text(String(format: "muscle tone: posture only (%d of 102 joints) "
-                        + "· the cord is next",
+                .lineLimit(1)
+            Text(String(format: "tone only: %d of 102 joints · the cord is next",
                         model.live.posture.filter { abs($0) > 1e-9 }.count))
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
+        // The readouts give way before they push the buttons, and never
+        // overlap them: they are one row.
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .layoutPriority(1)
         .foregroundStyle(.primary)
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func line(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 }
 
@@ -530,7 +618,7 @@ struct WorldTransport: View {
     @ObservedObject var model: WorldModel
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
             HStack(spacing: 12) {
                 Button { model.running.toggle() } label: {
                     Image(systemName: model.running ? "pause.fill" : "play.fill")
@@ -540,33 +628,36 @@ struct WorldTransport: View {
 
                 Text(String(format: "%.1f s simulated", model.simulatedSeconds))
                     .font(.system(size: 11, design: .monospaced))
-                    .frame(minWidth: 104, alignment: .leading)
+                    .lineLimit(1)
 
                 Spacer(minLength: 4)
 
-                Text(String(format: "%d steps · %.2f ms each",
-                            model.live.stepCount, model.live.dt * 1000))
+                Text(String(format: "%.2f× real time", model.live.realtime))
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            HStack(spacing: 6) {
-                Text(String(format: "%.2f× real time on this device",
-                            model.live.realtime))
+            HStack(spacing: 8) {
+                Text(String(format: "%d steps · %.2f ms each",
+                            model.live.stepCount, model.live.dt * 1000))
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer(minLength: 4)
                 Text("drag to orbit · pinch to zoom")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+        .minimumScaleFactor(0.8)
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
-// MARK: - When the recording has not been made
+// MARK: - When the world has not been built yet
 
 struct WorldUnavailableView: View {
     let message: String
