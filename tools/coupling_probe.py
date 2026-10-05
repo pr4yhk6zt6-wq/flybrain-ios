@@ -244,6 +244,20 @@ def main() -> int:
 
     structural(c, organs_of, pools_of, present, c["N"])
     coupled = common_premotor(c, pools_of, present, c["N"])
+    if args.require_coupling:
+        # Two things have to be true of the *packed binary*, not of the dataset:
+        # the cells are there (the section above walks the packed CSR), and they
+        # are named, so the app can read their rate off the GPU like any other
+        # group. The first is the dataset's property; the second is ours, and it
+        # is the one a future edit to build_banc.py could quietly drop.
+        named = c["groups"].get("premotor:multileg")
+        if named is None:
+            print("\nFAIL the binary carries no 'premotor:multileg' group — the app "
+                  "cannot ask the GPU for the rate of the cells that couple the "
+                  "legs", file=sys.stderr)
+            return 1
+        print(f"\n  the binary names them too: premotor:multileg = "
+              f"{named['count']:,} cells")
     if args.structural_only:
         return 0 if (coupled == 0 or not args.require_coupling) else 1
     if args.require_coupling and coupled != 0:

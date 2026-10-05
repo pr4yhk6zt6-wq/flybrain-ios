@@ -377,6 +377,45 @@ for name, predicate in build_group_specs():
 group_indices = (np.concatenate(group_indices) if group_indices
                  else np.zeros(0, np.uint32))
 
+# ---- the cells that drive more than one leg's pools -------------------------
+# The sense organs' route to the motor pools is 85:1 private to the leg it
+# serves (tools/coupling_probe.py measures it), so a six-legged gait cannot come
+# from the organs: it has to come from cells that reach several legs' pools at
+# once. There are 788 of them in BANC v888 and they carry 69,543 synapses into
+# pool motor neurons — the substrate item 4 is built on. Finding them needs the
+# graph and not just the neuron table, which is why this group is defined here
+# rather than in motor_pools.py's predicates.
+#
+# The name says what it is: a *premotor* population, and it is deliberately not
+# under the `pool:` prefix, because the app's pool tally (`SimulationEngine.
+# poolSpikeSum`) counts exactly the `pool:` groups and this must not appear
+# inside it.
+LEG_OF_POOL = {}
+for g in group_table:
+    if g["name"].startswith("pool:"):
+        LEG_OF_POOL[g["name"]] = g["name"].split(":")[1]
+leg_ids = {leg: i for i, leg in enumerate(sorted(set(LEG_OF_POOL.values())))}
+pool_leg = np.full(N, -1, np.int16)
+for g in group_table:
+    if g["name"] in LEG_OF_POOL:
+        pool_leg[group_indices[g["start"]:g["start"] + g["count"]]] = \
+            leg_ids[LEG_OF_POOL[g["name"]]]
+post_leg = pool_leg[col_idx]
+onto_pool = post_leg >= 0
+if onto_pool.any():
+    # One key per (cell, leg) pair, so a cell that hits the same leg twice is
+    # one leg: the number this counts is the number of *legs* a cell reaches.
+    key = pre_s[onto_pool].astype(np.int64) * 16 + post_leg[onto_pool]
+    uniq = np.unique(key)
+    legs_reached = np.bincount((uniq // 16).astype(np.int64), minlength=N)
+    multi = np.flatnonzero(legs_reached >= 2).astype(np.uint32)
+    group_table.append({"name": "premotor:multileg", "start": cursor,
+                        "count": int(len(multi))})
+    group_indices = np.concatenate([group_indices, multi])
+    cursor += len(multi)
+    log(f"    {'premotor:multileg':<28} {len(multi):>6,} "
+        f"({int((legs_reached > 0).sum()):,} cells reach any pool)")
+
 # ---- retinotopic UV for the visual group, per hemisphere -------------------
 vis = next(g for g in group_table if g["name"] == "sensory_vision")
 vis_idx = group_indices[vis["start"]:vis["start"] + vis["count"]]
