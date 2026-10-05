@@ -79,6 +79,14 @@ name. The Map screen no longer reads `frames.bin` at all: the recording is
 optional in the build, and the transport bar shows simulated time, substep
 count, substep size and the measured real-time factor instead of a scrub slider.
 
+The stance the app starts from is measured by `tools/stand_body.py`, which
+stands the animal up *in this solver* (see `reports/step5_aba.md`): the MJCF
+stance is a stance for MuJoCo's soft contacts, and on a penalty floor the load
+divides differently — 0.42 of the weight on one claw instead of 0.23 — which is
+0.01 of torque on a 1e-6 g cm² joint, and enough to push the animal off the
+floor. The asset therefore carries `stance_q`, `stance_root_z` and the measured
+`stance_excitation`, and the app holds the posture the animal actually stands at.
+
 The animal's current drive is **muscle tone** — the excitation that holds the
 posture its own actuators were measured holding — so it stands, and the floor,
 the mass distribution and the joint springs all have to be right at the same
@@ -102,6 +110,7 @@ Two honest gaps, both declared rather than hidden:
 |---|---|
 | `tools/build_body.py` | writes `build/fly_body.json` + `build/fly_meshes.bin` from the flybody MJCF |
 | `tools/fly_aba.py` | the reference solver, the three checks, and the golden trace |
+| `tools/stand_body.py` | measures the stance by standing, in this solver, on this floor |
 | `tools/pack_body.py` | puts the asset into the app bundle, and refuses a half-written one |
 | `FlyBrain/Sources/FlyDynamics.swift` | the port; `FlyDynamicsTests` pins it to the golden trace |
 | `FlyBrain/Sources/FlyLiveBody.swift` | the real-time loop and the nerve-cord hook |

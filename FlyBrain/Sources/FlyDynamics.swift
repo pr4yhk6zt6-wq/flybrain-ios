@@ -435,6 +435,12 @@ struct FlyBodyAsset: Decodable {
     let legs: [String: Leg]
     let meshes: Meshes
     let stanceQ: [String: Double]
+    /// The excitation that holds the stance, measured by `tools/stand_body.py`
+    /// *by standing the animal up in this solver* — which is the only way to
+    /// get it right for this floor. Absent in an asset that has not been
+    /// through that tool, in which case `holdExcitation()` inverts the muscle
+    /// curve at the MJCF stance instead.
+    let stanceExcitation: [String: Double]?
 }
 
 extension FlyBodyAsset {
@@ -556,6 +562,8 @@ final class FlyDynamics {
     /// Against a 1e-6 g cm^2 joint inertia these are 0.4-0.8, and without
     /// them a leg is a free hinge on a 1e-6 pivot, which is not a leg.
     let stanceQ: [Double]
+    /// The measured stance excitation, or nil if the asset predates it.
+    let measuredStanceExcitation: [Double]?
 
     /// Which body carries which hinge (-1 for a welded link).
     private let jointOfBody: [Int]
@@ -684,6 +692,9 @@ final class FlyDynamics {
         }
 
         stanceQ = hinges.map { asset.stanceQ[$0.name] ?? 0 }
+        measuredStanceExcitation = asset.stanceExcitation.map { table in
+            hinges.map { table[$0.name] ?? 0 }
+        }
 
         var job = [Int](repeating: -1, count: nBody)
         var hob = [[Int]](repeating: [], count: nBody)
@@ -1124,6 +1135,7 @@ final class FlyDynamics {
     /// calibrated to hold, and everything it does on top of that comes out of
     /// the nerve cord.
     func holdExcitation() -> [Double] {
+        if let measured = measuredStanceExcitation { return measured }
         var out = [Double](repeating: 0, count: nj)
         for j in 0..<nj {
             let fl = exp(-pow((stanceQ[j] - optimal[j]) / (0.5 * span[j]), 2))

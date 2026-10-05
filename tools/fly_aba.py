@@ -291,6 +291,16 @@ class FlyBody:
                            for key, leg in self.legs.items()}
 
         self.stance_root_z = float(raw.get("stance_root_z", 0.0))
+        # The excitation that holds the stance, when the asset carries one:
+        # measured by tools/stand_body.py *by standing the animal up in this
+        # solver*, which is the only way to get it right for this floor. When
+        # it is absent, `hold_excitation` inverts the muscle curve at the
+        # MuJoCo stance instead — right to a few percent, and a few percent is
+        # 0.2 of a claw's load on a 1e-6 g cm^2 joint.
+        exc = raw.get("stance_excitation")
+        self.stance_excitation = (np.array([exc.get(j["name"], 0.0)
+                                            for j in hinges], float)
+                                  if exc else None)
 
     # -- kinematics --------------------------------------------------------
 
@@ -910,6 +920,8 @@ def hold_excitation(body):
     Inverting the curve here keeps the harness honest — a quarter of full
     excitation is not a physical number, it is a leftover.
     """
+    if getattr(body, "stance_excitation", None) is not None:
+        return body.stance_excitation.copy()
     fl = np.exp(-(((body.stance_q - body.optimal) / (0.5 * body.span)) ** 2))
     denom = np.where(body.max_torque * fl > 1e-12, body.max_torque * fl, 1e-12)
     # the passive spring is already pulling: the active part is what is left

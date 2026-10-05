@@ -312,6 +312,15 @@ jobs:
           python3 tools/build_body.py --flybody data/flybody \
             --out build/fly_body.json --meshes build/fly_meshes.bin
 
+      # The stance the phone uses is measured by *standing the animal up in the
+      # solver the phone runs*: build_body.py reads it off MuJoCo's soft
+      # contacts, and a stance is only a stance for the floor it was measured
+      # on. This rewrites stance_q, stance_root_z and the stance excitation in
+      # place, so everything after it — the checks, the golden trace, the app
+      # bundle — is measured against the same animal the app will run.
+      - name: Step 5 — measure the stance by standing in this solver
+        run: python3 tools/stand_body.py --body build/fly_body.json --ms 600
+
       - name: Step 5 — the solver against MuJoCo, and the animal standing
         run: |
           python3 tools/fly_aba.py --verify \
