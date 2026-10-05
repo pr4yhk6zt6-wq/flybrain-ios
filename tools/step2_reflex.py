@@ -76,21 +76,10 @@ ORGANS = {
     "hairplate":   {"position", "direction"},
 }
 
-POOLS = {
-    "tibia flexor":   {"tibia_flexor_muscle", "accessory_tibia_flexor_muscle"},
-    "tibia extensor": {"tibia_extensor_muscle"},
-    "trochanter flexor": {"trochanter_flexor_muscle",
-                          "accessory_trochanter_flexor_muscle"},
-    "trochanter extensor": {"trochanter_extensor_muscle",
-                            "tergotrochanter_extensor_muscle",
-                            "sternotrochanter_extensor_muscle"},
-    "coxa rotator ant":  {"sternal_anterior_rotator_muscle"},
-    "coxa rotator post": {"sternal_posterior_rotator_muscle"},
-    "femur reductor":    {"femur_reductor_muscle"},
-    "long tendon":       {"long_tendon_muscle"},
-    "tarsus depressor":  {"tarsus_depressor_muscle"},
-    "tarsus levator":    {"tarsus_levator_muscle"},
-}
+# The motor pools live in one file, because step 6 needs the same table on the
+# phone (tools/motor_pools.py). Re-exported here so every caller in this file
+# and in step 3 is reading the same object.
+from motor_pools import POOLS, POOL_JOINT, LEGS as POOL_LEGS   # noqa: E402
 
 PUBLISHED_LINEAGES = ["13B", "09A", "10B"]
 

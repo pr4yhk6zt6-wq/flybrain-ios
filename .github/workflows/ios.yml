@@ -380,6 +380,13 @@ jobs:
       # Everything above built the brain. This puts the body in: the app
       # bundle is only allowed to carry what existed when xcodegen ran, so
       # the recording has to be copied in first.
+      # Step 6 reads the motor pools out of the connectome as named groups, so
+      # the check they are actually in the built file belongs here, next to the
+      # build that puts them there -- not in the app, where a missing pool is
+      # an animal that does nothing.
+      - name: Step 6 — the motor pools must be in the connectome
+        run: python3 tools/verify_pools.py
+
       - name: Pack the recorded world into the app bundle
         run: |
           python3 tools/pack_world.py

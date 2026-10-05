@@ -78,6 +78,14 @@ NOT_NEURONS = {"glia", "not_a_neuron", "trachea"}
 
 # ---- the groups the virtual body actually reads -----------------------------
 # Each entry: (group name, predicate over the neuron table).
+# The motor pools, as groups. The app already reads named groups off the GPU
+# (`SimulationEngine.groupRate`), so giving it one group per pool means step 6
+# can ask the question it actually has -- "how fast is the pool that extends
+# this leg's tibia firing?" -- without new Metal code, and without the app
+# carrying its own copy of which neurons are in which pool.
+from motor_pools import pool_groups   # noqa: E402
+
+
 def build_group_specs():
     def fn(col, *values):
         vals = set(values)
@@ -152,6 +160,11 @@ def build_group_specs():
     specs.append(("descending", fn("super_class", "descending")))
     specs.append(("ascending",  fn("super_class", "ascending",
                                    "sensory_ascending")))
+    # --- the motor pools, per leg and side, as step 2 defined them ----------
+    # These are the groups a closed loop reads: each one is the set of motor
+    # neurons that innervates one muscle set on one leg, and the muscle set is
+    # what makes one joint move one way.
+    specs.extend(pool_groups())
     return specs
 
 
