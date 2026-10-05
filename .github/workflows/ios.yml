@@ -470,10 +470,10 @@ jobs:
           # tools/pack_body.py; a packer that deleted them again made a green
           # build whose Body screen had no skeleton and whose solver tests
           # skipped themselves, so they are demanded here, by name.
+          # (One line per echo on purpose: a continuation inside a block
+          # scalar that starts at column 1 ends the scalar and breaks the YAML.)
           for f in World/fly_body.json World/fly_golden.json; do
-            unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" \
-              || { echo "$f is NOT in the .ipa - the Body screen and the solver \
-tests need it"; exit 1; }
+            unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" || { echo "$f is NOT in the .ipa"; exit 1; }
           done
           # The world is what the Map button opens; an .ipa without it would
           # install and then explain itself instead of showing a fly.
