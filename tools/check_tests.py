@@ -45,6 +45,8 @@ REQUIRED = (
     # the pose the meshes are drawn at (uploads/IMG_2713.png)
     "testAQuaternionFromAMatrixIsTheRotationItself",
     "testEveryPartIsDrawnWhereTheBodyCarriesIt",
+    # the readout path, on a GPU (the phone's `0/42 pools firing` line)
+    "testTheGroupTalliesSeeThePoolsFiring",
     # the animal
     "testTheAnimalHasThePublishedAnatomy",
     "testTheAnimalIsTheRightSizeAndMass",

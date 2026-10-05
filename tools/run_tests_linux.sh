@@ -79,7 +79,12 @@ tests = {}
 for f in sorted(pathlib.Path("FlyBrainTests").glob("*.swift")):
     pattern = r"func (test\w+)\([^)]*\)\s*(throws)?"
     for m in re.finditer(pattern, f.read_text()):
-        tests.setdefault(f.stem, []).append((m.group(1), bool(m.group(2))))
+        # One test lives in one file once, but a file can name it twice: a test
+        # that needs a GPU has a `#if canImport(Metal)` body and a stub that
+        # skips on the platforms without one, and both carry the same name.
+        entry = (m.group(1), bool(m.group(2)))
+        if entry not in tests.setdefault(f.stem, []):
+            tests[f.stem].append(entry)
 lines = ["import XCTest", ""]
 for cls, names in tests.items():
     lines += [f"extension {cls} {{",
