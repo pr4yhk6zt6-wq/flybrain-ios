@@ -44,6 +44,17 @@ final class FlyDynamicsTests: XCTestCase {
             let omega: [Double]
             let rootPos: [Double]?
             let rootQuat: [Double]?
+            /// How many joints the reference's hard stops stopped. A structural
+            /// fingerprint: it does not depend on a tolerance at all.
+            let limitStops: Int?
+        }
+        /// One recorded sample: the whole q vector and the root position at a
+        /// step, so a failure says *where* the two solvers parted rather than
+        /// only that they did.
+        struct Sample: Decodable {
+            let step: Int
+            let q: [Double]
+            let rootPos: [Double]
         }
         let dt: Double
         let steps: Int
@@ -51,6 +62,7 @@ final class FlyDynamicsTests: XCTestCase {
         let torque: Torque
         let initial: State
         let expectedFinal: State
+        let trace: [Sample]?
         let tolerance: Double
     }
 
@@ -94,11 +106,54 @@ final class FlyDynamicsTests: XCTestCase {
         XCTAssertEqual(body.centreOfMass().z, body.centreOfMass().z,
                        "the initial pose produced a NaN centre of mass")
 
+        // The trace is the reference's own recorded samples. Replaying against
+        // them, rather than only against the final state, is what makes a
+        // failure say *when*: a port that is wrong from step 0 is a different
+        // bug from one that drifts apart at step 400.
+        let trace = g.trace ?? []
+        var next = 0
+        var firstBad: (step: Int, joint: Int, got: Double, want: Double)? = nil
+        var worstSeen = 0.0
         for k in 0..<g.steps {
             var tau = [Double](repeating: 0, count: body.nj)
             let phase = 2 * Double.pi * Double(k) * g.dt / g.torque.periodS
             for j in 0..<body.nj { tau[j] = g.torque.amplitude[j] * cos(phase) }
             body.step(dt: g.dt, torque: tau)
+
+            if next < trace.count && trace[next].step == k {
+                let sample = trace[next]
+                next += 1
+                var worst = 0.0
+                var joint = -1
+                var got = 0.0
+                for j in 0..<min(sample.q.count, body.q.count) {
+                    let d = abs(body.q[j] - sample.q[j])
+                    if d > worst { worst = d; joint = j; got = body.q[j] }
+                }
+                worstSeen = max(worstSeen, worst)
+                if firstBad == nil && worst > 1e-9 {
+                    firstBad = (k, joint, got, sample.q[joint])
+                }
+            }
+        }
+        if let bad = firstBad {
+            let at = "step \(bad.step): joint \(bad.joint) is \(bad.got) but the "
+                   + "reference has \(bad.want) (\(abs(bad.got - bad.want)))"
+            let stops = "hard stops: this solver stopped a joint \(body.limitStops) "
+                      + "times, the reference \(g.expectedFinal.limitStops ?? -1)"
+            XCTFail("the replay left the reference trajectory. \(at). \(stops). "
+                    + "worst joint error over the run so far: \(worstSeen). "
+                    + "For reference, in the final state: root velocity \(body.vel.array), "
+                    + "omega \(body.omega.array), rootPos \(body.rootPos.array), "
+                    + "joints at a hard stop \(body.jointsAtLimit()).")
+        }
+
+        // The hard-stop count, before any tolerance: a solver that clamps
+        // differently, or does not clamp, is a different animal.
+        if let want = g.expectedFinal.limitStops {
+            XCTAssertEqual(body.limitStops, want,
+                           "hard stops: this solver stopped a joint "
+                           + "\(body.limitStops) times, the reference \(want)")
         }
 
         func worst(_ a: [Double], _ b: [Double]) -> Double {

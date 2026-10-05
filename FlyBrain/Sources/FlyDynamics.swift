@@ -998,6 +998,25 @@ final class FlyDynamics {
 
     // MARK: One substep
 
+    /// How many times a hard stop has killed a joint's rate in this run.
+    ///
+    /// The golden trace is a violent vacuum tumble whose joints reach hundreds
+    /// of radians per second, and 141 of those rate-kills happen inside it
+    /// (measured in the Python reference). If the phone's solver and the
+    /// reference ever disagree, this count is the first thing to compare: a
+    /// solver that is not clamping at all, or clamping the wrong joints, shows
+    /// up here long before it shows up in a tolerance.
+    private(set) var limitStops = 0
+
+    /// How many joints are sitting on a hard stop right now.
+    func jointsAtLimit() -> Int {
+        var n = 0
+        for j in 0..<nj where limited[j] {
+            if q[j] <= lo[j] + 1e-12 || q[j] >= hi[j] - 1e-12 { n += 1 }
+        }
+        return n
+    }
+
     /// One substep: semi-implicit Euler with the joint dampers folded into the
     /// articulated-body inertia, which is the same thing MuJoCo does and is
     /// what makes a damper on a joint this light integrable at all.
@@ -1121,10 +1140,10 @@ final class FlyDynamics {
         // comparable with them off (docs/ASSUMPTIONS.md #23).
         for j in 0..<nj where limited[j] {
             if q[j] < lo[j] {
-                if qd[j] < 0 { qd[j] = 0 }
+                if qd[j] < 0 { qd[j] = 0; limitStops += 1 }
                 q[j] = lo[j]
             } else if q[j] > hi[j] {
-                if qd[j] > 0 { qd[j] = 0 }
+                if qd[j] > 0 { qd[j] = 0; limitStops += 1 }
                 q[j] = hi[j]
             }
         }
@@ -1148,20 +1167,40 @@ final class FlyDynamics {
     /// either sign of command, so a joint that is already moving fast cannot
     /// be stopped by anything but its own damper, and the animal flies apart
     /// in 200 microseconds.
+    ///
+    /// The per-direction split was right and the *curve* was not: the
+    /// lengthening branch was `(1 + s)/(1 - 2s)`, which has a pole at half of
+    /// vMax and is negative for every faster stretch, so the clamp turned it
+    /// into zero exactly where the brake was needed. `hillVelocityFactor` is
+    /// the same idea without the pole, and
+    /// `FlyDynamicsTests.testTheMuscleModelIsForceBasedAndBraked` is the test
+    /// that found it — a test that had never run in CI until the assets that
+    /// skipped it were packed into the bundle (reports/step6_loop.md).
     func muscleTorque(q qq: [Double], qd qqd: [Double], excitation: [Double]) -> [Double] {
         var out = [Double](repeating: 0, count: nj)
         for j in 0..<nj {
             let fl = exp(-pow((qq[j] - optimal[j]) / (0.5 * span[j]), 2))
             let ratio = qqd[j] / FlyMuscle.vMax
-            let shortening = min(1.8, max(0, (1 - ratio) / (1 + 2 * ratio)))
-            let lengthening = min(1.8, max(0, (1 + ratio) / (1 - 2 * ratio)))
             let e = excitation.indices.contains(j) ? excitation[j] : 0
-            let pullUp = min(1, max(0, e)) * shortening
-            let pullDown = min(1, max(0, -e)) * lengthening
+            let pullUp = min(1, max(0, e)) * hillVelocityFactor(ratio)
+            let pullDown = min(1, max(0, -e)) * hillVelocityFactor(-ratio)
             let active = maxTorque[j] * fl * (pullUp - pullDown)
             out[j] = active - passiveStiffness[j] * qq[j]
         }
         return out
+    }
+
+    /// Hill's force-velocity, in the sense the joint needs it.
+    ///
+    /// `s` is the speed at which *this* muscle is shortening, in units of
+    /// vMax: positive while it shortens, negative while it is stretched.
+    /// Isometric (s = 0) is 1; s = 1 is the speed at which it can no longer
+    /// pull at all, and past it the pulling muscle is exhausted (0) while the
+    /// stretched one keeps getting stronger, saturating at the 1.8 of a
+    /// stretched fibre.
+    @inline(__always) func hillVelocityFactor(_ s: Double) -> Double {
+        if s <= 0 { return min(1.8, 1 - s) }
+        return min(1.8, max(0, (1 - s) / (1 + 2 * s)))
     }
 
     /// The excitation that holds the animal up: `hold_torque` is the torque

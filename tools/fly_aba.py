@@ -453,6 +453,7 @@ class FlySim:
         self.foot_force = {k: 0.0 for k in b.legs}
         self.contacts = 0
         self.bodies_in_contact = set()
+        self.limit_stops = 0
         self._kinematics()
 
     # -- kinematics --------------------------------------------------------
@@ -695,12 +696,41 @@ class FlySim:
             hi_hit = (self.q > b.hi) & (self.qd > 0)
             self.q = np.clip(self.q, b.lo, b.hi)
             self.qd[lo_hit | hi_hit] = 0.0
+            # The number of joints a hard stop has stopped. The golden trace is
+            # a violent vacuum run (141 of these in 500 steps), so this count is
+            # the coarsest thing the two solvers can be compared on: a port that
+            # clamps differently, or does not clamp, shows up here before it
+            # shows up in any tolerance.
+            self.limit_stops += int((lo_hit | hi_hit).sum())
         return qdd
 
 
 # ---------------------------------------------------------------------------
 # The muscle
 # ---------------------------------------------------------------------------
+
+def hill_velocity_factor(s):
+    """
+    Hill's force-velocity, in the sense the joint needs it.
+
+    `s` is the speed at which *this* muscle is shortening, in units of `V_MAX`:
+    positive while it shortens, negative while it is being stretched. Isometric
+    (s = 0) is 1; s = 1 is the speed at which it can no longer pull the joint
+    at all; and a stretched muscle is stronger, saturating at the 1.8 of a
+    stretched fibre.
+
+    The form this replaces — `(1 + s)/(1 - 2s)` — has a pole at s = 0.5 and is
+    *negative* for every faster stretch, so the clip turned it into zero
+    exactly where the braking torque was needed: past half of V_MAX, nothing
+    in the model could slow a joint down. It reads as a curve, it is not one.
+    `FlyDynamicsTests.testTheMuscleModelIsForceBasedAndBraked` is the test that
+    caught it (and the same expression in FlyBrain/Sources/FlyDynamics.swift).
+    """
+    s = np.asarray(s, float)
+    shortening = np.clip((1.0 - s) / (1.0 + 2.0 * np.maximum(s, 0.0)), 0.0, 1.8)
+    stretched = np.clip(1.0 - s, 0.0, 1.8)
+    return np.where(s <= 0.0, stretched, shortening)
+
 
 def muscle_torque(body: FlyBody, q, qd, excitation):
     """
@@ -728,11 +758,9 @@ def muscle_torque(body: FlyBody, q, qd, excitation):
     """
     b = body
     fl = np.exp(-(((q - b.optimal) / (0.5 * b.span)) ** 2))
-    ratio = qd / V_MAX
-    shortening = np.clip((1.0 - ratio) / (1.0 + 2.0 * ratio), 0.0, 1.8)
-    lengthening = np.clip((1.0 + ratio) / (1.0 - 2.0 * ratio), 0.0, 1.8)
-    pull_up = np.clip(excitation, 0.0, 1.0) * shortening
-    pull_down = np.clip(-excitation, 0.0, 1.0) * lengthening
+    ratio = np.asarray(qd, float) / V_MAX
+    pull_up = np.clip(excitation, 0.0, 1.0) * hill_velocity_factor(ratio)
+    pull_down = np.clip(-excitation, 0.0, 1.0) * hill_velocity_factor(-ratio)
     active = b.max_torque * fl * (pull_up - pull_down)
     # and the muscle pair's own stiffness, which the file states outright as
     # `-biasprm[1]`: 0.4-0.8 at the leg joints against a joint inertia of 1e-6
@@ -1070,7 +1098,8 @@ def write_golden(body, steps, path):
                    "rule": "tau[j] = amplitude[j] * cos(2*pi*k*dt/period_s)"},
         "initial": {"root_pos": [0.0, 0.0, 0.0], "root_quat": [1.0, 0.0, 0.0, 0.0],
                     "q": list(q0), "qd": list(qd0), "v": list(v0), "omega": list(w0)},
-        "expected_final": {"q": list(np.round(sim.q, 12)),
+        "expected_final": {"limit_stops": int(sim.limit_stops),
+                           "q": list(np.round(sim.q, 12)),
                            "qd": list(np.round(sim.qd, 12)),
                            "root_pos": list(np.round(sim.root_pos, 12)),
                            "root_quat": list(np.round(sim.root_quat, 12)),

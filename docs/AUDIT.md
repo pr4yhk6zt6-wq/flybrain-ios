@@ -67,6 +67,24 @@ The fix is to scale by **1** — the vertices packed by `tools/step4_world.py`
 are already in model centimetres, which is also what `geom_size` and
 `geom_rbound` are computed from.
 
+### The solver's own gap (found by run 54, 2026-10-05)
+
+Run 54 is the first run where the body asset reached the bundle. It is also the
+first run in which `FlyDynamicsTests` was not skipped — and the port fails its
+own golden trace, by a wide margin (numbers in item 16). Nothing about the
+app's *behaviour* is claimed until that is fixed: the Python side is the
+verified reference, the Swift side is a transliteration that has never actually
+been checked against it until now.
+
+What the port does do, and the trace does not test: the animal stands for three
+simulated seconds on muscle tone alone, in CI (`testTheAnimalStandsWithMuscleToneOnly`
+passes, 6.0 s). So the static terms — gravity, the joint springs, the floor
+penalty, the muscle model's length term — are consistent; the disagreement is
+in the velocity-product terms or in the hard stops, which are exactly what a
+standing animal never exercises. The next measurement is the trace comparison
+the test now performs (`step 0, 25, 50 …`) plus the hard-stop count, and it is
+the first thing the next CI run reports.
+
 **Where the "twenty times life size" reading came from, and why it is the
 wrong file.** The `.obj` assets under `data/flybody/.../assets/` really are
 ten times the compiled model — the thorax measures 1.16 units *there*. But
@@ -99,7 +117,7 @@ multiplying by it is what produced the sliver screenshot.
 | 13 | Proprioception | **DONE** | `FlyProprioception` exposes joint angle, rate, leg load, body height, speed, feetDown, and the knee angle now drives the leg's chordotonal organ group (38–63 cells) with the published polarity: flexion stretches it, stretching silences it (assumption #11). The grip is measured on the device, not chosen (`FlyCordTests`). |
 | 14 | Motor neurons → muscles → physics, no direct commands | **DONE** | The only path to the body is `posture + drive → excitation → muscleTorque → ABA solver → contacts`; high-level code never sets `q`, `position` or `velocity`. The source of `drive` is the cord: motor-pool firing rates → muscle activation → the balance of each joint's antagonist pair → excitation. |
 | 15 | Force-based muscle model | **DONE** | Hill force-length, per-direction velocity term (shortening weakens, lengthening loads ≤1.8), antagonist pairs, measured `hold_torque` inversion, optional fatigue hooks not yet — `FlyDynamics.muscleTorque`, verified in `FlyDynamicsTests`. |
-| 16 | Physics is the authority | **DONE** | Featherstone ABA verified against MuJoCo to 4.4e-16 (FK) and 2.1e-5 cm (free fall); penalty floor fitted (K=150); golden-trace test in CI; the solver runs on-device (`FlyLiveBody`). |
+| 16 | Physics is the authority | **BROKEN — see below** | The Python reference is verified against MuJoCo (FK 4.4e-16, free fall 2.1e-5 cm, and the animal standing 3 s). The **Swift port does not yet reproduce its golden trace**: after 500 steps `q` differs by 0.160, `qd` by 19.997, root velocity by 23.15, ω by 150.97, root position by 0.581, root quaternion by 0.917 (tolerance 1e-7), and the hard-stop fingerprint (4,044 rate-kills in the reference) is reported beside it. This was invisible until run 54, because the test **skipped itself** in every green CI run — the asset that fed it was deleted by `tools/pack_world.py` (see §0). The test now runs, fails, and says where. The animal standing on muscle tone does pass, so the divergence is in the moving terms, not the statics. |
 | 17 | Walking emerges from neural activity | **MISSING** (by design) | No walk controller exists — correct per the brief; step 5's report says plainly: six cords cannot coordinate, tripod gait is owed. Offline, `tools/step4_world.py` showed cord-driven stance + nudge responses recorded in `behaviour.json`. |
 | 18 | Minimal environment | **PARTIAL** | Floor + grid + lights + walls-not-yet; no obstacles, odor sources, wind, surface types. The world exists to stimulate; keep it deliberately spare. |
 | 19 | Emergent behaviours | **PARTIAL** | Standing + postural stability emerge from tone + physics (`testTheAnimalStandsWithMuscleToneOnly`). Reflex arc validated offline (step 2/3: ρ = +0.125/+0.186, polarity control reverses it). Walking/grooming/feeding/escape all follow items 9→17. |

@@ -26,13 +26,26 @@ import sys
 # Tests whose absence is never acceptable: they are what the numbers in the
 # reports are pinned to.
 REQUIRED = (
+    # the solver, against the MuJoCo-verified Python
     "testGoldenTraceIsReproduced",
     "testTheAnimalStandsWithMuscleToneOnly",
     "testTheMuscleModelIsForceBasedAndBraked",
+    # the closed loop
     "testEveryPoolIsPlacedOnTheJointTheAssetNames",
+    "testTheConnectomeIsAskedForTheNamesTheAssetCarries",
+    "testAMissingGroupIsReportedRatherThanReadAsSilence",
+    "testTheJointListStartsWithTheFreeJoint",
     "testTheLoopIsBalancedAroundTheStanceItMeasured",
+    "testTheLoopReachesBothDirectionsFromTheStance",
     "testSilenceGivesTheStanceBackRatherThanADrift",
+    "testTheChordotonalOrganReportsTheJointItSpans",
+    "testReversingThePublishedPolarityReversesTheOrgan",
+    "testTheCampaniformOrganReportsTheLoadTheLegCarries",
+    # the animal
     "testTheAnimalHasThePublishedAnatomy",
+    "testTheAnimalIsTheRightSizeAndMass",
+    "testEveryArticulatedDegreeOfFreedomIsAnatomicallyLimitedOrFree",
+    "testTheAdhesionModelIsPresent",
 )
 
 SKIPPED = re.compile(r"Test Case '-\[(?P<suite>[\w.]+) (?P<name>\w+)\]' skipped")

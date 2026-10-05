@@ -61,6 +61,26 @@ final class FlyCordTests: XCTestCase {
                                   from: try Data(contentsOf: url))
     }
 
+    /// The hinge index the cord uses for a joint.
+    ///
+    /// `asset.joints` starts with the root's **free** joint (`kind == "free"`),
+    /// so the index into that array is one more than the index into the hinge
+    /// list the solver and `FlyCord` work in. The first version of this helper
+    /// indexed `asset.joints` directly and every angle it wrote out landed on
+    /// the neighbouring joint — which is exactly what
+    /// `testTheChordotonalOrganReportsTheJointItSpans` reported (the organ's
+    /// drive never moved). The trap is pinned by
+    /// `testTheJointListStartsWithTheFreeJoint` below.
+    private func hingeIndex(_ asset: FlyBodyAsset, named name: String) -> Int? {
+        var k = 0
+        for j in asset.joints {
+            if j.kind != "hinge" { continue }
+            if j.name == name { return k }
+            k += 1
+        }
+        return nil
+    }
+
     /// The state the animal is in while it stands: every joint at its standing
     /// angle, each leg carrying its own weight.
     private func stance(_ asset: FlyBodyAsset, hingeCount: Int,
@@ -70,16 +90,28 @@ final class FlyCordTests: XCTestCase {
         var load: [String: Double] = [:]
         for (key, leg) in asset.legs {
             load[key] = loads?[key] ?? 1.0
-            if let t = leg.joints["tibia"] {
-                for (i, j) in asset.joints.enumerated() where j.kind == "hinge" {
-                    if j.name == t.name { angle[i] = kneeAngle ?? t.rest }
-                }
+            if let t = leg.joints["tibia"],
+               let i = hingeIndex(asset, named: t.name) {
+                XCTAssertLessThan(i, hingeCount)
+                angle[i] = kneeAngle ?? t.rest
             }
         }
         return FlyProprioception(angle: angle,
                                  rate: [Double](repeating: 0, count: hingeCount),
                                  legLoad: load, height: 0, speed: 0,
                                  feetDown: 6)
+    }
+
+    /// The trap this file's helper fell into once: the asset's `joints` array
+    /// is not the hinge list.
+    func testTheJointListStartsWithTheFreeJoint() throws {
+        let asset = try asset()
+        XCTAssertEqual(asset.joints.first?.kind, "free",
+                       "the asset lists the root's free joint first, so an index "
+                       + "into asset.joints is not an index into the hinges")
+        XCTAssertEqual(asset.joints.filter { $0.kind == "hinge" }.count, 102,
+                       "the flybody model has 102 hinge joints")
+        XCTAssertEqual(asset.joints.filter { $0.kind == "free" }.count, 1)
     }
 
     // MARK: - The mapping is the animal's
@@ -166,11 +198,29 @@ final class FlyCordTests: XCTestCase {
 
         XCTAssertEqual(cord.phase, .running,
                        "the loop never finished measuring the stance")
-        for (k, b) in cord.balance.enumerated() {
-            XCTAssertEqual(b, 0.5, accuracy: 1e-9,
-                           "with both antagonists equally active the balance is "
-                           + "the middle, not \(b)")
-            XCTAssertEqual(cord.reference[k], 0.5, accuracy: 1e-6)
+        // With every pool firing at the same rate, a joint's balance is the
+        // share of its *pools* that open it — the loop sums the activation of
+        // each side and takes the ratio (step 3's law, which is what its
+        // measured reflex came through). A joint with two closing pools and one
+        // opening pool therefore sits at 1/3, not at 1/2, and that is a
+        // property of this animal's anatomy rather than a bug in the arithmetic.
+        // The reason it costs nothing is the next assertion: the *stance's* own
+        // balance is measured on the device and subtracted, so whatever the
+        // asymmetry is, the command at the stance is zero.
+        //
+        // (Whether a pool should count by its motor neurons rather than as one
+        // set is an open question, and it is one line here if it ever should:
+        // docs/ASSUMPTIONS.md #21.)
+        for (k, hinge) in cord.drivenHinges.enumerated() {
+            let opens = cord.pools.filter { $0.hinge == hinge && $0.sign > 0 }.count
+            let closes = cord.pools.filter { $0.hinge == hinge && $0.sign < 0 }.count
+            let share = Double(opens) / Double(max(1, opens + closes))
+            XCTAssertEqual(cord.balance[k], share, accuracy: 1e-9,
+                           "joint \(hinge): \(opens) pools open it and "
+                           + "\(closes) close it, so an equal drive has to "
+                           + "balance at \(share), not at \(cord.balance[k])")
+            XCTAssertEqual(cord.reference[k], share, accuracy: 1e-6,
+                           "the reference is the stance's own balance")
         }
         // And therefore the command is the stance: nothing moves.
         for (k, hinge) in cord.drivenHinges.enumerated() {

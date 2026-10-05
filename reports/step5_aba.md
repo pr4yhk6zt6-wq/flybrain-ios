@@ -148,3 +148,52 @@ zero.
 MuJoCo 3.14, Python 3.12, single thread, Linux x86-64, NumPy 2.3. The CI runs
 the same three checks on macOS and fails the build on any disagreement
 (`.github/workflows/ios.yml`, the step-5 job).
+
+
+---
+
+# 2026-10-05 — the port fails its own golden trace (run 54)
+
+For the first time since this file was written, `FlyDynamicsTests` *ran* in CI.
+It had been calling `XCTSkip` in every green run, because `tools/pack_world.py`
+deleted `FlyBrain/World/fly_body.json` — written by `tools/pack_body.py` four
+seconds earlier — before the build. `Executed 7 tests, with 3 tests skipped`.
+
+With the asset in the bundle the suite runs, and it reports:
+
+| | Swift | reference | tolerance |
+|---|---|---|---|
+| worst joint angle | 0.1599 | — | 1e-7 |
+| worst joint rate | 19.9966 | — | 1e-7 |
+| root velocity | 23.1494 | — | 1e-7 |
+| root angular velocity | 150.9716 | — | 1e-7 |
+| root position | 0.5806 | — | 1e-7 |
+| root quaternion | 0.9168 | — | 1e-7 |
+
+`testTheAnimalStandsWithMuscleToneOnly` passes (6.05 s) — the static terms are
+consistent — and `testTheMuscleModelIsForceBasedAndBraked` fails too, which was
+a real bug and is fixed in the same commit: the lengthening branch of the
+force-velocity term was `(1 + s)/(1 - 2s)`, a curve with a pole at s = 0.5 that
+is negative past it. Clipped at zero it removed the braking torque exactly
+where it was needed; `hill_velocity_factor` replaces it in both languages
+(monotone, no pole, 1.8 saturation).
+
+The golden trace itself is not the problem: it is reproducible to 1 ULP (a
+one-ULP change in one torque moves the 500-step state by 2.2e-16 in q and
+5.7e-14 in qd — measured again here, limits on *and* off), and the run is
+limit-heavy rather than chaotic (4,044 hard-stop rate-kills; the final state
+has joints pinned at their stops).
+
+Diagnostics added with this commit so the next run localises it instead of only
+failing:
+
+* the test replays against the reference's 20 recorded samples and reports the
+  **first** step where the two trajectories part, with the joint and both
+  values;
+* the reference now records its **hard-stop count** (4,044) and the port's is
+  compared with it exactly — a structural fingerprint that does not depend on
+  any tolerance;
+* `FlyDynamics.limitStops` / `jointsAtLimit()` expose the port's own clamping.
+
+Status of item 16 (`docs/AUDIT.md`): **BROKEN**, and honestly so — the app must
+not be described as physically authoritative until this trace is reproduced.
