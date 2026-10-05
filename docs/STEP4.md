@@ -155,6 +155,43 @@ frames, the seed, and the exact command that produced it.
 
 ---
 
+## The same world, inside the `.ipa`
+
+The web viewer was never the point; it was the quickest way to look at the
+recording. The world is now in the app, behind a **Map** button at the top
+right of the brain view:
+
+* `tools/pack_world.py` copies `world.json`, `fly.bin` and `frames.bin`
+  (8.16 MB) into `FlyBrain/World/`, which `project.yml` lists as a *folder*
+  reference so the three files travel together into the bundle. It refuses to
+  run if either binary is a different size from what the manifest claims.
+* `FlyBrain/Sources/FlyWorld.swift` reads them and builds one `SCNGeometry`
+  per mesh — 85 meshes, 132,506 vertices, 262,180 triangles — re-basing the
+  model's global `Int32` indices into each mesh and casting them to `UInt32`
+  for `SCNGeometryElement`.
+* `FlyBrain/Sources/WorldView.swift` poses them from `frames.bin` every
+  display tick, slerping between the two frames either side of the current
+  time. Nothing is keyframed.
+
+**The two floating views.** `WorldRig` carries three cameras on one rig that
+follows the animal: one you steer by dragging (and pinch to zoom), and two
+fixed on the animal's own left and right, each looking back at it. The two
+flanking views are `SCNView`s on the *same* `SCNScene` — they are not a second
+simulation, they are the same animal seen from somewhere else. Each is a
+floating pane you can drag anywhere on screen, and both can be hidden with the
+button under the close cross.
+
+The cameras are aimed with a quaternion built from an up vector of **+z**,
+not by `SCNLookAtConstraint`, which assumes y is up and would roll every
+camera onto its side in a world where the fly walks on the xy plane.
+
+An `.ipa` built without the recording is not a broken app: the world screen
+opens, explains which file is missing and tells you the command that makes it.
+CI checks the three files are inside `FlyBrain.app` before the `.ipa` is
+uploaded.
+
+---
+
 ## What this step establishes, and what step 5 owes
 
 **Establishes:** the loop can be closed for the whole animal at once — six

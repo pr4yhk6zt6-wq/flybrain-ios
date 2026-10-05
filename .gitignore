@@ -25,4 +25,7 @@ FlyBrain.xcodeproj/
 FlyBrain/Resources/flybanc.bin
 FlyBrain/Resources/flybanc_meta.json
 FlyBrain/Resources/fly_anatomy.json
+# the world inside the app is the same generated recording; pack_world.py
+# copies it in at build time
+FlyBrain/World/
 uploads/

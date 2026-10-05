@@ -12,6 +12,7 @@ import Combine
 struct ContentView: View {
     @StateObject private var engine = BrainEngine()
     @State private var showControls = true
+    @State private var showWorld = false
 
     var body: some View {
         ZStack {
@@ -59,8 +60,26 @@ struct ContentView: View {
                 }
 
                 VStack {
-                    HStack {
+                    HStack(spacing: 12) {
                         Spacer()
+                        // The world: the animal this brain belongs to, and
+                        // what it did when the cords were switched on.
+                        Button {
+                            showWorld = true
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "map.fill")
+                                Text("Map")
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.black.opacity(0.45),
+                                        in: Capsule())
+                            .overlay(Capsule().stroke(
+                                .white.opacity(0.25), lineWidth: 1))
+                        }
                         Button {
                             withAnimation { showControls.toggle() }
                         } label: {
@@ -69,14 +88,17 @@ struct ContentView: View {
                                 .font(.title2)
                                 .foregroundStyle(.white.opacity(0.8))
                         }
-                        .padding(.trailing, 16)
-                        .padding(.top, 54)
                     }
+                    .padding(.trailing, 16)
+                    .padding(.top, 54)
                     Spacer()
                 }
             } else {
                 LoadingView()
             }
+        }
+        .fullScreenCover(isPresented: $showWorld) {
+            WorldContainer { showWorld = false }
         }
         .preferredColorScheme(.dark)
         .task { await engine.load() }

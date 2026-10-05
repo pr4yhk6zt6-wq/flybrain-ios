@@ -300,6 +300,14 @@ jobs:
           cp build/fly_anatomy.json FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
 
+      # Everything above built the brain. This puts the body in: the app
+      # bundle is only allowed to carry what existed when xcodegen ran, so
+      # the recording has to be copied in first.
+      - name: Pack the recorded world into the app bundle
+        run: |
+          python3 tools/pack_world.py
+          ls -lh FlyBrain/World/
+
       - name: Generate the Xcode project
         run: |
           xcodegen generate --spec project.yml
@@ -362,7 +370,15 @@ jobs:
             unzip -l FlyBrain-unsigned.ipa | grep -q "FlyBrain.app/$f" \
               || { echo "$f is NOT in the .ipa"; exit 1; }
           done
-          echo "all data assets present"
+          # The world is what the Map button opens; an .ipa without it would
+          # install and then explain itself instead of showing a fly.
+          for f in world.json fly.bin frames.bin; do
+            unzip -l FlyBrain-unsigned.ipa | grep -qE \
+              "FlyBrain.app/(World/)?$f$" \
+              || { echo "$f is NOT in the .ipa - the world will not open"; \
+                   exit 1; }
+          done
+          echo "all data assets present, and the world is in the .ipa"
 
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
