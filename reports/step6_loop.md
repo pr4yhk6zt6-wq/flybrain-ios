@@ -284,3 +284,14 @@ it will say which of its three links is the one that is zero. The prediction is
 also the acceptance test: the next build's HUD is expected to read about
 `29/42 pools · 58 Hz · desc 14 Hz (tone 2.5) · organs 13 Hz`, and a screenshot that
 says otherwise is a fact about the phone, not about the probe.
+
+**What the walk will be built on, measured before it is built.** The next item
+after the pools is the walking circuits, and `reports/item4_walking.md` is now
+the record of what the dataset decides about it: the sense organs' route to the
+motor pools is 85:1 private to their own leg (so the steps 2–3 reflex is a local
+stabiliser, not a coupler), 788 cells do reach more than one leg's pools
+(69,543 synapses, now packed as `premotor:multileg` and required by CI), and
+`tools/gait_probe.py` finds no tripod structure in the six legs' rates under any
+of four drive conditions. The gait therefore cannot be read off the cord as it
+stands; that is a measurement, not an opinion, and it is written down before any
+gait code exists.
