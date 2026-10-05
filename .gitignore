@@ -2,6 +2,7 @@ data/raw/
 data/flybody/
 data/banc/
 data/reference/
+data/derived/
 reports/*.parquet
 reports/*.json
 !.gitkeep

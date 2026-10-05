@@ -101,6 +101,39 @@ jobs:
       - name: Step 1 — the fly stands on its own six feet
         run: python3 tools/step1_sim.py --seconds 3.0 --json reports/step1_stand.json
 
+      # ------------------------------------------------------ step 2: reflex
+      # Report-only on purpose. The probe found a NEGATIVE result — driving the
+      # chordotonal organ does not move the tibia pools — and a negative result
+      # is a finding, not a build failure. The step fails only if the tool
+      # itself crashes or the connectome stops containing the pathway.
+      - name: Step 2 — the leg reflex, out of the connectome
+        run: |
+          python3 tools/step2_legcircuit.py --leg front_leg --side left --hops 3
+          python3 tools/step2_reflex.py --leg front_leg --side left --ms 800
+
+      - name: Step 2 — the pathway must be present in the connectome
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open('reports/step2_reflex.json'))
+          checks = [
+              ('chordotonal organ found', r['organs'].get('chordotonal', 0) > 20),
+              ('tibia flexor pool found', r['pools'].get('tibia flexor', 0) > 5),
+              ('an arc exists out of the organ', len(r['chordotonal_arcs']) > 0),
+              ('a disynaptic route to the flexor exists',
+               r['disynaptic'].get('tibia flexor', {}).get('arcs', 0) > 0),
+              ('the tibia routes are reached through interneurons',
+               r['disynaptic'].get('tibia flexor', {}).get('interneurons', 0) > 0),
+          ]
+          ok = True
+          for label, cond in checks:
+              print(f"  {'ok  ' if cond else 'FAIL'} {label}")
+              ok &= bool(cond)
+          top = r['chordotonal_arcs'][0]['cell']
+          print(f"  strongest organ target: {top}")
+          sys.exit(0 if ok else 1)
+          PY
+
       # -------------------------------------------------------------- the app
       - name: Build the connectome binary for the app
         run: |
@@ -192,3 +225,12 @@ jobs:
             reports/step1_stand.json
             build/fly_anatomy.json
             build/fly_motorunits.json
+
+      - name: Upload the step-2 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: step2-evidence
+          path: |
+            reports/step2_reflex.md
+            reports/step2_reflex.json
+            reports/step2_legcircuit.json

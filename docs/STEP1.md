@@ -51,9 +51,9 @@ ventral nerve cord actually contains.
 | 1 | the body | `flybody` MJCF, read by MuJoCo | **done, measured** |
 | 2 | the nerve structure | BANC v888 meta, muscle-level annotations | **done, measured** |
 | 3 | standing under gravity | MuJoCo + the 8 adhesion actuators | **done, measured** |
-| 4 | proprioceptive feedback | BANC `proprioception` (2,903) + chordotonal/campaniform detail | next |
-| 5 | leg motor → muscle → joint | `MUSCLE_TO_ACTUATOR` in `tools/step1_anatomy.py` | next |
-| 6 | the walking rhythm | thoracic circuits + sensory entrainment | after 4–5 |
+| 4 | proprioceptive feedback | BANC `proprioception` (2,903) + chordotonal/campaniform detail | **extracted and measured — [`STEP2.md`](STEP2.md)** |
+| 5 | leg motor → muscle → joint | `MUSCLE_TO_ACTUATOR` in `tools/step1_anatomy.py` | **mapped; drive not yet closed** |
+| 6 | the walking rhythm | thoracic circuits + sensory entrainment | after 4–5; blocked on the reflex loop |
 | 7 | descending commands | BANC `descending` (1,316) — walk, stop, turn | after 6 |
 | 8 | escape | giant fibre → TT motor neurons → take-off | after 6 |
 | 9 | flight | wing power/steering pools + halteres | after 6 |

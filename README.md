@@ -10,10 +10,14 @@ wanted, but it is not the foundation any more. The fly walked strangely because
 it was being *told* to walk by code we wrote, not because its nervous system
 asked it to.
 
-> **Status:** starting over, one piece at a time. **Step 1 in progress.**
-> The body and the nerve structure are in place and measured
-> ([`reports/step1_anatomy.md`](reports/step1_anatomy.md)); the fly stands on
-> its own six feet under real physics. Nothing walks yet, on purpose.
+> **Status:** step 1 is measured — the body, the nerve structure, and the fly
+> standing on its own six feet under real physics
+> ([`reports/step1_anatomy.md`](reports/step1_anatomy.md)). Step 2 has taken the
+> leg reflex out of the connectome and checked it against the papers
+> ([`docs/STEP2.md`](docs/STEP2.md)): the organ contacts the published cell
+> types, the path is disynaptic as published, and the loop does **not** yet
+> move the leg — that negative result is written down and is what the next
+> commit has to fix. Nothing walks yet, on purpose.
 
 ## What "real" means here
 
@@ -122,11 +126,14 @@ export LD_LIBRARY_PATH=/tmp/osmesa/usr/lib/x86_64-linux-gnu MUJOCO_GL=osmesa
 ```
 tools/step1_anatomy.py   67 parts, 102 DOF, 78 actuators, 532 motor neurons — all read, none written
 tools/step1_sim.py       the physics spine: the animal standing, headless, measured
-tools/step1_gait.py      (next) the sensorimotor loop
+tools/step2_legcircuit.py the leg's sensorimotor subgraph, extracted from BANC
+tools/step2_reflex.py    the reflex: arcs, disynaptic weights, LIF, sign-shuffled control
+tools/step2_walk.py      (next) the closed loop onto the body
 tools/build_banc.py      BANC v888 -> flybanc.bin, for the app's brain view
 tools/verify_banc.py     structural checks + a reference LIF simulation
 tools/download_*.sh      the two public downloads, no authentication
 docs/STEP1.md            what step 1 is, and what it refuses to do
+docs/STEP2.md            the leg reflex out of the connectome, against the papers
 docs/ASSUMPTIONS.md      every constant that is not a measurement, with its test
 FlyBrain/Sources/        the iOS app: the connectome as a live 3-D point cloud
 reports/step1_anatomy.md generated evidence, regenerated on every build
