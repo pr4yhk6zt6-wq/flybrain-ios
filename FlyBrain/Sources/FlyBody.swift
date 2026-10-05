@@ -527,8 +527,8 @@ final class FlyBody {
         // used to saturate the yaw channel: a 10% power difference asks for
         // 2.8x the maximum torque a fly can make, so every frame was full
         // left or full right and the animal spun at the 1600 deg/s clamp.
-        let wingPower = opponent(drives.wingPowerL, drives.wingPowerR, eps: wingEps)
-        let wingSteer = opponent(drives.wingSteerL, drives.wingSteerR, eps: wingEps)
+        let wingPower = Self.opponent(drives.wingPowerL, drives.wingPowerR, eps: wingEps)
+        let wingSteer = Self.opponent(drives.wingSteerL, drives.wingSteerR, eps: wingEps)
         updateReference(wingPower.collective, dt: dt)
 
         let asymmetry = wingPower.index + wingSteer.index
@@ -573,7 +573,7 @@ final class FlyBody {
         // stride set speed (Mendes et al. 2013: near-linear up to ~13 Hz and
         // 30 mm/s, i.e. a stride of about 2.3 mm). Turning is differential
         // drive through the opponent leg index over the CT-derived track.
-        let legs = opponent(drives.legL, drives.legR, eps: legEps)
+        let legs = Self.opponent(drives.legL, drives.legR, eps: legEps)
         legIndex += (legs.index - legIndex) * min(1, dt / muscleTau)
         let f = min(FlyMorphology.stepFrequencyMax,
                     legs.collective / referenceRate * FlyMorphology.stepFrequencyMax * 2.2)
