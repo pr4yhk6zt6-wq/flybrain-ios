@@ -195,16 +195,27 @@ exactly the kind of thing this repository is not allowed to do.
   wrench, and the physics decides where the fly goes.
 * `FlyCord` drives the four wing pools from the tone and reads their rates back;
   `WingAero` maps rate → stroke amplitude, each pool against its own references.
+* The golden block carries **both wings**: four geometry vectors each (stroke
+  axis, span axis, lift direction, hinge) and **two strip tables**, because the
+  body model's two wings are not one wing used twice — their planform areas
+  differ by **6.6e-05** and their ∫r²dA by **7.5e-05**. Each wing is integrated
+  with its own strips, and with its own radius-about-the-axis (0.995 for both,
+  differing in the seventh digit). Sharing one table, as the first version of the
+  port did, put a 3e-05 error into every right-wing force — the body model's
+  left-right floor, not the animal's, so it is measured, written into
+  `world.json` (`wing_asymmetry`) and carried rather than hidden.
 * `WorldView` attaches both from `world.json`'s `wings` block and prints a HUD
   line — stroke L/R, lift/weight, yaw moment, drag — because a wing force that is
   not visible on the HUD is a wing force nobody will notice going wrong.
 
 ## The gate, and that it has teeth
 
-`python3 tools/wing_aero.py --gate` passes: the strips add up to the wing; the
-two wings' lift directions are mirrors pointing up (to 2.2e-6); the body model's
-own kinematics sweep both wings the same way at the same joint angle; the two
-wings make the same force at the same activation; the flight force is ≥0.8 of the
+`python3 tools/wing_aero.py --gate` passes: the strips add up to the wing, and
+each wing's strips to *its own* wing (100.00 % and 100.00 %); the two wings' lift
+directions are mirrors pointing up (to 2.2e-6) while their areas differ by
+6.6e-05; the body model's own kinematics sweep both wings the same way at the
+same joint angle; the two wings make the same force at the same activation, to
+within the meshes' own floor; the flight force is ≥0.8 of the
 weight and the hover α solves inside (20°, 70°); a symmetric beat's yaw stays
 under 2 % of the steering signal; the asymmetry reverses the yaw with the physical
 sign; the attitude is under 60°; the pools exist and a differential moves the
@@ -223,6 +234,32 @@ fail**:
   plane instead of its stroke plane: **5 FAILs** (lift/weight 0.47, the hover α
   solving to 80°, the two wings no longer matching, the yaw no longer reversing,
   the symmetry floor at 108 % of the signal).
+
+## The port is the tool
+
+`WingAero.swift` is a second implementation of the same force law, and the only
+thing that makes it the *same* model is that it is checked against the tool's own
+numbers. Two checks, in this order:
+
+* **`testGoldenBeats` / `testGoldenStripForces`** — the Swift port is run against
+  the rows the tool wrote into the golden block: 9 beats (14 quantities each) and
+  25 (ω, α) points of the force law, to 1e-9 absolute. Before the first push, the
+  port was transcribed back into Python and run against the literals *as pasted in
+  the Swift file*: with both strip tables and a per-wing radius it reproduces all
+  nine beats and all 25 law rows to **1.8e-15 relative**. That transcription is
+  what caught the two defects CI then confirmed — a port whose strip table was
+  empty (every force exactly 0.0) and one that integrated the left wing's strips
+  for both wings (3e-05 out on the right).
+* **`testASymmetricBeatTurnsNothing`** — the physical check a table cannot state:
+  a symmetric beat drives the two wings equally, pushes sideways by nothing and
+  yaws by nothing. Its tolerance is **1e-4 dyn**, not 1e-9, because the model's
+  own floor is 1.6e-05 dyn — measured by the tool and quoted in the test's comment
+  — since the two meshes differ. Six times the floor: a real asymmetry cannot hide
+  under it, and a defect larger than the meshes' own error still fails.
+
+The tool's CI step re-runs `wing_aero.py` and compares the same rows against the
+block, so a drift on either side fails the build: 9 wing lines, 12 + 12 strips, 25
+law rows and 9 beats, all to 1e-9.
 
 ## What is not done
 
