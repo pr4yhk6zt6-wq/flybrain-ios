@@ -39,6 +39,8 @@ struct FlyProprioception {
     /// Body height above the floor, cm, and the speed of the centre of mass.
     var height: Double
     var speed: Double
+    /// How many legs currently have any load on them.
+    var feetDown: Int
     /// The body's angular velocity, **body frame**, in degrees per second.
     ///
     /// This is what the halteres measure (item 7): `omega` in the solver is the
@@ -48,8 +50,6 @@ struct FlyProprioception {
     /// it is invented: the group drives are computed from it by `HaltereGyro`,
     /// and what crosses the synapse is a current like any other.
     var angularRate: SIMD3<Double>
-    /// How many legs currently have any load on them.
-    var feetDown: Int
 }
 
 /// The animal, live.
