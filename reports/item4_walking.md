@@ -102,3 +102,63 @@ which is not the sparse regime a walking VNC runs in.
 
 This is written down before any gait code exists, because the alternative is a
 gait that looks right on the screen and cannot be traced to the connectome.
+
+## 4. The loop, with the body answering the cord (dynamic, in the loop)
+
+The probes above run the cord as a *rate source*: drives in, rates out. In the
+animal the rates go to muscles, the muscles move a body, and the body's joints
+and foot forces come back as organ drives. `tools/walk_loop.py` is that loop,
+headless, using the same assets and the same laws the app runs (`FlyCord`'s
+balance and muscle filter, `fly_aba`'s muscles and articulated body, and the
+organ laws #11/#12 fed from the body's own state).
+
+| run, 1 s each (300 ms of it calibration) | tone only | cord, organs frozen | cord, closed loop | closed calibration |
+| --- | --- | --- | --- | --- |
+| pools firing | — | 51–61 Hz | 51–61 Hz | 51–61 Hz |
+| legs that left the floor | 0/6 | 5/6 | 5/6 | 6/6 |
+| foot-load, of the stance | 1.00 each | 0.35–2.36 | 0.30–2.42 | 0.38–1.71 |
+| COM z | −0.0227 → −0.0233 cm | → −0.0419 | → −0.0481 | → −0.0321 |
+| horizontal drift | 0.0017 cm | 0.0092 | 0.0575 | 0.1576 |
+| foot-load tripod index | — | +0.131 | +0.114 | +0.265 |
+
+Read honestly:
+
+* **With muscle tone alone the animal stands**, and stays where it is put. That
+  is the baseline the rest of the table is measured against.
+* **With the cord attached, the pose distorts.** The pools fire hard (51–61 Hz),
+  the command does not saturate (|offset| ≤ 0.50 — the command gain of assumption
+  #24 is 0.5; note that the *LIF's* gain, 12, is a different quantity entirely,
+  and passing it here thrashes the body, which is what the first version of this
+  tool did by mistake), and yet the animal presses into the floor and leans on
+  two legs while lifting the others.
+* **The sensory feedback is not what does it**: freezing every organ at its
+  standing value gives the same picture, so the cord's *resting* command is
+  already biased. The feedback is not the problem.
+* **Why the bias exists is measurable**: the reference balance is calibrated with
+  the organs clamped at tone (assumption #10's method) and the loop then runs
+  with the organs live, so the network is calibrated in one operating point and
+  run in another. Measuring the reference in the regime the loop runs in halves
+  the sinking (COM −0.032 vs −0.048 cm) and pulls the loads together (0.38–1.71
+  vs 0.30–2.42) — with a cost in drift, because a setpoint that follows the
+  standing pose is a setpoint that lets the animal wander.
+* **There is an alternation signal and it is not a gait.** The tripod index comes
+  out positive in both closed runs, but from *across*-tripod anti-correlation
+  (−0.24 to −0.30): the two tripods move against each other while neither moves
+  coherently with itself. Six legs dragging themselves into the floor in two
+  groups is not a walk, and calling it one would be the exact mistake this
+  project's rules exist to prevent.
+
+**What this means for the phone.** The device build behind `IMG_2713` printed
+`0/42 pools firing` and stood still *because its pools were silent*. Once the
+readout is fixed and they fire, this loop is what the app will do: not a stand,
+and not a walk — a distorted, restless stance. That is a known, measured
+consequence of fixing the readout, not a new failure, and it moves item 4 to the
+critical path:
+
+1. the operating point (tone, LIF gain, command gain) has to be re-measured in
+   the loop as one of the two ends of a trade — pool rates high enough for the
+   cord to sense its own state, low enough for the balance to carry information;
+2. the reference balance has to be measured in the regime the loop runs in, in
+   both the tool and `FlyCord.swift`;
+3. and only then is a gait's *absence* or *presence* a statement about the cord
+   rather than about the setup.
