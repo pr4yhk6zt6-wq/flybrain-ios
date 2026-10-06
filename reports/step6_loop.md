@@ -167,13 +167,22 @@ reference in `tools/verify_banc.py`, so the reference was run at the app's own
 numbers. `tools/pool_probe.py` (new) is that experiment, on the same
 `build/flybanc.bin` the app carries:
 
+The first version of this table divided a 50 ms count by the whole `--ms` window
+(200 ms), so every rate in it was four times too small. `tools/pool_probe.py` now
+divides by the window it actually counted over (`WINDOW_MS`), and the same
+conditions read:
+
 | condition | what it is | descending | pools ≥ 1 Hz | pool mean | population |
 |---|---|---|---|---|---|
-| app | gain 6, descending 2.5, organs 2.5 | 12.45 Hz | 25/60 | 6.37 Hz | 2.35 Hz |
-| app ×1.5 | the same, as `driveGroups` scales it (×externalDrive 1.5) | 17.63 Hz | 27/60 | 9.66 Hz | 2.56 Hz |
-| reference | gain 12, the operating point CI validates at | 13.67 Hz | 24/60 | 12.08 Hz | 4.01 Hz |
-| **device** | gain 6, drives ×1.5, flat retina 1.0 — the app's configuration | 17.41 Hz | 26/60 | 9.34 Hz | 2.60 Hz |
-| vision | gain 12, descending 2.5, photoreceptors at 1.5 | 13.87 Hz | 26/60 | 11.15 Hz | 4.72 Hz |
+| app | gain 12, drives raw (ASSUMPTIONS #25), flat retina 1.0 | 56.41 Hz | 29/60 | 43.48 Hz | 16.58 Hz |
+| app ×1.5 | the old kernel's amplitude at the new gain | 63.86 Hz | 25/60 | 59.47 Hz | 17.04 Hz |
+| reference | gain 12, descending 2.5, no retina | 54.67 Hz | 25/60 | 48.33 Hz | 16.05 Hz |
+| **device** | the build behind `IMG_2713`: gain 6, drives ×1.5 (the old convention) | 69.65 Hz | 28/60 | 37.35 Hz | 10.41 Hz |
+| vision | gain 12, photoreceptors at 1.5 | 55.49 Hz | 28/60 | 44.59 Hz | 18.87 Hz |
+
+The pools-firing counts barely moved — a 1 Hz threshold is a low bar either way —
+but the means did, and the conclusion sharpens: the model does not merely "not
+predict silence", it predicts a cord firing hard.
 
 In the device's own configuration the cord's 42 pools come out at **23 firing
 at ≥ 1 Hz, mean 12.60 Hz, best 67.5 Hz**. The model does not predict silence.
@@ -225,15 +234,15 @@ records the convention, `sampleRetina` keeps the retinal amplitude on the camera
 path where its name says it belongs (so the camera's drive is unchanged,
 bit for bit), and CI asserts both lines by name, since a shader is the one file
 in the app it can read but not run. `tools/pool_probe.py`'s first two rows are
-the measurement of the difference: 25/60 pools at ≥ 1 Hz with the raw
-convention, 27/60 with the 1.5× one — the cord's own 42 pools fire comfortably
+the measurement of the difference: 29/60 pools at ≥ 1 Hz with the raw
+convention, 25/60 with the 1.5× one — the cord's own 42 pools fire comfortably
 under either, which is why this was never the silence.
 
 ## Where the silence can still be, and how the next build says which
 
 `python3 tools/pool_probe.py --only device` runs the same LIF with the app's own
-numbers and the pools fire — the cord's 42 pools, 23 of them at ≥ 1 Hz, mean
-12.60 Hz, best 67.50 Hz. So the readout path on the device is the only place
+numbers and the pools fire — the cord's 42 pools, 26 of them at ≥ 1 Hz, mean
+60.5 Hz, best 270 Hz. So the readout path on the device is the only place
 left where a zero can be born, and there are four of them. The world HUD now
 prints one line that separates them, with the same quantities the probe prints,
 so a screenshotted phone can be read against this machine:
@@ -270,11 +279,11 @@ cord's own muscle filter — `activation += (rate − activation)·(dt/tau)`, dt
 tau 60 ms (assumption #7) — over the pools the *asset* placed, so it prints the
 world HUD's first line as a prediction, not just the rates underneath it:
 
-    device (the build behind IMG_2713)   29/42 pools · 47.9 Hz · desc 17.4 Hz (tone 3.75)
-    app (gain 12, drives raw, retina 1)  29/42 pools · 58.1 Hz · desc 14.1 Hz (tone 2.5)
-    app x1.5                             29/42 pools · 77.2 Hz · desc 16.0 Hz (tone 3.75)
-    reference (step 3's configuration)   29/42 pools · 61.5 Hz · desc 13.7 Hz (tone 2.5)
-    vision (retina at 1.5)               28/42 pools · 62.9 Hz · desc 13.9 Hz (tone 2.5)
+    device (the build behind IMG_2713)   29/42 pools · 47.9 Hz · desc 69.7 Hz (tone 3.75) · organs 81.7 Hz
+    app (gain 12, drives raw, retina 1)  29/42 pools · 58.1 Hz · desc 56.4 Hz (tone 2.5) · organs 49.8 Hz
+    app x1.5                             29/42 pools · 77.2 Hz · desc 63.9 Hz (tone 3.75) · organs 74.3 Hz
+    reference (step 3's configuration)   29/42 pools · 61.5 Hz · desc 54.7 Hz (tone 2.5) · organs 50.4 Hz
+    vision (retina at 1.5)               28/42 pools · 62.9 Hz · desc 55.5 Hz (tone 2.5) · organs 51.2 Hz
 
 Every row has the pools loud: the *lowest* is 24/60 pool groups at ≥ 1 Hz and the
 cord's own 42 come out 28–29 of 42 firing in all five conditions. So `0/42 pools
@@ -282,7 +291,7 @@ firing · 0.0 Hz` on the phone is not the animal being quiet in any configuratio
 this network's own law produces — it is the readout, and the readout line beside
 it will say which of its three links is the one that is zero. The prediction is
 also the acceptance test: the next build's HUD is expected to read about
-`29/42 pools · 58 Hz · desc 14 Hz (tone 2.5) · organs 13 Hz`, and a screenshot that
+`29/42 pools · 58 Hz · desc 56 Hz (tone 2.5) · organs 50 Hz`, and a screenshot that
 says otherwise is a fact about the phone, not about the probe.
 
 **What the walk will be built on, measured before it is built.** The next item

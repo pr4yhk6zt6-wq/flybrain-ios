@@ -46,6 +46,15 @@ import numpy as np
 SECTIONS = ["rootIDs", "positions", "neuronMeta", "csrRowPtr", "csrColIdx",
             "csrWeight", "csrDelay", "groupIndices", "retinaUV"]
 
+# The rate window: the last 50 ms of a run, so the start-up transient (a
+# uniform membrane potential, no synaptic current yet) is not averaged into the
+# number. Rates are quoted per this many milliseconds — `hz()` divides by it —
+# and it used to be passed `args.ms` by mistake, which made every "Hz" in this
+# tool's output four times too small at the default 200 ms window: a rate is a
+# count divided by the time it was counted over, and the counts only ever cover
+# this window.
+WINDOW_MS = 50
+
 
 def load(bin_path: pathlib.Path, meta_path: pathlib.Path):
     buf = np.memmap(bin_path, dtype=np.uint8, mode="r")
@@ -79,74 +88,133 @@ def load(bin_path: pathlib.Path, meta_path: pathlib.Path):
                 meta=meta, groups=groups, members=members)
 
 
-def run(c, ms, gain, drives, seed=42, report_every=0, track=()):
-    """The LIF of tools/verify_banc.py, with an arbitrary drive per group.
+class LIF:
+    """The reference network, as a thing that can be stepped.
 
-    `track` names groups whose per-millisecond spike counts are wanted back
-    (a (ms, len(track)) array), which is what a firing *rate* has to be built
-    from: the app's per-group counter is a sum over a frame, and FlyCord filters
-    that sum through a 60 ms muscle time constant, so the predicted HUD line
-    cannot be read off a window total alone.
+    `tools/verify_banc.py` runs a window and reports; a closed loop has to run
+    one millisecond, read what the pools did, and decide what to drive next — so
+    the same equations live here behind `step()`, and `run()` is a loop over it.
+    There is one implementation of the LIF in this repository and this is it:
+    the kernel in `FlyBrain/Shaders/LIF.metal` is its port, and the kernels are
+    judged against the numbers it produces.
+
+    The state is exactly the reference's — membrane, synaptic current,
+    refractory counters, the delay ring, the RNG — and the update is its update,
+    line for line, including the noise draw's order and shape. `drive(name,
+    value)` writes a group's external current, which is what
+    `SimulationEngine.setGroupDrive` does on the phone; `None` clears it, which
+    is the state of every group the body is not driving.
     """
-    N, rowPtr, colIdx, W, delay = c["N"], c["rowPtr"], c["colIdx"], c["weight"], c["delay"]
+
     DT, TAU_M, TAU_SYN = 1.0, 20.0, 5.0
     V_TH, T_REF, NOISE = 1.0, 2, 0.015
-    rng = np.random.default_rng(seed)
-    V = rng.uniform(0, 0.5, N).astype(np.float32)
-    I_syn = np.zeros(N, np.float32)
-    refrac = np.zeros(N, np.int16)
-    max_d = int(delay.max()) + 1
-    ring = np.zeros((max_d, N), np.float32)
 
-    I_ext = np.zeros(N, np.float32)
-    for group, value in drives.items():
-        I_ext[c["members"](group)] = value
+    def __init__(self, c, gain, seed=42):
+        self.c = c
+        self.gain = float(gain)
+        N = c["N"]
+        self.rowPtr, self.colIdx = c["rowPtr"], c["colIdx"]
+        self.W, self.delay = c["weight"], c["delay"]
+        self.rng = np.random.default_rng(seed)
+        self.V = self.rng.uniform(0, 0.5, N).astype(np.float32)
+        self.I_syn = np.zeros(N, np.float32)
+        self.refrac = np.zeros(N, np.int16)
+        # Delays run 1..19 ms, so a ring of max+1 rows carries every write
+        # without ever landing on the slot being read at the same instant.
+        self.max_d = int(self.delay.max()) + 1
+        self.ring = np.zeros((self.max_d, N), np.float32)
+        self.I_ext = np.zeros(N, np.float32)
+        # np.float64, not float: the reference multiplies a float32 array by
+        # this scalar, and NumPy promotes to float64 for a NumPy scalar where a
+        # Python float would stay float32. Same algebra, different rounding, and
+        # the difference shows up as ~15 spikes in 30,000 over 200 ms — enough
+        # to make the port's numbers disagree with the reference it is measured
+        # against. (Verified: with these two as np.float64 the probe reproduces
+        # its pre-refactor output byte for byte.)
+        self.dm = np.exp(-self.DT / self.TAU_M)
+        self.ds = np.exp(-self.DT / self.TAU_SYN)
+        self.t = 0
+        self.last = np.zeros(0, np.int64)        # last step's fired indices
+        self._members = {}
 
-    dm, ds = np.exp(-DT / TAU_M), np.exp(-DT / TAU_SYN)
-    spikes = np.zeros(N, np.int64)
-    lag = 50                                   # ignore the start-up transient
-    window = np.zeros(N, np.int64)
+    def members(self, name):
+        idx = self._members.get(name)
+        if idx is None:
+            idx = self._members[name] = self.c["members"](name)
+        return idx
 
-    # neuron -> tracked group, built once; a bincount per millisecond is then
-    # enough to know every tracked group's spikes at that millisecond.
-    track_idx = [c["members"](name) for name in track]
-    pool_of = np.full(N, -1, np.int64)
-    for k, idx in enumerate(track_idx):
-        pool_of[idx] = k
-    tracked = np.zeros((ms, len(track_idx)), np.int64) if track_idx else None
-    for t in range(ms):
-        slot = t % max_d
-        I_syn = I_syn * ds + ring[slot]
-        ring[slot] = 0
-        I = I_syn * gain + I_ext + rng.normal(0, NOISE, N).astype(np.float32)
-        free = refrac <= 0
-        V[free] = V[free] * dm + I[free] * (1 - dm)
-        refrac[~free] -= 1
-        fired = np.flatnonzero((V >= V_TH) & free)
-        V[fired] = 0.0
-        refrac[fired] = T_REF
-        spikes[fired] += 1
-        if t >= ms - lag:
-            window[fired] += 1
-        if tracked is not None and len(fired):
-            which = pool_of[fired]
-            which = which[which >= 0]          # -1 is "not a tracked pool"
-            tracked[t] = np.bincount(which, minlength=len(track_idx))
+    def drive(self, name, value):
+        """Set (or clear, with None) one group's external current."""
+        self.I_ext[self.members(name)] = 0.0 if value is None else value
+
+    def step(self):
+        """One millisecond. `self.last` is the fired indices, in order."""
+        t = self.t
+        slot = t % self.max_d
+        self.I_syn = self.I_syn * self.ds + self.ring[slot]
+        self.ring[slot] = 0
+        I = self.I_syn * self.gain + self.I_ext + \
+            self.rng.normal(0, self.NOISE, self.c["N"]).astype(np.float32)
+        free = self.refrac <= 0
+        self.V[free] = self.V[free] * self.dm + I[free] * (1 - self.dm)
+        self.refrac[~free] -= 1
+        fired = np.flatnonzero((self.V >= self.V_TH) & free)
+        self.V[fired] = 0.0
+        self.refrac[fired] = self.T_REF
         if len(fired):
-            s0 = rowPtr[fired].astype(np.int64)
-            s1 = rowPtr[fired + 1].astype(np.int64)
+            s0 = self.rowPtr[fired].astype(np.int64)
+            s1 = self.rowPtr[fired + 1].astype(np.int64)
             if (s1 - s0).sum():
                 e = np.concatenate([np.arange(a, b) for a, b in zip(s0, s1)])
-                np.add.at(ring, ((t + delay[e].astype(np.int64)) % max_d,
-                                 colIdx[e]), W[e])
+                np.add.at(self.ring, ((t + self.delay[e].astype(np.int64)) % self.max_d,
+                                      self.colIdx[e]), self.W[e])
+        self.t += 1
+        self.last = fired
+        return fired
+
+    def counts(self, names):
+        """Spikes this millisecond for each named group (an array)."""
+        fired = self.last
+        out = np.zeros(len(names), np.int64)
+        if not len(fired):
+            return out
+        for k, name in enumerate(names):
+            out[k] = int(np.isin(fired, self.members(name)).sum())
+        return out
+
+
+def run(c, ms, gain, drives, seed=42, report_every=0, track=()):
+    """`ms` milliseconds of the reference network with a fixed drive per group.
+
+    Returns (spike counts per neuron over the whole run, the same over the last
+    50 ms — the window the rates are quoted from, with the start-up transient
+    left out — and, when `track` is given, a (ms, len(track)) array of the
+    tracked groups' spikes per millisecond.
+    """
+    net = LIF(c, gain, seed)
+    for group, value in drives.items():
+        net.drive(group, value)
+    spikes = np.zeros(c["N"], np.int64)
+    window = np.zeros(c["N"], np.int64)
+    tracked = np.zeros((ms, len(track)), np.int64) if track else None
+    lag = min(WINDOW_MS, ms)                   # ignore the start-up transient
+    for t in range(ms):
+        fired = net.step()
+        if len(fired):
+            spikes[fired] += 1
+            if t >= ms - lag:
+                window[fired] += 1
+        if tracked is not None:
+            tracked[t] = net.counts(track)
         if report_every and t % report_every == 0:
             print(f"    t={t:4d} fired={len(fired):6,}", flush=True)
     return spikes, window, tracked
 
 
-def hz(c, counts, name, ms):
+def hz(c, counts, name, window_ms=WINDOW_MS):
+    """A group's firing rate, in Hz, from a count over `window_ms` milliseconds."""
     idx = c["members"](name)
-    return float(counts[idx].sum()) / max(len(idx), 1) / (ms / 1000.0)
+    return float(counts[idx].sum()) / max(len(idx), 1) / (window_ms / 1000.0)
 
 
 def main() -> int:
@@ -205,16 +273,16 @@ def main() -> int:
         t0 = time.time()
         spikes, window, tracked = run(c, args.ms, cfg["gain"], cfg["drives"],
                                       report_every=0, track=cord_pools)
-        pool_hz = np.array([hz(c, window, p, args.ms) for p in pools])
+        pool_hz = np.array([hz(c, window, p) for p in pools])
         firing = int((pool_hz >= 1.0).sum())
         row = dict(
             condition=name, gain=cfg["gain"],
-            descending=hz(c, window, "descending", args.ms),
-            organ_mean=float(np.mean([hz(c, window, o, args.ms) for o in organs])),
+            descending=hz(c, window, "descending"),
+            organ_mean=float(np.mean([hz(c, window, o) for o in organs])),
             pool_mean=float(pool_hz.mean()),
             pool_max=float(pool_hz.max()),
             pools_firing=firing, pools=len(pools),
-            population=float(window.sum() / c["N"] / (args.ms / 1000.0)),
+            population=float(window.sum() / c["N"] / (WINDOW_MS / 1000.0)),
             never_fired_pct=float((spikes == 0).mean() * 100),
             seconds=time.time() - t0)
         rows.append(row)
@@ -235,9 +303,10 @@ def main() -> int:
         # named-group machinery the kernels are encoded against, and
         # `group spikes` is the callers' own tally (SimulationEngine.groupSpikeSum
         # on the device, summed here over all 113 groups for this window).
-        win_ms = args.ms
+        win_ms = WINDOW_MS
         def tally(names):
-            return sum(hz(c, window, name, win_ms) * len(c["members"](name))
+            # counts over the window = rate x window x population
+            return sum(hz(c, window, name) * len(c["members"](name))
                        * (win_ms / 1000.0) for name in names)
         print(f"  the HUD's line    over {win_ms} ms · "
               f"net {row['population'] * c['N']:.0f} spk/s · "

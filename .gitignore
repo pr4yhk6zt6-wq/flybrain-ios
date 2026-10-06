@@ -33,3 +33,7 @@ uploads/
 # development scratch: probes live in tools/probes/, this is the sandbox
 tmp/
 MUJOCO_LOG.TXT
+
+# The CI token for tools/ci.sh. Never committed: GitHub's push protection
+# blocks a commit that carries a secret, and it is right to.
+.github-token
