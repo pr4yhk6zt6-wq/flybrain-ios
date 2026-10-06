@@ -453,6 +453,16 @@ jobs:
       - name: Step 6 — the descending cells must reach the legs' motor pools
         run: python3 tools/verify_descending.py
 
+      # The loop exists three times — the step-3 reference, the walk loop with
+      # the body in it, and FlyCord.swift, which is what the animal runs. Three
+      # transliterations of one law drift, and the drift is invisible: it has
+      # already happened twice (the pool names, and the four-times-too-small
+      # rates). This is the method that replaces reading two files side by side
+      # — it reads the constants out of all three files and fails on any
+      # disagreement, and it fails if either organ law stops naming its κ.
+      - name: Step 6 — the cord's laws must be one set of numbers in all three files
+        run: python3 tools/check_cord_laws.py --explain
+
       - name: Pack the recorded world into the app bundle
         run: |
           python3 tools/pack_world.py

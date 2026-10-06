@@ -1,6 +1,8 @@
 # AUDIT — where this repository stands against the brief
 
-Read this before changing anything. Nothing here was rebuilt from scratch; the
+Read this before changing anything. For the state *now* — the 28 items, what was
+re-measured on the current HEAD, and what the phone should show after the next
+build — see [`docs/STATUS_TH.md`](STATUS_TH.md). Nothing here was rebuilt from scratch; the
 inventory below is of the tree as it stood at `3353a74`, reconciled with the
 fixes that landed on `main` while it was written (`7b05f8b`…`2beb443`: the
 part-axis fix, the no-recording policy, the two-bar UI, the step-6 motor-pool

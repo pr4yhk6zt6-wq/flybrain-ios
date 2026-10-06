@@ -51,6 +51,18 @@ sys.path.insert(0, str(HERE))
 import fly_aba as fa                                            # noqa: E402
 
 TONE = 2.5          # assumption #5, the brain's tone
+KAPPA = 1.0         # assumption #11 — `FlyCordSettings.kappa`: how much of the
+                    # joint's anatomical range the chordotonal organ spans its
+                    # drive over. 1 = the whole range. It is a named constant
+                    # here because it was a literal once: this tool ran the organ
+                    # at 0.5 (`value = tone * (1 - 0.5 * x)`) while
+                    # `FlyCord.swift` and step 3 both ran it at 1.0, so §4 and §5
+                    # of reports/item4_walking.md described an animal whose organ
+                    # gain was half the phone's. `tools/check_cord_laws.py` now
+                    # fails the build if the three files stop agreeing, and if
+                    # either organ law stops using its named κ.
+POLARITY = 1.0      # assumption #11 — +1: flexion stretches the organ, which
+                    # silences it (FeCO, published). -1 reverses the reflex.
 COMMAND_GAIN = 0.5  # assumption #24 — `FlyCordSettings.gain`, excitation per unit
                     # of balance. Not to be confused with the LIF's current gain
                     # (`SimulationEngine.gain`, 12): that one scales synaptic
@@ -80,7 +92,7 @@ class Cord:
 
     def __init__(self, body, asset, gain, tone=TONE,
                  channels=("chordotonal", "campaniform"),
-                 closed_calibration=False):
+                 closed_calibration=False, kappa=KAPPA, polarity=POLARITY):
         """`gain` is the *command* gain (assumption #24), not the LIF's.
 
         `closed_calibration` decides what the reference balance is measured
@@ -94,6 +106,8 @@ class Cord:
         self.body = body
         self.tone = tone
         self.gain = gain
+        self.kappa = kappa
+        self.polarity = polarity
         self.closed_calibration = closed_calibration
         self.pattern = None          # (Hz, amplitude) on the descending group
         self.channels = set(channels)
@@ -175,7 +189,7 @@ class Cord:
                 value = self.tone
             elif o["kind"] == "chordotonal":
                 x = np.clip((angles[o["hinge"]] - o["rest"]) / o["half_span"], -1, 1)
-                value = self.tone * (1 - 0.5 * x)            # kappa 0.5, #11
+                value = self.tone * (1 - self.polarity * self.kappa * x)  # #11
             else:
                 ref = self.reference_load.get(o["leg"], 0.0)
                 value = self.tone * (loads.get(o["leg"], 0.0) / ref) if ref > 1e-9 else self.tone
@@ -256,7 +270,8 @@ def run_loop(args) -> dict:
 
     net = pp.LIF(c, args.gain, seed=args.seed)
     cord = Cord(body, asset, args.command_gain, tone=args.tone,
-                closed_calibration=args.closed_calibration)
+                closed_calibration=args.closed_calibration,
+                kappa=args.kappa, polarity=args.polarity)
     if args.desc_pattern:
         f, a = args.desc_pattern
         cord.pattern = (f, a)
@@ -304,7 +319,7 @@ def run_loop(args) -> dict:
 
     # ---- what happened ----------------------------------------------------
     out = {"ms": args.ms, "gain": args.gain, "command_gain": args.command_gain,
-           "tone": args.tone,
+           "tone": args.tone, "kappa": args.kappa, "polarity": args.polarity,
            "cord": not args.no_cord, "feedback": not args.no_feedback,
            "phase_at_end": cord.phase, "wall_s": wall, "legs": {},
            "history": {k: [round(v, 3) for v in vals] for k, vals in cord.history.items()}}
@@ -363,7 +378,8 @@ def show(out: dict, trace: dict) -> None:
             ("open loop (organs not told what the body did)" if not out["feedback"]
              else "closed loop"))
     print(f"\n{out['ms']} ms of {what} — LIF gain {out['gain']:g}, command gain "
-          f"{out['command_gain']:g}, tone {out['tone']:g}"
+          f"{out['command_gain']:g}, tone {out['tone']:g}, kappa {out['kappa']:g}, "
+          f"polarity {out['polarity']:+.0f}"
           f"  [{out['wall_s']:.0f} s wall]")
     if out["cord"]:
         h = out["history"]
@@ -407,6 +423,13 @@ def main() -> int:
     ap.add_argument("--command-gain", type=float, default=COMMAND_GAIN,
                     help="FlyCord's balance -> excitation gain (assumption #24)")
     ap.add_argument("--tone", type=float, default=TONE)
+    ap.add_argument("--kappa", type=float, default=KAPPA,
+                    help="the chordotonal organ's range fractionation "
+                         "(assumption #11, FlyCordSettings.kappa). Default is "
+                         "the value the phone runs; step 3 sweeps 1/4/16.")
+    ap.add_argument("--polarity", type=float, default=POLARITY,
+                    help="+1: flexion stretches the organ and silences it "
+                         "(published). -1 is the control experiment.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no-cord", action="store_true", help="muscle tone only")
     ap.add_argument("--no-feedback", action="store_true",

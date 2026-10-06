@@ -654,7 +654,10 @@ struct WorldHUD: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("the fly, running on this phone")
+            // The build number rides on this line because this screen is the
+            // one being looked at when the question is "is this the new
+            // build?" — see `BuildStamp` in ContentView.swift.
+            Text("the fly, running on this phone · \(BuildStamp.short)")
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
             line(String(format: "feet %d/6 · COM z %+.4f cm · %d contacts",

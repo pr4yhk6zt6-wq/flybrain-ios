@@ -7,6 +7,28 @@ import SwiftUI
 import MetalKit
 import Combine
 
+// MARK: - Which build is this
+
+/// The version and build number, read off the bundle the app is actually
+/// running from, so a screenshot can answer "which build is on that phone".
+///
+/// It is here because three sessions have now been spent on a bug — the Map
+/// screen playing back `frames.bin` instead of simulating the animal — that had
+/// already been fixed in a build nobody had installed
+/// (docs/AUDIT.md §0, docs/STATUS_TH.md §0). A number on the screen costs
+/// nothing and ends that argument. It is written by `project.yml`
+/// (`CFBundleShortVersionString`, `CFBundleVersion`) and is deliberately not
+/// duplicated anywhere in the sources.
+enum BuildStamp {
+    static let short: String = {
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "v\(version) (\(build))"
+    }()
+}
+
 // MARK: - Root
 
 struct ContentView: View {
@@ -466,6 +488,8 @@ struct LoadingView: View {
                 .font(.footnote).foregroundStyle(.secondary)
             Text("BANC v888 · brain and nerve cord · 2,171,713 synapses")
                 .font(.caption2).foregroundStyle(.tertiary)
+            Text(BuildStamp.short)
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 }
@@ -481,6 +505,8 @@ struct FailureView: View {
                 .font(.caption).multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
+            Text(BuildStamp.short)
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 }

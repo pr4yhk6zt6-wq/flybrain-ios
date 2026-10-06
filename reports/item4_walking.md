@@ -197,3 +197,105 @@ grows with the modulation means the connectivity is doing the coordination and
 the pattern is a command; a tripod index that stays at zero means the six legs
 are six copies of the drive, and item 4 needs the coupling to be built rather
 than found.
+
+## 6. The tool and the app were not running the same law (2026-10-06)
+
+Found by reading the three implementations of the loop side by side, and then
+made into a check so that reading is no longer the method:
+
+| file | κ — the chordotonal organ's range fractionation |
+| --- | --- |
+| `docs/ASSUMPTIONS.md` #11 (the declared value) | **1.0** |
+| `tools/step3_closedloop.py` (the reference) | 1.0, swept 1/4/16 |
+| `FlyBrain/Sources/FlyCord.swift` (**what the phone runs**) | **1.0** |
+| `tools/walk_loop.py` (the tool that measured §4 and §5) | **0.5** |
+
+It was a literal, and the comment beside it cited the assumption that says
+otherwise:
+
+```python
+value = self.tone * (1 - 0.5 * x)            # kappa 0.5, #11
+```
+
+So every number in §4 and §5 describes an animal whose organ gain is half the
+phone's. Two things follow, and both are now stated rather than argued.
+
+**1. The drift is a bug in the tool.** The comment cites #11; #11 says 1.0;
+step 3 and the app both say 1.0. `walk_loop.py` now names the law —
+`KAPPA = 1.0`, `POLARITY = 1.0`, used by the organ branch, with `--kappa` and
+`--polarity` for sweeps, defaulting to the app's values.
+
+**2. The consequence had to be measured, not argued.** 400 ms of closed loop,
+same seed, same operating point, the two κ:
+
+| 400 ms at the app's operating point | κ = 0.5 (§4–§5 as measured) | κ = 1.0 (the app's law) |
+| --- | --- | --- |
+| pools firing | 60.9 Hz | 59.5 Hz |
+| legs leaving the floor | 3/6 | 3/6 |
+| loads, of stance | 0.71–1.06 | 0.71–1.06 |
+| COM z | −0.02266 → −0.03890 cm | −0.02266 → −0.03914 cm |
+| horizontal drift | 0.03134 cm | 0.03096 cm |
+| foot-load tripod index | −0.230 | −0.232 |
+| knee tripod index | −0.439 | −0.438 |
+
+**The conclusions of §4 and §5 survive the correction.** The knee moves 0.01–0.09
+rad peak-to-peak against a half-range near 1 rad, so the organ's modulation is a
+few per cent of the tone either way: doubling κ moves the loop by less than a per
+cent. The drift was real, and it is now impossible — but it was not the cause of
+the distorted stance, and the distorted stance is still what item 4 owes.
+
+### The guard
+
+`tools/check_cord_laws.py` (new, and a CI step) reads the constants out of all
+three files — `FlyCordSettings` in the Swift, the module constants in
+`walk_loop.py`, the `add_argument(default=…)` in step 3 — and fails on any
+disagreement. It also fails if either organ law stops referring to its *named*
+κ, because a literal is how this happened: a number in the law cannot be
+compared with a number in another file, and two files that do not name their
+numbers cannot be checked at all.
+
+It is the fifth guard of this shape, after the pool names (#22), the
+four-times-too-small rates, the mesh scale and the conjugate quaternion — and
+each of the first four cost a session to find.
+
+## 7. The two levers, re-measured at the app's law, plus the patterned command (2026-10-06)
+
+§5 measured the levers at κ = 0.5. These are the same measurements at κ = 1.0 —
+the app's law, per §6 — with the patterned descending command added. Same seed,
+same operating point (LIF gain 12, command gain 0.5, tone 2.5), closed loop,
+300 ms of calibration inside every run.
+
+| run | pools | legs lifting | loads, of stance | COM z, cm | drift, cm | foot-load tripod index (within / across) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 400 ms, as the app ships | 59.5 Hz | 3/6 | 0.71–1.06 | −0.02266 → −0.03914 | 0.0310 | −0.232 (−0.299 / −0.067) |
+| 400 ms, `--closed-calibration` | 73.6 Hz | 2/6 | 0.71–1.34 | −0.02266 → −0.03521 | 0.0566 | −0.361 (−0.321 / +0.041) |
+| 800 ms, `--desc-pattern 20:1.0` | 63.4 Hz | 2/6 | 0.36–1.37 | −0.02266 → −0.03802 | 0.0278 | **+0.855** (+0.340 / **−0.515**) |
+
+**The calibration lever** does what §5 said it would and costs what §5 said it
+would cost: the sinking falls from 0.0165 to 0.0126 cm (−24 %) and the horizontal
+drift rises from 0.031 to 0.057 cm (+83 %). It is not a fix on its own, and it is
+still not the app's setting.
+
+**The patterned command is the first condition in this whole report that puts the
+sign right.** With a constant tone every previous run — eleven in `gait_probe.py`
+and four here — came out at or below zero, because all six legs' loads move
+*together*. Modulating the descending population at 20 Hz (tone 2.5 ± 1.0) splits
+them: the two tripods' loads now move against each other, across-tripod
+correlation −0.515, and the index is +0.855.
+
+**It is not a walk, and the per-leg columns are what say so.** Only two legs leave
+the floor at all — T2_right and T3_left, both in tripod A — and they stay off it
+for 60 % of the run; the other four never leave it. The step counts are
+1 / 0 / 0 / 1 / 3 / 0. What the pattern produces is a two-group **load transfer**
+(tripod A up → tripod B carries 1.00–1.37 of stance), repeated under the drive,
+not a step rhythm with a stance and a swing phase.
+
+**And the next question is already posed by that number.** The drive is common to
+all six legs; a common drive cannot, by itself, make one group's load rise while
+the other's falls. Something splits them, and there are exactly two candidates:
+the cord's own multi-leg premotor cells (788 cells, 69,543 synapses, §2) or the
+body's mechanics (two legs off the floor put their load on the other four). The
+control that separates them is the same run with `--no-feedback`, which holds
+every organ at its standing value and leaves the cord driving a body that cannot
+answer it — 3 minutes of wall clock. That is the next measurement, and item 4
+should not be called either way until it is made.
