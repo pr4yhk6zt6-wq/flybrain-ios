@@ -324,55 +324,6 @@ jobs:
       - name: Step 4 — every camera must frame the animal
         run: python3 tools/audit_view.py --gate --out build/view
 
-      # ---------------------------------------------------------- step 4: the smell
-      # Item 11: odor as a spatial and temporal field. The field is written into
-      # world.json (the app reads it from there, like the camera limits), and the
-      # golden samples are the numbers `FlyBrainTests/OdorFieldTests` pins the
-      # Swift port to.
-      - name: Step 4 — the odor field, written where the app reads it
-        run: |
-          python3 tools/odor_field.py --write --golden build/odor_golden.json
-
-      # The gate is not "the file exists". It is: the mean falls with distance
-      # and does not reach upwind; an antenna in it is in clean air most of the
-      # time (that is what makes it a plume and not a cloud); and — the claim
-      # item 11 actually makes — driving the olfactory receptor neurons from it
-      # moves the brain, not just the antenna. The first rehearsal of this gate
-      # (a drive below the LIF's threshold) left the receptors at zero and moved
-      # nothing, and passed: it now fails on exactly that.
-      - name: Step 4 — the odor must be a plume, and it must reach the brain
-        run: python3 tools/odor_field.py --gate
-
-      # And the two implementations of the field — the tool's and the phone's —
-      # must be the same field. The Swift test carries the golden numbers in its
-      # own source (a test that reads its expectations from the tool it is
-      # checking cannot fail), so what has to be checked here is that those
-      # embedded numbers are still the ones this run produces.
-      - name: Step 4 — the smell in the Swift test is the smell this run measured
-        run: |
-          python3 - <<'PY'
-          import json, pathlib, re, sys
-          golden = json.loads(pathlib.Path('build/odor_golden.json').read_text())
-          want = [(round(s['point'][0], 6), round(s['point'][1], 6),
-                   round(s['point'][2], 6), s['t_ms'], s['drive']) for s in golden]
-          src = pathlib.Path('FlyBrainTests/OdorFieldTests.swift').read_text()
-          rows = re.findall(r'\(SIMD3<Double>\(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\), '
-                            r'([0-9.]+), ([-0-9.eE]+)\)', src)
-          got = [(round(float(a), 6), round(float(b), 6), round(float(c), 6),
-                  float(d), float(e)) for a, b, c, d, e in rows]
-          if len(got) != len(want):
-              print(f'FAIL the Swift test carries {len(got)} samples, the tool '
-                    f'produced {len(want)}')
-              sys.exit(1)
-          for i, (g, w) in enumerate(zip(got, want)):
-              if abs(g[4] - w[4]) > 1e-9:
-                  print(f'FAIL sample {i} is {g[4]} in the test and {w[4]} in the '
-                        f'tool')
-                  sys.exit(1)
-          print(f'the {len(want)} samples in the Swift test are the ones this run '
-                f'measured')
-          PY
-
       - name: Step 5 — rebuild the body asset
         run: |
           python3 tools/build_body.py --flybody data/flybody \
@@ -454,6 +405,59 @@ jobs:
           cp build/flybanc.bin build/flybanc_meta.json FlyBrain/Resources/
           cp build/fly_anatomy.json FlyBrain/Resources/
           ls -lh FlyBrain/Resources/
+
+      # ---------------------------------------------------------- step 4: the smell
+      # These three run here and not with the rest of step 4 because they are the
+      # only step-4 checks that read the packed connectome (the `--probe` in the
+      # gate loads build/flybanc.bin). Placed before the pack, the gate fails on a
+      # missing file rather than on a wrong smell -- which is how this was found.
+      # Item 11: odor as a spatial and temporal field. The field is written into
+      # world.json (the app reads it from there, like the camera limits), and the
+      # golden samples are the numbers `FlyBrainTests/OdorFieldTests` pins the
+      # Swift port to.
+      - name: Step 4 — the odor field, written where the app reads it
+        run: |
+          python3 tools/odor_field.py --write --golden build/odor_golden.json
+
+      # The gate is not "the file exists". It is: the mean falls with distance
+      # and does not reach upwind; an antenna in it is in clean air most of the
+      # time (that is what makes it a plume and not a cloud); and — the claim
+      # item 11 actually makes — driving the olfactory receptor neurons from it
+      # moves the brain, not just the antenna. The first rehearsal of this gate
+      # (a drive below the LIF's threshold) left the receptors at zero and moved
+      # nothing, and passed: it now fails on exactly that.
+      - name: Step 4 — the odor must be a plume, and it must reach the brain
+        run: python3 tools/odor_field.py --gate
+
+      # And the two implementations of the field — the tool's and the phone's —
+      # must be the same field. The Swift test carries the golden numbers in its
+      # own source (a test that reads its expectations from the tool it is
+      # checking cannot fail), so what has to be checked here is that those
+      # embedded numbers are still the ones this run produces.
+      - name: Step 4 — the smell in the Swift test is the smell this run measured
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+          golden = json.loads(pathlib.Path('build/odor_golden.json').read_text())
+          want = [(round(s['point'][0], 6), round(s['point'][1], 6),
+                   round(s['point'][2], 6), s['t_ms'], s['drive']) for s in golden]
+          src = pathlib.Path('FlyBrainTests/OdorFieldTests.swift').read_text()
+          rows = re.findall(r'\(SIMD3<Double>\(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\), '
+                            r'([0-9.]+), ([-0-9.eE]+)\)', src)
+          got = [(round(float(a), 6), round(float(b), 6), round(float(c), 6),
+                  float(d), float(e)) for a, b, c, d, e in rows]
+          if len(got) != len(want):
+              print(f'FAIL the Swift test carries {len(got)} samples, the tool '
+                    f'produced {len(want)}')
+              sys.exit(1)
+          for i, (g, w) in enumerate(zip(got, want)):
+              if abs(g[4] - w[4]) > 1e-9:
+                  print(f'FAIL sample {i} is {g[4]} in the test and {w[4]} in the '
+                        f'tool')
+                  sys.exit(1)
+          print(f'the {len(want)} samples in the Swift test are the ones this run '
+                f'measured')
+          PY
 
       # Everything above built the brain. This puts the body in: the app
       # bundle is only allowed to carry what existed when xcodegen ran, so
