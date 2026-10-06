@@ -572,10 +572,12 @@ struct WorldScreen: View {
     private var orbit: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
-                let dx = Double(v.translation.width) - lastDrag.width
-                let dy = Double(v.translation.height) - lastDrag.height
-                lastDrag = CGSize(width: Double(v.translation.width),
-                                  height: Double(v.translation.height))
+                // `v.translation` is a CGSize of CGFloats; the difference and
+                // the conversion are done in one place each, so no expression
+                // here is mixing Double and CGFloat.
+                let dx = Double(v.translation.width - lastDrag.width)
+                let dy = Double(v.translation.height - lastDrag.height)
+                lastDrag = v.translation
                 model.orbit(dx: dx, dy: dy)
             }
             .onEnded { _ in lastDrag = .zero }
