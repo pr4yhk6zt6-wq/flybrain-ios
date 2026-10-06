@@ -449,10 +449,10 @@ class Aero:
         """The forces on the strips for a wing turning at `omega_rad_s` about
         its stroke axis with angle of attack `alpha_deg`.
 
-        The strip's velocity is `ω r` in the stroke plane; the chordwise part
-        sees `v cos α` and the normal part `v sin α` only because α is *defined*
-        as the wing's angle to that velocity — so the geometry is in the
-        coefficients, not in the velocity, and `|v| = ω r` for every strip.
+        The strip's velocity is `ω r sinθ` — its radius about the stroke *axis*;
+        the chordwise part sees `v cos α` and the normal part `v sin α` only
+        because α is *defined* as the wing's angle to that velocity — so that
+        geometry is in the coefficients, not in the velocity.
         Returns the integrated force in the stroke plane: lift (perpendicular to
         the stroke velocity, i.e. what holds the animal up when the stroke plane
         is horizontal) and drag (along the velocity, i.e. what a steering
@@ -463,7 +463,13 @@ class Aero:
         rho = self.p["rho_g_cm3"]
         lift = drag = 0.0
         for s in self.wing.stations:
-            v = abs(omega_rad_s) * s["r_cm"]        # cm/s
+            # about the *stroke axis*, which is what the strip actually turns
+            # about: r sinθ, not r. This table fed the golden rows the Swift port
+            # is checked against, and the port had the sinθ in it — so the two
+            # disagreed by sinθ² = 0.9903 and CI said so, row by row, at the 1 %
+            # level. The port was right; this function was the one that was
+            # wrong, and `wing_wrench` (which the beats come from) always had it.
+            v = abs(omega_rad_s) * s["r_cm"] * self.wing.sin_theta   # cm/s
             q = 0.5 * rho * v * v * s["area_cm2"]   # g·cm/s²  (1 g·cm/s² = 1 dyn)
             lift += q * cl
             drag += q * cd
