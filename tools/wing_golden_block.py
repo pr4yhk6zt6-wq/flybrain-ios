@@ -70,12 +70,45 @@ block = f'''    // MARK: - the golden table
 
 p = pathlib.Path("/home/user/flybrain-ios/FlyBrain/Sources/WingAero.swift")
 t = p.read_text()
+# The block is a *member* of `struct WingAero`, so it goes after the last
+# function and before the struct's closing brace. Splicing it in at the last
+# "}" in the file is not that: if the file has no trailing newline, the last
+# "}\n" is the *function's* closing brace, and the block lands inside the
+# function — which is what the first version of this script did, and what the
+# Swift compiler rejected with "static properties may only be declared on a
+# type". So the code part is re-closed explicitly instead.
 marker = "    // MARK: - the golden table"
-if marker in t:
-    t = t[:t.index(marker)]
-# put the block inside the type, just before the closing brace of `struct WingAero`
-idx = t.rindex("}\n")
-t = t[:idx] + block + t[idx:]
-p.write_text(t)
+i = t.index(marker) if marker in t else len(t)
+code = t[:i].rstrip("\n")
+if not code.rstrip().endswith("}"):
+    code += "\n    }"          # re-close the function the block follows
+code = code.rstrip("\n")
+p.write_text(code + "\n\n" + block + "}\n")
+
+# and check the shape rather than trusting it
+out = p.read_text()
+depth, in_string, i2 = 0, False, 0
+while i2 < len(out):
+    if out[i2:i2 + 3] == '"""':
+        in_string = not in_string
+        i2 += 3
+        continue
+    if not in_string:
+        if out[i2] == "{":
+            depth += 1
+        elif out[i2] == "}":
+            depth -= 1
+    i2 += 1
+if depth != 0 or in_string:
+    raise SystemExit(f"unbalanced file: depth {depth}, in_string {in_string}")
+# the block has to be inside a type (depth > 0) and after the last function
+head = out[:out.index("static let goldenWing")]
+depth_at_block = head.count("{") - head.count("}")
+if depth_at_block != 1:
+    raise SystemExit(f"the golden block is at brace depth {depth_at_block}, "
+                     f"not inside exactly one type")
+if out.index("static let goldenWing") < out.rindex("\n    func "):
+    raise SystemExit("the golden block is not after the last function")
+print("the golden block is inside the type, after the last function")
 print(f"golden block written: {len(wing_rows)} wing lines, {len(station_rows)} stations, "
       f"{len(strip_rows)} strips, {len(beat_rows)} beats")

@@ -496,7 +496,10 @@ struct WingAero {
         let left = restActivation(p.powerLeft) + delta(p.powerLeft) + delta(p.steeringLeft)
         let right = restActivation(p.powerRight) + delta(p.powerRight) + delta(p.steeringRight)
         return (max(0, min(1, left)), max(0, min(1, right)))
-        // MARK: - the golden table
+    
+    }
+
+    // MARK: - the golden table
     //
     // Written by `python3 tools/wing_aero.py --golden build/wing_golden.json`
     // and pasted here by `tools/wing_golden_block.py`, so that these numbers are
