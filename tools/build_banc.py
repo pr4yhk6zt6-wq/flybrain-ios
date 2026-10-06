@@ -480,6 +480,43 @@ if split_total != reach_any:
                      "a pool motor neuron — every such cell must land in exactly "
                      "one of the nine groups")
 
+# ---- the same cells, split the other way: by the muscle they reach ---------
+# The leg axis above is nearly common-mode (765 of the 788 multi-leg cells reach
+# both tripods), and `tools/premotor_axis.py` measures what its populations
+# would deliver to each tripod. The *muscle* axis is a different question with a
+# different answer: the pool that reaches `long_tendon` delivers its net command
+# +49% toward tripod A and the one that reaches `coxa_rotator_ant` delivers it
+# -22% toward B, so a patterned command landing on those two populations does
+# push the two halves apart — the lever the leg axis does not have. That is why
+# these names exist: `walk_loop.py --drive-group premotor:muscle:long_tendon
+# --drive-group-b premotor:muscle:coxa_rotator_ant --desc-pattern 20:1.0` is the
+# experiment, and neither group can be driven until it is packed here.
+#
+# These groups *overlap* the nine above on purpose — a cell that reaches one leg
+# and the tibia flexor pool belongs to both `premotor:leg:<leg>` and
+# `premotor:muscle:tibia_flexor`. They answer different questions, and the
+# partition check above is about the first of those only.
+pool_muscle = np.full(N, -1, np.int16)
+muscle_ids = sorted({g["name"].split(":")[2] for g in group_table
+                     if g["name"].startswith("pool:")})
+muscle_of = {m: i for i, m in enumerate(muscle_ids)}
+for g in group_table:
+    if g["name"].startswith("pool:"):
+        pool_muscle[group_indices[g["start"]:g["start"] + g["count"]]] = \
+            muscle_of[g["name"].split(":")[2]]
+post_muscle = pool_muscle[col_idx]
+muscle_groups = []
+for m in muscle_ids:
+    cells = np.unique(pre_s[onto_pool & (post_muscle == muscle_of[m])])
+    muscle_groups.append((f"premotor:muscle:{m}", cells.astype(np.uint32)))
+for name, idx in muscle_groups:
+    group_table.append({"name": name, "start": cursor, "count": int(len(idx))})
+    group_indices = np.concatenate([group_indices, idx])
+    cursor += len(idx)
+    log(f"    {name:<28} {len(idx):>6,}")
+log(f"    {'premotor muscle axis':<28} "
+    f"{len(muscle_groups)} groups, {len(muscle_ids)} muscles per leg")
+
 # ---- retinotopic UV for the visual group, per hemisphere -------------------
 vis = next(g for g in group_table if g["name"] == "sensory_vision")
 vis_idx = group_indices[vis["start"]:vis["start"] + vis["count"]]

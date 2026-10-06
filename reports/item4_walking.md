@@ -422,7 +422,15 @@ nine groups:
 | — exclusive to tripod B | **14** |
 | — reaching **both** tripods | **765** (97.1 % of the multi-leg cells) |
 
-**So the two tripods are not separable in this population.** 97.1 % of the
+**So the two tripods are not separable in this population.** (§10 refines
+this: the cells' *reach* is binary and 765 of 788 reach both, but the packed
+weight they deliver to each half is not equal, and a population can therefore
+still bias one tripod without any of its cells being exclusive to it. The
+refinement does not change the conclusion — it was measured, and the bias turned
+out not to be what moves the legs — but the stronger claim "only a cell that
+reaches one tripod can be part of a mechanism that drives them apart" was too
+strong as written: a *cell* cannot, and a *population* can carry an unbalanced
+command even when each of its cells reaches both.) 97.1 % of the
 multi-leg premotor cells touch both halves, and only 23 cells in the whole
 connectome reach more than one leg *and* stay inside one tripod. Two independent
 measurements now say the same thing from opposite ends:
@@ -448,3 +456,85 @@ and each is a measurement rather than a wish:
    the legs in some other way (by joint, by load, by segment) that this project
    has not looked for yet. That search is the natural next measurement: cluster
    the 788 by which *muscles* they reach rather than which legs.
+
+## 10. The muscle axis: a lever that turns out to be the pattern's (2026-10-06)
+
+§9 closed the leg axis: 765 of the 788 multi-leg premotor cells reach both
+tripods, so driving that population cannot separate the halves. The cord is not
+organised *only* by leg, though — each leg's motor neurons are grouped by
+**muscle** (`pool:T2_right:tibia_flexor` is a different target from
+`pool:T2_right:tibia_extensor`), and the cells that reach one muscle are not the
+cells that reach another. `tools/premotor_axis.py` (new) measures what each such
+population would *deliver*, and the first result was not common-mode:
+
+| the population that reaches | cells | net command to tripod A vs B | asymmetry |
+| --- | --- | --- | --- |
+| `long_tendon` | 1,373 | +149 vs +51 | **+49.1 %** |
+| `coxa_rotator_ant` | 1,703 | +204 vs +318 | **−21.8 %** |
+| `tarsus_depressor` | 764 | −223 vs −150 | −19.3 % |
+| `tibia_extensor` | 1,802 | +317 vs +434 | −15.6 % |
+| `coxa_rotator_post` | 1,741 | +314 vs +423 | −14.7 % |
+
+The index is `(net_A − net_B) / (|net_A| + |net_B|)` over the packed weight,
+which is *signed* by presynaptic transmitter, so these are net sums and not
+shares of a positive total. Controls, for the same populations: split by side
+(left three legs against right three) and by segment (T1 against T3). The
+`long_tendon` population's +49.1 % is +2.8 % under the side split — not a
+left-right effect — and its per-leg detail is not a tripod shape either: it is
+−36/−21 on the two T1 legs and +104/+80 on T2_right/T3_left, a segment-weighted
+pattern that the tripod key happens to score positively.
+
+Calibration on the same instrument: `premotor:tripodA` +100 %, `premotor:tripodB`
+−100 %, and `premotor:multileg` **−0.2 %** — which is the dynamic measurement of
+§8 (index −0.300) arriving from the structure, on a third independent walk of
+the CSR.
+
+Two populations with opposite signs is what a gait needs, so both were packed
+(`premotor:muscle:<muscle>`, ten groups) and `walk_loop.py` grew a second drive:
+`--drive-group-b` is the same tone and the same amplitude, half a cycle out of
+phase, so the command is split *differentially* between two connectome
+populations instead of being a single modulated tone (which is what §6-§8 did).
+
+| run (800–1200 ms, tone 2.5 ± 1.0, κ = 1.0) | index | within / across | legs that lift >1 % |
+| --- | --- | --- | --- |
+| `long_tendon` leads, 20 Hz (§8 shape) | **+0.743** | +0.293 / −0.450 | T1_right 7 %, T2_left 49 % |
+| `long_tendon` leads, 5 Hz | **+0.581** | +0.198 / −0.383 | T1_right 22 %, T2_left 45 % |
+| `coxa_rotator_ant` leads, 5 Hz (phase swapped) | **−0.045** | −0.215 / −0.170 | T1_right 43 %, T3_right 6 % |
+| **null-bias pair** (`femur_reductor` vs `trochanter_flexor`, ±2 %), 5 Hz | **+0.491** | +0.133 / −0.358 | T2_left 59 %, T1_right 16 % |
+
+The last row is the control, and it is the result of this section: **a pair of
+populations with no tripod bias at all produces nearly the same index as the
+pair selected for having one** (+0.491 against +0.581, a difference of 0.09 —
+inside the ±0.12 wander §6 measured across eleven conditions). Swapping which of
+the biased pair leads does not mirror the result either (−0.045 rather than
+−0.581). So the tripod-shaped load signal here is produced by the *periodic
+command itself*, through the cord and the body's own dynamics, and not by which
+premotor population the command lands on. That is the same verdict §6 and §7
+reached on the leg axis, now measured with the control that rules out the muscle
+axis as the explanation.
+
+**What is still true and still useful:** legs lift (up to three at once), a
+patterned command makes the two tripods' loads move against each other, and the
+picture is nowhere near a gait — one or two legs lift, one of them for half the
+run, and the animal drifts 0.03–0.10 cm without going anywhere. What this
+section adds is where the *lever is not*: not in the legs' cells, not in the
+muscles' cells, and not in the phase between two premotor populations.
+
+**Where the mechanism has to be, then** — three searches, each a measurement and
+not an assumption:
+
+1. **A half-centre.** A CPG that alternates two pools is a *structural* pattern:
+   mutual inhibition with a sign asymmetry between two cell groups that reach
+   opposite tripods. That search over the 7,033 cells has not been run, and it
+   is the one that could replace every external pattern used so far with
+   something that is actually in BANC v888.
+2. **The loop's own oscillation.** Every run above drives the cord with a
+   pattern; the alternative is to give it no pattern and enough feedback gain
+   that the load–sense loop breaks into oscillation by itself. That is emergent
+   by construction (nothing is scheduled), and it is cheap to test: a sweep of
+   command gain and κ with a constant tone, with the tripod index as the
+   instrument.
+3. **A declared PLACEHOLDER oscillator** per the brief, labelled in
+   `docs/ASSUMPTIONS.md`, if (1) and (2) both come back empty. The brief allows
+   this and requires it be labelled; it is the last resort and not the next
+   step.

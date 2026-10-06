@@ -101,7 +101,7 @@ class Cord:
     def __init__(self, body, asset, gain, tone=TONE,
                  channels=("chordotonal", "campaniform"),
                  closed_calibration=False, kappa=KAPPA, polarity=POLARITY,
-                 drive_group=DRIVE_GROUP):
+                 drive_group=DRIVE_GROUP, drive_group_b=None):
         """`gain` is the *command* gain (assumption #24), not the LIF's.
 
         `closed_calibration` decides what the reference balance is measured
@@ -118,6 +118,14 @@ class Cord:
         self.kappa = kappa
         self.polarity = polarity
         self.drive_group = drive_group
+        # A second population, driven half a cycle out of phase with the first.
+        # This is the muscle-axis experiment (reports/item4_walking.md §10): the
+        # leg axis has no lever (765 of the 788 multi-leg cells reach both
+        # tripods), so the command is split between two *muscle* populations
+        # instead and the question is whether the cord turns that antiphase
+        # command into alternating legs. With no second group this does nothing
+        # and the loop is the one §6-§8 ran.
+        self.drive_group_b = drive_group_b
         self.closed_calibration = closed_calibration
         self.pattern = None          # (Hz, amplitude) on the descending group
         self.channels = set(channels)
@@ -181,10 +189,16 @@ class Cord:
         # or do all six legs simply follow the drive in phase? `pattern` is
         # (frequency Hz, amplitude in the same units as the tone).
         tone = self.tone
+        tone_b = None
         if self.pattern:
             f, a = self.pattern
             tone = max(0.0, self.tone + a * np.sin(2 * np.pi * f * t_ms / 1000.0))
+            if self.drive_group_b:
+                # Half a cycle later — same mean, same amplitude, opposite phase.
+                tone_b = max(0.0, self.tone - a * np.sin(2 * np.pi * f * t_ms / 1000.0))
         net.drive(self.drive_group, tone)
+        if self.drive_group_b:
+            net.drive(self.drive_group_b, self.tone if tone_b is None else tone_b)
         # The app has no camera in world mode until the user grants one, and
         # `BrainEngine.load` gives the retina a flat 1.0 so the brain is alive
         # the moment the view appears. Same drive here, so this loop's operating
@@ -282,7 +296,8 @@ def run_loop(args) -> dict:
     cord = Cord(body, asset, args.command_gain, tone=args.tone,
                 closed_calibration=args.closed_calibration,
                 kappa=args.kappa, polarity=args.polarity,
-                drive_group=args.drive_group)
+                drive_group=args.drive_group,
+                drive_group_b=args.drive_group_b)
     if args.desc_pattern:
         f, a = args.desc_pattern
         cord.pattern = (f, a)
@@ -332,6 +347,7 @@ def run_loop(args) -> dict:
     out = {"ms": args.ms, "gain": args.gain, "command_gain": args.command_gain,
            "tone": args.tone, "kappa": args.kappa, "polarity": args.polarity,
            "drive_group": args.drive_group,
+           "drive_group_b": args.drive_group_b,
            "cord": not args.no_cord, "feedback": not args.no_feedback,
            "phase_at_end": cord.phase, "wall_s": wall, "legs": {},
            "history": {k: [round(v, 3) for v in vals] for k, vals in cord.history.items()}}
@@ -446,6 +462,10 @@ def main() -> int:
                     help="which population the brain's command lands on: "
                          "`descending` (the app) or `premotor:multileg` (the "
                          "788 cells that reach more than one leg's pools)")
+    ap.add_argument("--drive-group-b", default=None,
+                    help="a second population, driven antiphase to --drive-group "
+                         "when --desc-pattern is given (the muscle-axis "
+                         "experiment, reports/item4_walking.md §10)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no-cord", action="store_true", help="muscle tone only")
     ap.add_argument("--no-feedback", action="store_true",
