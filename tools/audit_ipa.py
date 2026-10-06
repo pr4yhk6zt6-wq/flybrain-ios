@@ -33,6 +33,16 @@ files the app cannot open without, and that no recording is inside.
 
 Exit 0 if the archive is installable-shaped, 1 otherwise. CI runs it on the
 built product, next to the "must contain its data" step.
+
+Checked against four broken archives before it was trusted, because a gate that
+has never failed is a gate nobody has read:
+
+    the shipped v0.7 .ipa                     FAIL  the 6.3 MB mesh blob, twice
+    the same archive minus that file          pass
+    --expect-version 0.8 (the build is 0.7)   FAIL  the version on screen would lie
+    the binary chmod 644 inside the archive   FAIL  mode 644 is not executable
+    CFBundleSupportedPlatforms = iPhoneSimulator  FAIL  a simulator bundle
+
 """
 
 from __future__ import annotations

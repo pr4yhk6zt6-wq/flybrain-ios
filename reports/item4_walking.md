@@ -336,3 +336,59 @@ coupling chooses them, the set changes with the drive group; if the body's
 geometry chooses them, it does not. That is the next run, and until it exists
 item 4 stays where §7 leaves it: one condition with the sign right, no walk, and
 two candidate mechanisms that have not been told apart.
+
+## 8. Which population carries the command — the control that tells the wiring from the geometry (2026-10-06)
+
+§7 left two candidates for what splits the six legs under a patterned command:
+the cord's own feedforward wiring (788 multi-leg premotor cells), or the body's
+mechanics (one command, six legs with different loads and geometry). Separating
+them needs the command to land somewhere else, with everything else identical, so
+`walk_loop.py` grew `--drive-group`: same run, same seed, same 20 Hz pattern,
+same tone, but the current goes onto `premotor:multileg` (788 cells) instead of
+`descending` (1,316).
+
+| 800 ms, 20 Hz pattern (tone 2.5 ± 1.0), κ = 1 | onto `descending` | onto `premotor:multileg` |
+| --- | --- | --- |
+| pools firing | 63.4 Hz | 74.6 Hz |
+| legs that leave the floor | **T2_right, T3_left** (2/6) | **T1_right, T2_left, T3_left, T3_right** (4/6) |
+| airborne fractions | 62.6 %, 60.1 % | 19.4 %, 29.4 %, 0.1 %, 59.9 % |
+| loads, of stance | 0.36–1.37 | 0.38–1.67 |
+| COM z | −0.02266 → −0.03802 | −0.02266 → −0.03127 |
+| horizontal drift | 0.0278 cm | 0.0636 cm |
+| foot-load tripod index | **+0.855** (+0.340 / −0.515) | −0.300 (−0.349 / −0.049) |
+| knee tripod index | −0.352 | −0.063 (within +0.554) |
+
+**The set of legs that lift changes with the population the command lands on.**
+That is the answer to §7's question, and it is the first result in this report
+that is a property of the *cord* rather than of the setup:
+
+* the command is the same waveform, the same amplitude, the same seed, and the
+  body is the same body. Two legs lift when it drives the descending cells;
+  four lift — a different four — when it drives the 788 multi-leg premotor
+  cells. The body's geometry cannot know which group was driven, so the
+  selection is being made in the wiring;
+* it is consistent with §2's structure: those 788 cells are the only ones in
+  BANC that reach more than one leg's pools (69,543 synapses), and they are
+  where a coordinating layer has to be.
+
+**And it is still not a walk.** Driving `premotor:multileg` loses the tripod: the
+load index goes back to −0.300 (the two tripods moving *with* each other again),
+the knees co-vary with both tripods (within +0.554, across +0.617 — no
+alternation at all), and the four legs that lift are not an alternating set:
+T1_right and T3_right are *both* in tripod A and T3_left is in tripod B. What the
+two runs together say is sharper than either alone: **there is a leg-selecting
+mechanism in the cord, and it is not yet a gait.** The command's *shape* (a 20 Hz
+modulation of the descending population) produced an alternating load pattern;
+the command's *target* (the multi-leg premotor cells) produced a different set of
+moving legs without an alternating pattern. A gait needs both, together, and
+neither of these is it.
+
+The next run is therefore not another gain sweep. It is the same experiment with
+the two mechanisms combined — the pattern on `descending` while the multi-leg
+cells carry their own — and, before that, a split of `premotor:multileg` by which
+legs each cell reaches (`tools/coupling_probe.py` already computes the per-pair
+synapse counts), because "788 cells" is a population and the interesting
+question is whether the ones that reach tripod A are separable from the ones that
+reach tripod B. If they are not, no pattern on that group can alternate anything,
+and the gait has to come from somewhere else — which would then be a measurement
+rather than a wish.
