@@ -18,7 +18,11 @@ def line(*vals):
 wing_rows = [line(1, g["area_cm2"], g["span_cm"], g["length_cm"], g["chord_cm"],
                   g["second_moment_cm4"], g["r2_hat_cm"], g["mass_ug"], g["com_cm"],
                   g["sin_theta"], golden["attitude_deg"], golden["weight_dyn"])]
+# Both wings' vectors, the right wing's measured rather than mirrored (see the
+# tool: the meshes are mirrors only to ~2e-6).
 wing_rows += [" ".join(f"{v:.15g}" for v in g[k]) for k in
+              ("stroke_axis", "span_axis", "lift_dir", "hinge_cm")]
+wing_rows += [" ".join(f"{v:.15g}" for v in g["right"][k]) for k in
               ("stroke_axis", "span_axis", "lift_dir", "hinge_cm")]
 strip_rows = [line(r["omega_rad_s"], r["alpha_deg"], r["cl"], r["cd"],
                    r["lift_dyn"], r["drag_dyn"]) for r in golden["strip_force"]]
@@ -29,6 +33,8 @@ beat_rows = [line(b["activation_left"], b["activation_right"],
                   b["yaw_moment_dyn_cm"], b["roll_moment_dyn_cm"],
                   b["pitch_moment_dyn_cm"], b["drag_cost_dyn"]) for b in golden["beat"]]
 station_rows = [line(s["r_cm"], s["chord_cm"], s["area_cm2"]) for s in g["stations"]]
+station_rows_r = [line(s["r_cm"], s["chord_cm"], s["area_cm2"])
+                  for s in g["right"]["stations"]]
 
 block = f'''    // MARK: - the golden table
     //
@@ -39,16 +45,63 @@ block = f'''    // MARK: - the golden table
     // run of the tool, so a change to either side fails the build.
 
     /// `area span length chord ∫r²dA r̂₂ mass com sinθ attitude weight`, then the
-    /// stroke axis, the span axis, the lift direction and the hinge, each on its
-    /// own line — the wing's measured geometry, in the body frame.
+    /// stroke axis, the span axis, the lift direction and the hinge of the left
+    /// wing and then of the right one — each on its own line. The wing's
+    /// measured geometry, in the body frame; the right wing's rows are measured,
+    /// not mirrored.
     static let goldenWing = """
 {chr(10).join(wing_rows)}
 """
+
+    /// The two wings' four vectors each, parsed out of the literal above, so
+    /// `Params` can default to the tool's own numbers instead of to copies of
+    /// them: order is stroke, span, lift, hinge, left wing then right.
+    static var goldenWingVectors: [SIMD3<Double>] {{
+        goldenWing.split(separator: "\\n").compactMap {{ line in
+            let v = line.split(separator: " ").compactMap {{ Double($0) }}
+            return v.count == 3 ? SIMD3(v[0], v[1], v[2]) : nil
+        }}
+    }}
 
     /// The strips: `r chord area`, along the span.
     static let goldenStations = """
 {chr(10).join(station_rows)}
 """
+
+    /// The same strips as the table the port integrates, parsed out of the
+    /// literal above so the numbers exist in one copy. A `WingAero()` with no
+    /// spec uses these; before this existed it had *no strips at all*, so every
+    /// force came out zero and the tests said so ("the beat costs drag", 0.0).
+    /// A port that silently makes no force is worse than one that crashes,
+    /// because the fly then simply does not fly and nothing says why.
+    static var defaultStations: [(r: Double, chord: Double, area: Double)] {{
+        goldenStations.split(separator: "\\n").compactMap {{ line in
+            let v = line.split(separator: " ").compactMap {{ Double($0) }}
+            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
+        }}
+    }}
+
+    /// The right wing's strips. The two wings in the body model are *not*
+    /// identical — their areas differ by 6.6e-05 — so each wing is integrated
+    /// with its own table; sharing one put a 3e-05 error into every right-wing
+    /// force in the port, which the golden table caught.
+    static let goldenStationsRight = """
+{chr(10).join(station_rows_r)}
+"""
+
+    /// Both tables as the port integrates them.
+    static var defaultStations: [(r: Double, chord: Double, area: Double)] {{
+        parseStations(goldenStations)
+    }}
+    static var defaultStationsRight: [(r: Double, chord: Double, area: Double)] {{
+        parseStations(goldenStationsRight)
+    }}
+    private static func parseStations(_ text: String) -> [(r: Double, chord: Double, area: Double)] {{
+        text.split(separator: "\\n").compactMap {{ line in
+            let v = line.split(separator: " ").compactMap {{ Double($0) }}
+            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
+        }}
+    }}
 
     /// The force law at a strip: `ω α CL CD lift drag`.
     static let goldenStrip = """

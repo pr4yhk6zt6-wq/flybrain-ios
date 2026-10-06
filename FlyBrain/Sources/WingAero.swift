@@ -90,6 +90,8 @@ struct WingSpec: Decodable {
     let steering_left: String?
     let steering_right: String?
     let stations: [Station]?
+    let stations_right: [Station]?
+    let wing_asymmetry: [String: Double]?
     let mass_ug_source: String?
 
     struct Station: Decodable {
@@ -118,21 +120,28 @@ struct WingAero {
         var sinTheta = 0.9951448997514517
         var massUG = 8.0                           // ENGINEERING PLACEHOLDER (#35)
         var comCM = 0.1530715518964905
-        var hingeLeft = SIMD3<Double>(-0.00694, 0.0432, 0.0091)
-        var hingeRight = SIMD3<Double>(-0.00694, -0.0432, 0.0091)
-        var spanLeft = SIMD3<Double>(-0.13181, 0.99127, -0.00175)
-        var spanRight = SIMD3<Double>(-0.13181, -0.99127, -0.00175)
-        /// The lift direction of each wing: its stroke plane's normal. The two
-        /// are mirrors of each other and both point up out of the stroke plane,
-        /// which is the one convention the fly itself forces on us — a positive
-        /// angle of attack has to make lift. Not the mesh's rest plane: the
-        /// wings sit out flat in the rest pose, and pitching away from *that*
-        /// flies them edge-on (this was measured, and it is what the tool's
-        /// `--lift-from rest_plane` reheasal is for).
-        var liftLeft = SIMD3<Double>(0.72832, 0.09804, 0.67818)
-        var liftRight = SIMD3<Double>(0.72832, -0.09804, 0.67818)
-        var strokeLeft = SIMD3<Double>(0.7378, 0.0, 0.6751)
-        var strokeRight = SIMD3<Double>(-0.7378, 0.0, -0.6751)
+        // The four vectors of each wing — its hinge, its span, its stroke
+        // axis and its stroke plane's normal — all read out of the golden
+        // block below, where the tool writes them. Both wings' are *measured*:
+        // the right wing's are not mirrored from the left's, because the two
+        // meshes are mirrors only to ~2e-6 and copying that error into the port
+        // would put a number the port cannot account for into every left-right
+        // comparison. The gate measures the floor instead, where it is visible.
+        //
+        // The lift direction is each wing's *stroke plane normal*, not the
+        // mesh's rest plane: the wings sit out flat in the rest pose, and
+        // pitching away from *that* flies them edge-on — measured, and what the
+        // tool's `--lift-from rest_plane` rehearsal is for. The pair's normals
+        // are mirrors of each other and both point up, which is the one
+        // convention the fly forces on us: a positive α has to make lift.
+        var hingeLeft = WingAero.goldenWingVectors[3]
+        var hingeRight = WingAero.goldenWingVectors[7]
+        var spanLeft = WingAero.goldenWingVectors[1]
+        var spanRight = WingAero.goldenWingVectors[5]
+        var liftLeft = WingAero.goldenWingVectors[2]
+        var liftRight = WingAero.goldenWingVectors[6]
+        var strokeLeft = WingAero.goldenWingVectors[0]
+        var strokeRight = WingAero.goldenWingVectors[4]
 
         // -- the beat ------------------------------------------------------
         var strokeHz = 200.0
@@ -152,7 +161,14 @@ struct WingAero {
         /// Measured: the mesh binned into 12 strips. The areas are the bins'
         /// own sums, so a port that gets the binning wrong fails the golden
         /// table on the *areas*, not only on the forces.
-        var stations: [(r: Double, chord: Double, area: Double)] = []
+        /// The 12 strips the tool measured — the table the port integrates.
+        /// Parsed from the golden block below, so there is one copy of the
+        /// numbers and no chance of a spec-less `WingAero()` integrating
+        /// nothing at all.
+        var stations: [(r: Double, chord: Double, area: Double)] = WingAero.defaultStations
+        /// and the right wing's own, for the same reason its vectors are its
+        /// own: the two wings in the body model differ by 6.6e-05 in area.
+        var stationsRight: [(r: Double, chord: Double, area: Double)] = WingAero.defaultStationsRight
 
         // -- what the pools do ---------------------------------------------
         /// Each wing power pool's own rate at full drive, measured through the
@@ -246,6 +262,9 @@ struct WingAero {
             if let st = s.stations, !st.isEmpty {
                 q.stations = st.map { ($0.r_cm, $0.chord_cm, $0.area_cm2 ?? $0.chord_cm * 0.022) }
             }
+            if let st = s.stations_right, !st.isEmpty {
+                q.stationsRight = st.map { ($0.r_cm, $0.chord_cm, $0.area_cm2 ?? $0.chord_cm * 0.022) }
+            }
             if let ref = s.rate_reference_hz { q.rateReference = ref }
             if let tone = s.rate_tone_hz { q.rateTone = tone }
             q.powerLeft = s.power_left ?? q.powerLeft
@@ -266,6 +285,19 @@ struct WingAero {
     }
 
     func spanAxis(_ side: Side) -> SIMD3<Double> { side == .left ? p.spanLeft : p.spanRight }
+
+    /// The strip's radius about the stroke *axis*, as a fraction of its radius
+    /// about the hinge: the wing lies very nearly in the stroke plane, so this
+    /// is 0.995 — but it is 0.995 of *this wing's* own geometry, and the two
+    /// wings' meshes are mirrors only to ~2e-6, so it is recomputed per side
+    /// from the two measured vectors rather than shared as one number. (Shared,
+    /// it put a 3e-5 relative error into every right-wing force in the port
+    /// while the tool, which measures per wing, had none — the golden table
+    /// caught it.)
+    func sinTheta(_ side: Side) -> Double {
+        let a = spanAxis(side), n = strokeAxis(side)
+        return simd_length(a - n * simd_dot(a, n))
+    }
     func liftDir(_ side: Side) -> SIMD3<Double> { side == .left ? p.liftLeft : p.liftRight }
     func strokeAxis(_ side: Side) -> SIMD3<Double> { side == .left ? p.strokeLeft : p.strokeRight }
 
@@ -299,6 +331,14 @@ struct WingAero {
     var stripRadiiCM: [Double] { p.stations.map { $0.r } }
     var stripAreasCM2: [Double] { p.stations.map { $0.area } }
     var stripChordsCM: [Double] { p.stations.map { $0.chord } }
+    /// Each wing integrates its own strips: two wings whose areas differ by
+    /// 6.6e-05 are not one wing used twice.
+    func stripRadiiCM(_ side: Side) -> [Double] {
+        (side == .left ? p.stations : p.stationsRight).map { $0.r }
+    }
+    func stripAreasCM2(_ side: Side) -> [Double] {
+        (side == .left ? p.stations : p.stationsRight).map { $0.area }
+    }
 
     /// The lift and drag coefficients, Dickinson/Lehmann/Sane 1999, from the
     /// animal's own tethered flight. `alphaDeg` is the angle of attack in
@@ -337,9 +377,10 @@ struct WingAero {
         let sgn = omegaRadS >= 0 ? 1.0 : -1.0
         let hinge = hinge(side)
         var out = Wrench()
-        let areas = stripAreasCM2
-        for (i, r) in stripRadiiCM.enumerated() {
-            let v = abs(omegaRadS) * r * p.sinTheta
+        let areas = stripAreasCM2(side)
+        let sinT = sinTheta(side)
+        for (i, r) in stripRadiiCM(side).enumerated() {
+            let v = abs(omegaRadS) * r * sinT
             let q = 0.5 * p.rhoGCM3 * v * v * areas[i]
             let force = f.lift * (q * cl) - f.v * (q * cd * sgn)
             out.force += force
@@ -508,15 +549,31 @@ struct WingAero {
     // run of the tool, so a change to either side fails the build.
 
     /// `area span length chord ∫r²dA r̂₂ mass com sinθ attitude weight`, then the
-    /// stroke axis, the span axis, the lift direction and the hinge, each on its
-    /// own line — the wing's measured geometry, in the body frame.
+    /// stroke axis, the span axis, the lift direction and the hinge of the left
+    /// wing and then of the right one — each on its own line. The wing's
+    /// measured geometry, in the body frame; the right wing's rows are measured,
+    /// not mirrored.
     static let goldenWing = """
 1 0.0174076085266342 0.264662282664542 0.262704546065884 0.0662630654372785 0.000416441015223553 0.154670394258787 8 0.15307155189649 0.995144899751452 47.2981245714733 0.966285
 0.737760020167381 0 0.675063073084749
 -0.131805656948767 0.991274036157107 -0.00174758035618449
 0.728323703550576 0.0980378394155563 0.678183725025233
 -0.00694 0.0432 0.0091
+-0.737760020167381 0 -0.675063073084749
+-0.131806039773842 -0.99127398042459 -0.00175031777837222
+0.728323537728309 -0.0980399767400617 0.678183594133424
+-0.00694 -0.0432 0.0091
 """
+
+    /// The two wings' four vectors each, parsed out of the literal above, so
+    /// `Params` can default to the tool's own numbers instead of to copies of
+    /// them: order is stroke, span, lift, hinge, left wing then right.
+    static var goldenWingVectors: [SIMD3<Double>] {
+        goldenWing.split(separator: "\n").compactMap { line in
+            let v = line.split(separator: " ").compactMap { Double($0) }
+            return v.count == 3 ? SIMD3(v[0], v[1], v[2]) : nil
+        }
+    }
 
     /// The strips: `r chord area`, along the span.
     static let goldenStations = """
@@ -533,6 +590,52 @@ struct WingAero {
 0.231824214406307 0.0480648553681592 0.00105223800093455
 0.253716259911797 0.00252526758180444 5.52832728144024e-05
 """
+
+    /// The same strips as the table the port integrates, parsed out of the
+    /// literal above so the numbers exist in one copy. A `WingAero()` with no
+    /// spec uses these; before this existed it had *no strips at all*, so every
+    /// force came out zero and the tests said so ("the beat costs drag", 0.0).
+    /// A port that silently makes no force is worse than one that crashes,
+    /// because the fly then simply does not fly and nothing says why.
+    static var defaultStations: [(r: Double, chord: Double, area: Double)] {
+        goldenStations.split(separator: "\n").compactMap { line in
+            let v = line.split(separator: " ").compactMap { Double($0) }
+            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
+        }
+    }
+
+    /// The right wing's strips. The two wings in the body model are *not*
+    /// identical — their areas differ by 6.6e-05 — so each wing is integrated
+    /// with its own table; sharing one put a 3e-05 error into every right-wing
+    /// force in the port, which the golden table caught.
+    static let goldenStationsRight = """
+0.0129039009807094 0.0131184541060768 0.000287188790160075
+0.0347958699457906 0.0209965489385332 0.000459655797736179
+0.0566878389108718 0.0731331819042935 0.00160102934856643
+0.078579807875953 0.100912652393215 0.00220917665437629
+0.100471776841034 0.0765004293339416 0.00167474502479404
+0.122363745806115 0.0666109614266638 0.00145824510028675
+0.144255714771197 0.0747943291743286 0.00163739513304847
+0.166147683736278 0.0691748780943414 0.0015143742844046
+0.188039652701359 0.0974113817594276 0.00213252694632307
+0.20993162166644 0.151863174031832 0.00332458389284359
+0.231823590631522 0.0480659636383051 0.0010522585842465
+0.253715559596603 0.00252532919541026 5.52844283725348e-05
+"""
+
+    /// Both tables as the port integrates them.
+    static var defaultStations: [(r: Double, chord: Double, area: Double)] {
+        parseStations(goldenStations)
+    }
+    static var defaultStationsRight: [(r: Double, chord: Double, area: Double)] {
+        parseStations(goldenStationsRight)
+    }
+    private static func parseStations(_ text: String) -> [(r: Double, chord: Double, area: Double)] {
+        text.split(separator: "\n").compactMap { line in
+            let v = line.split(separator: " ").compactMap { Double($0) }
+            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
+        }
+    }
 
     /// The force law at a strip: `ω α CL CD lift drag`.
     static let goldenStrip = """

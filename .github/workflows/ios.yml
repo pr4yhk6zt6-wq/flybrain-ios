@@ -621,11 +621,33 @@ jobs:
           for got, want, what in checks:
               if not near(got, want):
                   failures.append(f'{what}: the test carries {got}, this run measured {want}')
+          if len(wing) != 9:
+              failures.append(f'the test carries {len(wing)} wing lines, this run '
+                              f'measured a head row and four vectors for each wing (9)')
           for i, key in enumerate(['stroke_axis', 'span_axis', 'lift_dir', 'hinge_cm']):
               for j in range(3):
                   if not near(wing[i + 1][j], g[key][j]):
                       failures.append(f'{key}[{j}]: the test carries {wing[i + 1][j]}, '
                                       f'this run measured {g[key][j]}')
+                  # and the right wing's own vectors: the two wings in the body
+                  # model are not identical, so the right wing's rows are the
+                  # right wing's, measured this run, not the left's mirrored
+                  if not near(wing[i + 5][j], g['right'][key][j]):
+                      failures.append(f'right {key}[{j}]: the test carries '
+                                      f'{wing[i + 5][j]}, this run measured '
+                                      f'{g["right"][key][j]}')
+
+          stations_r = block('goldenStationsRight')
+          want_r = g['right']['stations']
+          if len(stations_r) != len(want_r):
+              failures.append(f'the test carries {len(stations_r)} right-wing strips, '
+                              f'this run measured {len(want_r)}')
+          else:
+              for i, (row, want) in enumerate(zip(stations_r, want_r)):
+                  for j, key in ((0, 'r_cm'), (1, 'chord_cm'), (2, 'area_cm2')):
+                      if not near(row[j], want[key]):
+                          failures.append(f'right strip {i} {key}: the test carries '
+                                          f'{row[j]}, this run measured {want[key]}')
 
           strips = block('goldenStrip')
           if len(strips) != len(golden['strip_force']):

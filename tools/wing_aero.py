@@ -164,6 +164,21 @@ class Wing:
 REHEARSAL = {"mirror_convention": False, "lift_from": "stroke_plane"}
 
 
+def wing_asymmetry(wings: dict) -> dict:
+    """How far the body model's two wings are from being identical.
+
+    They are not: their planform areas differ by 6.6e-05 and their ∫r²dA by
+    7.5e-05, which puts a floor of that order under every left-right number this
+    tool reports. It is small — 0.006 % of the flight force, 0.1 % of the
+    steering signal — but it is a property of the model and not of the animal,
+    so it is measured and written down, and the force model integrates each
+    wing's own strips rather than one table for both."""
+    l, r = wings["left"], wings["right"]
+    return {"area_rel": abs(l.area_cm2 - r.area_cm2) / l.area_cm2,
+            "second_moment_rel": abs(l.r2dA_cm4 - r.r2dA_cm4) / l.r2dA_cm4,
+            "sin_theta_rel": abs(l.sin_theta - r.sin_theta) / l.sin_theta}
+
+
 def read_wing(m, name: str, side: str) -> dict:
     """Measure one wing out of the compiled model."""
     import mujoco
@@ -667,6 +682,12 @@ def main() -> int:
     print(f"    the two wings' lift directions are mirrors to {mirrored:.2e}, "
           f"and their spans to "
           f"{np.linalg.norm(sr - np.array([sl[0], -sl[1], sl[2]])):.2e}")
+    asym = wing_asymmetry(wings)
+    print(f"    ... and their *areas* differ by {100 * asym['area_rel']:.3f}%, "
+          f"their ∫r²dA by {100 * asym['second_moment_rel']:.3f}%: the body model's "
+          f"two wings are not one wing used twice. Each wing is integrated with "
+          f"its own strips, and this is the floor under every left-right number "
+          f"below (the port carries both tables for the same reason).")
     # 1e-5, not 1e-9: the body model's two wing meshes are mirrors to ~2e-6,
     # which is a property of the model and the floor under every yaw moment this
     # tool can resolve (it is measured against the steering signal below).
@@ -1120,6 +1141,7 @@ def main() -> int:
         path = ROOT / "world" / "world.json"
         manifest = json.loads(path.read_text())
         lw = wings["left"]
+        rw = wings["right"]
         manifest["wings"] = {
             "area_cm2": lw.area_cm2,
             "span_cm": lw.span_cm,
@@ -1169,6 +1191,15 @@ def main() -> int:
                                "(docs/ASSUMPTIONS.md #35)"),
             "stations": [{"r_cm": s["r_cm"], "chord_cm": s["chord_cm"],
                           "area_cm2": s["area_cm2"]} for s in lw.stations],
+            # The right wing's own strips: the two wings in the body model are
+            # *not* identical — their planform areas differ by 6.6e-05 and their
+            # ∫r²dA by 7.5e-05 — so a model that integrates one table for both
+            # wings is off by ~3e-05 of the flight force on the right wing, and
+            # a symmetric beat then leaves that much yaw. Measured, not
+            # assumed, and carried rather than shared.
+            "stations_right": [{"r_cm": s["r_cm"], "chord_cm": s["chord_cm"],
+                                "area_cm2": s["area_cm2"]} for s in rw.stations],
+            "wing_asymmetry": wing_asymmetry(wings),
             "power_left": aero["left"].p["power_left"],
             "power_right": aero["left"].p["power_right"],
             "steering_left": aero["left"].p["steering_left"],
@@ -1205,6 +1236,7 @@ def main() -> int:
                 strips.append({"omega_rad_s": omega, "alpha_deg": alpha,
                                "cl": f["cl"], "cd": f["cd"],
                                "lift_dyn": f["lift_dyn"], "drag_dyn": f["drag_dyn"]})
+        rw = wings["right"]
         golden = {
             "wing": {
                 "name": lw.name,
@@ -1219,6 +1251,20 @@ def main() -> int:
                 "hinge_cm": lw.hinge_cm,
                 "stations": [{"r_cm": s["r_cm"], "chord_cm": s["chord_cm"],
                               "area_cm2": s["area_cm2"]} for s in lw.stations],
+                # The right wing as *measured*, not mirrored from the left:
+                # the two meshes are mirrors only to ~2e-6, and that error has
+                # to stay where the gate can measure it instead of being copied
+                # into the port, where it would look like a physics defect.
+                "right": {
+                    "stroke_axis": [float(v) for v in rw.stroke_axis],
+                    "span_axis": [float(v) for v in rw.span_axis],
+                    "lift_dir": [float(v) for v in rw.plane_normal],
+                    "hinge_cm": rw.hinge_cm,
+                    "sin_theta": rw.sin_theta,
+                    "area_cm2": rw.area_cm2,
+                    "stations": [{"r_cm": s["r_cm"], "chord_cm": s["chord_cm"],
+                                  "area_cm2": s["area_cm2"]} for s in rw.stations],
+                },
             },
             "law": {"stroke_hz": aero["left"].p["stroke_hz"],
                     "amplitude_full_deg": aero["left"].p["amplitude_full_deg"],
@@ -1228,6 +1274,7 @@ def main() -> int:
                     "body_mass_ug": aero["left"].p["body_mass_ug"]},
             "attitude_deg": aero["left"].attitude_deg(),
             "weight_dyn": weight,
+            "wing_asymmetry": wing_asymmetry(wings),
             "strip_force": strips,
             "beat": beats,
         }

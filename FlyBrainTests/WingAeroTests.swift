@@ -37,7 +37,8 @@ final class WingAeroTests: XCTestCase {
     /// The wing's measured geometry, as the tool wrote it.
     func testGoldenGeometry() {
         let r = rows(WingAero.goldenWing)
-        XCTAssertEqual(r.count, 5)
+        // the head row, then four vectors each for the two wings
+        XCTAssertEqual(r.count, 9)
         let head = r[0]
         XCTAssertEqual(head.count, 12)
         close(aero.p.areaCM2, head[1], 1e-12, "planform area")
@@ -49,9 +50,16 @@ final class WingAeroTests: XCTestCase {
         close(aero.p.sinTheta, head[9], 1e-12, "sinθ, the strip's radius about the axis")
         close(aero.attitudeDeg, head[10], 1e-12, "the attitude the wing force implies")
         close(aero.weightDyn, head[11], 1e-12, "the animal's weight")
-        for (i, key) in ["stroke", "span", "lift", "hinge"].enumerated() {
+        let keys = ["stroke_L", "span_L", "lift_L", "hinge_L",
+                    "stroke_R", "span_R", "lift_R", "hinge_R"]
+        for (i, key) in keys.enumerated() {
             XCTAssertEqual(r[i + 1].count, 3, "\(key) is a vector")
+            XCTAssertEqual(WingAero.goldenWingVectors[i][0], r[i + 1][0], accuracy: 1e-15,
+                           "\(key) is carried by the port's parsed vectors too")
         }
+        // the right wing's rows are the right wing's, measured — not the left's
+        // mirrored, and not the left's repeated
+        XCTAssertNotEqual(r[5], r[1], "the right wing's stroke axis is its own")
         for s in WingAero.Side.allCases {
             let axis = aero.strokeAxis(s), span = aero.spanAxis(s), lift = aero.liftDir(s)
             close(simd_length(axis), 1, 1e-12, "the stroke axis is a unit vector")
@@ -78,6 +86,23 @@ final class WingAeroTests: XCTestCase {
             close(aero.p.stations[i].chord, s[1], 1e-12, "strip \(i) chord")
             close(aero.p.stations[i].area, s[2], 1e-12, "strip \(i) area")
         }
+        // and the right wing is the right wing's own wing: its strips are its
+        // own table, they add up to its own area, and they are not the left's —
+        // the two differ by 6.6e-05, which is the body model's left-right floor
+        // and not something to paper over by sharing one table.
+        let str = rows(WingAero.goldenStationsRight)
+        XCTAssertEqual(str.count, aero.p.stationsRight.count)
+        var rightArea = 0.0
+        for (i, s) in str.enumerated() {
+            close(aero.p.stationsRight[i].r, s[0], 1e-12, "right strip \(i) radius")
+            close(aero.p.stationsRight[i].chord, s[1], 1e-12, "right strip \(i) chord")
+            close(aero.p.stationsRight[i].area, s[2], 1e-12, "right strip \(i) area")
+            rightArea += aero.p.stationsRight[i].area
+        }
+        close(rightArea / aero.stripAreasCM2.reduce(0, +), 1, 1e-3,
+              "the two wings' areas agree to the model's own mirror error")
+        XCTAssertNotEqual(aero.p.stations[3].area, aero.p.stationsRight[3].area,
+                          "the right wing's strips are its own")
     }
 
     /// The force law, at 25 (ω, α) points, against the tool's own numbers.
@@ -134,7 +159,14 @@ final class WingAeroTests: XCTestCase {
     /// The two wings are mirrors: same force on both, no sideways push, no yaw.
     func testASymmetricBeatTurnsNothing() {
         let b = aero.beat(activationLeft: 1, activationRight: 1)
-        close(b.flightForceLeftDyn, b.flightForceRightDyn, 1e-6,
+        // 1e-4, not 1e-9: the two wings in the body model are not identical.
+        // The tool measures the difference — 6.6e-05 in area, 7.5e-05 in ∫r²dA
+        // — which leaves 1.6e-05 dyn between the two wings' flight force. That
+        // is the model's own floor, and it is the floor under every yaw number
+        // here; the bound is six times it, so a real asymmetry cannot hide in
+        // it, and a model defect that made the wings unequal by more than the
+        // meshes do would still fail.
+        close(b.flightForceLeftDyn, b.flightForceRightDyn, 1e-4,
               "a symmetric beat drives the two wings equally")
         // The floor is the body model's own: its two wing meshes are mirrors to
         // ~2e-6, so the leak is ~0.3% of the steering signal and not zero. The

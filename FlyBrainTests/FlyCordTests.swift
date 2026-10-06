@@ -592,9 +592,15 @@ final class FlyCordTests: XCTestCase {
                           cord.settings.haltereLeftGroup,
                           cord.settings.haltereRightGroup])
             .union(cord.organs.map { $0.group })
+            // and the four wing motor pools (item 6): the flight tone, and the
+            // differential the steering pools get. Named from the cord's own
+            // settings rather than typed here, so renaming a pool in one place
+            // fails this test instead of quietly driving nothing.
+            .union(cord.settings.wingGroups)
         XCTAssertEqual(Set(stub.drives.keys), driven,
-                       "the organs, the descending population, the antennae and "
-                       + "the two halteres are the whole of what this body drives")
+                       "the organs, the descending population, the antennae, the "
+                       + "halteres and the four wing pools (tone + steering) are "
+                       + "the whole of what this body drives")
     }
 
     /// The body's rotation has to *reach* the halteres, and the pair has to
