@@ -44,6 +44,9 @@ REQUIRED = (
     "testTheChordotonalOrganReportsTheJointItSpans",
     "testReversingThePublishedPolarityReversesTheOrgan",
     "testTheCampaniformOrganReportsTheLoadTheLegCarries",
+    # the cord owns what it reads from (uploads/IMG_2714.png: a weak
+    # source that ARC freed, and a screen full of 0.0 Hz)
+    "testTheCordOwnsTheRateSourceItReadsFrom",
     # the pose the meshes are drawn at (uploads/IMG_2713.png)
     "testAQuaternionFromAMatrixIsTheRotationItself",
     "testEveryPartIsDrawnWhereTheBodyCarriesIt",

@@ -106,7 +106,7 @@ final class WorldRig {
     /// Where the camera you steer sits, in spherical coordinates about the
     /// animal.
     func set(azimuth: Double, elevation: Double, distance: Double) {
-        let d = max(0.05, min(3.0, distance))
+        let d = max(WorldModel.minDistance, min(WorldModel.maxDistance, distance))
         let el = max(-1.45, min(1.45, elevation))
         main.position = SCNVector3(
             Float(d * cos(el) * cos(azimuth)),
@@ -133,15 +133,71 @@ final class WorldModel: ObservableObject {
     /// rebuilding itself sixty times a second.
     @Published private(set) var pulses: Int = 0
 
-    @Published var azimuth: Double = 2.2
-    @Published var elevation: Double = 0.42
+    @Published var azimuth: Double = WorldModel.homeAzimuth
+    @Published var elevation: Double = WorldModel.homeElevation
     /// At the model's true scale (docs/AUDIT.md §0) the animal spans most of
     /// a phone at the old 0.60; start where the whole fly is in frame and let
     /// the pinch do the rest.
-    @Published var distance: Double = 1.0
+    @Published var distance: Double = WorldModel.homeDistance
     /// Magnification while a pinch is in flight; committed into `distance`
     /// when the pinch ends. Not published: only the renderer reads it.
     var liveZoom: Double = 1.0
+
+    // MARK: - The camera
+
+    /// Where the camera starts, and where the reset button puts it back.
+    static let homeAzimuth   = 2.2
+    static let homeElevation = 0.42
+    static let homeDistance  = 1.0
+
+    /// Radians of orbit per point of drag, and the same for tilt.
+    ///
+    /// These used to be applied to `DragGesture.translation` **as a total** on
+    /// every `onChanged` event, which is the bug `IMG_2714` reported as "the
+    /// camera spins and will not be controlled": a drag delivers many events,
+    /// and adding the whole translation again each time makes the rotation grow
+    /// as the *square* of the event count — a 200-point drag over 100 events
+    /// moved the camera by roughly 0.008 × 200 × 50 = 80 radians. `orbit(dx:dy:)`
+    /// takes deltas; `WorldScreen` measures them against the previous event.
+    /// At 0.0035 rad/pt a full-width drag on a phone is 1.2 rad — a third of a
+    /// turn, which is what a hand expects.
+    static let orbitRate = 0.0035
+    static let tiltRate  = 0.0025
+
+    /// The closest the camera may get, and the furthest.
+    ///
+    /// 0.06 cm was the old floor, and the animal is 0.297 cm long: at 0.06 the
+    /// camera is *inside* the thorax, the near plane clips the body open and
+    /// what is on the screen is a scatter of interior surfaces — which reads as
+    /// "the model is broken" when the model is fine. 0.22 cm is a little under
+    /// one body length: a real close-up, from outside. The panes' own cameras
+    /// sit at 0.30 cm and show the whole animal (see the same screenshot).
+    static let minDistance = 0.22
+    static let maxDistance = 3.0
+
+    /// One camera event, in points of drag **since the last event**.
+    func orbit(dx: Double, dy: Double) {
+        azimuth -= dx * WorldModel.orbitRate
+        // Keep it in (−π, π] so a long spin cannot lose precision.
+        if azimuth > .pi { azimuth -= 2 * .pi }
+        if azimuth < -.pi { azimuth += 2 * .pi }
+        elevation = min(1.45, max(-1.45, elevation + dy * WorldModel.tiltRate))
+    }
+
+    /// Pinch, in flight and committed.
+    func zoom(by factor: Double) {
+        guard factor > 0.01 else { return }
+        distance = min(WorldModel.maxDistance,
+                       max(WorldModel.minDistance, distance / factor))
+    }
+
+    /// Put the camera back where it starts. The reset button on this screen.
+    func resetView() {
+        azimuth = WorldModel.homeAzimuth
+        elevation = WorldModel.homeElevation
+        distance = WorldModel.homeDistance
+        liveZoom = 1.0
+    }
 
     let world: FlyWorld
     /// The animal. Not a recording of one: see FlyLiveBody.
@@ -314,7 +370,7 @@ final class WorldModel: ObservableObject {
         rig.root.position = world.centre()
         rig.set(azimuth: azimuth,
                 elevation: elevation,
-                distance: distance / max(0.05, liveZoom))
+                distance: distance / max(0.01, liveZoom))
     }
 
     /// Simulated seconds since the animal was stood up.
@@ -388,6 +444,8 @@ struct WorldContainer: View {
 @MainActor
 struct WorldScreen: View {
     @StateObject private var model: WorldModel
+    /// The previous orbit event's translation, so the camera gets deltas.
+    @State private var lastDrag = CGSize.zero
     @State private var leftOffset = CGSize(width: -104, height: 120)
     @State private var rightOffset = CGSize(width: 104, height: 120)
     @State private var showPanes = true
@@ -482,8 +540,15 @@ struct WorldScreen: View {
                         showPanes.toggle()
                     }
                 }
+                // Back to the view that frames the whole animal. A phone
+                // camera you can pinch into a 3 mm fly is a camera you can get
+                // lost in — IMG_2714 is a screenshot from inside the thorax —
+                // and a screen with no way back is a screen that looks broken.
+                roundButton("arrow.counterclockwise") {
+                    withAnimation(.easeInOut(duration: 0.25)) { model.resetView() }
+                }
             }
-            // Close and panes are the only way off this screen: they never
+            // Close, panes and reset are the only things here: they never
             // shrink and never sit under a readout.
             .fixedSize()
         }
@@ -500,21 +565,30 @@ struct WorldScreen: View {
         }
     }
 
+    /// Drag to orbit. `translation` is the total since the gesture began, so
+    /// what gets applied here is the *difference* from the previous event —
+    /// see `WorldModel.orbit(dx:dy:)` for what applying the total every time
+    /// did to this screen.
     private var orbit: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
-                model.azimuth -= Double(v.translation.width) * 0.008
-                model.elevation = min(1.45, max(-1.45,
-                    model.elevation + Double(v.translation.height) * 0.006))
+                let dx = Double(v.translation.width) - lastDrag.width
+                let dy = Double(v.translation.height) - lastDrag.height
+                lastDrag = CGSize(width: Double(v.translation.width),
+                                  height: Double(v.translation.height))
+                model.orbit(dx: dx, dy: dy)
             }
+            .onEnded { _ in lastDrag = .zero }
     }
 
+    /// Pinch to zoom. The magnification is an absolute multiplier for the
+    /// gesture, so it drives `liveZoom` while the fingers are down and is
+    /// committed into `distance` once, on the way up.
     private var pinch: some Gesture {
         MagnificationGesture()
             .onChanged { v in model.liveZoom = Double(v) }
             .onEnded { v in
-                model.distance = max(0.06, min(3.0,
-                    model.distance / Double(v)))
+                model.zoom(by: Double(v))
                 model.liveZoom = 1.0
             }
     }

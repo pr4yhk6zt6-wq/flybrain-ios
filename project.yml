@@ -54,8 +54,8 @@ targets:
       path: FlyBrain/Info.plist
       properties:
         CFBundleDisplayName: FlyBrain
-        CFBundleShortVersionString: "0.6"
-        CFBundleVersion: "6"
+        CFBundleShortVersionString: "0.7"
+        CFBundleVersion: "7"
         UILaunchScreen: {}
         UIRequiredDeviceCapabilities: [arm64, metal]
         UIStatusBarHidden: true

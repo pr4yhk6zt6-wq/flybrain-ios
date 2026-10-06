@@ -146,7 +146,30 @@ final class FlyCord {
     /// part of the loop is not connected, and the HUD says so.
     private(set) var missingGroups: [String] = []
 
-    private weak var source: FlyCordRateSource?
+    /// The connectome the rates come from and the drives go to.
+    ///
+    /// Held **strongly**, and that is a bug fix rather than a style choice. It
+    /// used to be `weak`, and the Body screen builds the source as a *local*
+    /// (`WorldView.attachCord`: `let source = SimulationRateSource(...)`) which
+    /// nothing else retains — so ARC released it the moment that function
+    /// returned, and every `source?…` in this file became a no-op for the rest
+    /// of the animal's life. The brain's tone never reached the descending
+    /// cells, the organs were never driven, and every pool rate read 0 Hz.
+    ///
+    /// On the phone that is indistinguishable from a quiet connectome, and it
+    /// is exactly what `IMG_2714` shows:
+    ///
+    ///     0/42 pools · 0.0 Hz · desc 0.0 Hz (tone 2.5) · organs 0.0 Hz
+    ///     over 4569 ms · net 212543 spk/s · groups 114/42622 · spikes 393 (pools 15)
+    ///
+    /// The `tone 2.5` is what the cord *meant* to send, and the GPU's own tally
+    /// in the same line says the pools are spiking (`pools 15`) — so nothing on
+    /// that screen was silent except this reference. The type now makes the
+    /// state unrepresentable: a cord cannot be built without a rate source, and
+    /// `Pool`, `Organ` and `missingGroups` are still resolved against it in
+    /// `init`, which is where the "42 pools named, none missing" line came from
+    /// while every rate was zero.
+    private let source: FlyCordRateSource
 
     // -- state ---------------------------------------------------------------
 
@@ -288,7 +311,7 @@ final class FlyCord {
         // proprioceptive tone re-uses the brain's so that this step introduces no
         // magnitude of its own).
         descendingDrive = settings.tone
-        source?.setGroupDrive(settings.descendingGroup, descendingDrive)
+        source.setGroupDrive(settings.descendingGroup, descendingDrive)
 
         // --- the load a leg carries standing: the campaniform organ's scale ---
         // Collected across the calibration window and taken as a median. One
@@ -334,7 +357,7 @@ final class FlyCord {
                 }
                 let driven = max(0, value)
                 organDrive[organ.group] = driven
-                source?.setGroupDrive(organ.group, driven)
+                source.setGroupDrive(organ.group, driven)
             }
         } else {
             // Calibrating: the organs are held at the value they have while
@@ -342,7 +365,7 @@ final class FlyCord {
             // nothing else. Step 3 calls this "clamped".
             for organ in organs {
                 organDrive[organ.group] = settings.tone
-                source?.setGroupDrive(organ.group, settings.tone)
+                source.setGroupDrive(organ.group, settings.tone)
             }
         }
 
@@ -354,16 +377,16 @@ final class FlyCord {
             poolRateHz = [Double](repeating: 0, count: pools.count)
         }
         for (i, pool) in pools.enumerated() {
-            let rate = source?.poolRate(pool.group) ?? 0
+            let rate = source.poolRate(pool.group)
             poolRateHz[i] = rate
             activation[i] += (rate - activation[i]) * alpha
         }
         // The loop's own inputs, measured rather than assumed: the population
         // the brain's tone is injected into, and the organs the body drives.
-        descendingRateHz = source?.poolRate(settings.descendingGroup) ?? 0
+        descendingRateHz = source.poolRate(settings.descendingGroup)
         var organSum = 0.0, organN = 0
         for organ in organs where settings.channels.contains(organ.kind) {
-            organSum += source?.poolRate(organ.group) ?? 0
+            organSum += source.poolRate(organ.group)
             organN += 1
         }
         organRateHz = organN > 0 ? organSum / Double(organN) : 0

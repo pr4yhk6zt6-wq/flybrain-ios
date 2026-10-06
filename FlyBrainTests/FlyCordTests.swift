@@ -25,6 +25,9 @@ import XCTest
 /// name it was asked for.
 final class StubRates: FlyCordRateSource {
     var rates: [String: Double] = [:]
+    /// What a name that is not in `rates` answers. 0 by default, so a test
+    /// that lists the pools it cares about still sees silence everywhere else.
+    var defaultRate: Double = 0
     var absent: Set<String> = []
     private(set) var asked: [String] = []
     private(set) var drives: [String: Double] = [:]
@@ -33,7 +36,7 @@ final class StubRates: FlyCordRateSource {
 
     func poolRate(_ name: String) -> Double {
         asked.append(name)
-        return rates[name] ?? 0
+        return rates[name] ?? defaultRate
     }
 
     func setGroupDrive(_ name: String, _ value: Double) {
@@ -531,4 +534,72 @@ final class FlyCordTests: XCTestCase {
         _ = cord.update(dtMs: 1, proprio: p)
         XCTAssertEqual(stub.drives[organ.group] ?? -1, 0, accuracy: 1e-9)
     }
+
+    /// The cord has to own the thing it reads its rates from.
+    ///
+    /// This is the bug that made the phone show `0/42 pools · 0.0 Hz · desc
+    /// 0.0 Hz (tone 2.5)` while the GPU's own tally on the same line said the
+    /// pools were spiking (`uploads/IMG_2714.png`): `FlyCord.source` was
+    /// `weak`, and the Body screen builds the source as a **local**
+    ///
+    ///     let source = SimulationRateSource(engine: sim, groups: …)
+    ///     let c = FlyCord(asset: live.asset, source: source)
+    ///
+    /// so ARC released it as soon as `WorldView.attachCord` returned and every
+    /// `source?…` in the loop became a no-op — no tone out to the descending
+    /// cells, no organ drives, and 0 Hz for every rate in. Nothing in the test
+    /// suite could see it, because a test holds its stub in a local that lives
+    /// for the whole test *function*: the same code, a longer lifetime, the
+    /// opposite result.
+    ///
+    /// So this test ends the lifetime the way the app does — the stub is built
+    /// in a scope that closes — and then asks whether the cord is still
+    /// connected. `WeakBox` is what does the asking: it holds the stub the way
+    /// `FlyCord` used to.
+    func testTheCordOwnsTheRateSourceItReadsFrom() throws {
+        let asset = try asset()
+        // Built in a function of its own, so the source's scope really does
+        // end: this test must not hold the stub itself, or it would be testing
+        // its own strong reference (the first version of this test did exactly
+        // that, and passed against the weak source it was written to catch).
+        let (cord, box) = cordBuiltTheWayTheAppBuildsOne(asset)
+        let stub = box.value as? StubRates
+
+        XCTAssertNotNil(stub,
+                        "the cord let its rate source deallocate: every pool "
+                        + "reads 0 Hz and nothing the body drives ever reaches "
+                        + "the connectome (uploads/IMG_2714.png)")
+        guard let stub else { return }
+
+        // And with the caller's hands off it the loop is still live, in both
+        // directions: the tone reaches the connectome, and a rate comes back
+        // rather than being flattened to zero.
+        let p = stance(asset, hingeCount: cord.hingeCount)
+        _ = cord.update(dtMs: 1, proprio: p)
+        XCTAssertEqual(stub.drives[cord.settings.descendingGroup],
+                       cord.settings.tone,
+                       "the brain's tone did not reach the connectome")
+        XCTAssertEqual(cord.descendingRateHz, 24.0, accuracy: 1e-9,
+                       "a group the connectome reports at 24 Hz read as 0 Hz")
+        XCTAssertEqual(stub.drives.count, cord.organs.count + 1,
+                       "the organs and the descending population are the whole "
+                       + "of what this body drives")
+    }
+}
+
+/// Builds a cord the way `WorldView.attachCord` builds one — the rate source is
+/// a local, and the only thing that leaves this function is a cord and a
+/// **weak** box. If the cord does not own the source, the source is gone by the
+/// time this returns, which is what the phone did for the whole of IMG_2714.
+private func cordBuiltTheWayTheAppBuildsOne(_ asset: FlyBodyAsset)
+    -> (cord: FlyCord, box: WeakBox) {
+    let source = StubRates()
+    source.defaultRate = 24.0
+    return (FlyCord(asset: asset, source: source), WeakBox(source))
+}
+
+/// Holds an object the way `FlyCord` used to hold its rate source.
+private final class WeakBox {
+    weak var value: AnyObject?
+    init(_ value: AnyObject) { self.value = value }
 }

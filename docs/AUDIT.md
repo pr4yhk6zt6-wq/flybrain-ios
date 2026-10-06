@@ -119,12 +119,26 @@ Fixes, all of them gates rather than promises:
 * `tools/audit_meshes.py` runs in CI, so the asset can never drift from the
   model in a way that only shows up on a screen.
 
-**Still open from the same screenshot**, and not a drawing bug: the HUD reads
-`0/42 pools firing · 0.0 Hz` at `desc 2.5`, i.e. on the device the connectome's
-motor pools were silent while the cord was driving the descending population.
-That is the closest thing yet to a device measurement of item 27, and it says
-the loop's *input* is not yet doing anything through the app's engine. It is
-the next thing on the list.
+**The `0/42 pools firing · 0.0 Hz` from that screenshot is found and fixed**
+(2026-10-06, `IMG_2714`). It was not the connectome being quiet and it was not
+the engine: `FlyCord.source` was `weak`, and the Body screen builds the source as
+a local
+
+    let source = SimulationRateSource(engine: sim, groups: engine.groupNames)
+    let c = FlyCord(asset: live.asset, source: source)
+
+which nothing else retained — so ARC freed it the moment `WorldView.attachCord`
+returned, and every `source?…` in the loop became a no-op: no tone out to the
+descending cells, no organ drives, and 0 Hz for every rate in. The next
+screenshot's HUD is what identified it, because it prints both halves:
+`desc 0.0 Hz (tone 2.5)` says the tone was *intended* and the GPU's own tally on
+the same line says the pools were spiking (`spikes 393 (pools 15)`). The cord now
+owns its source and cannot be built without one, and
+`testTheCordOwnsTheRateSourceItReadsFrom` builds a cord the way the app does and
+fails if the source is released — a test that was verified by putting the `weak`
+back and watching it fail. It was invisible to the whole suite before that,
+because a test holds its stub in a local that lives for the length of the test
+*function*.
 
 ### The solver's own gap (found by run 54, 2026-10-05 — closed the same day)
 
