@@ -307,6 +307,23 @@ jobs:
       # Then the golden trace, which is what the Swift port is pinned to. The
       # body asset is rebuilt first: a json field the solver reads is silently
       # inert when it is absent, so every number below is stale until it is.
+      # The camera's limits are a property of the animal, not of the source: at
+      # 0.22 cm the body of this fly spans 2.9 screens and only 29.7% of it is
+      # inside the frustum, which is the screenshot IMG_2715 was reporting as
+      # "the model is in pieces" while the model was fine. The limits are
+      # measured here, from the world this run just wrote, and packed into the
+      # app's world.json by tools/pack_world.py later in this file.
+      - name: Step 4 — measure how close the camera may come, from the animal
+        run: python3 tools/measure_view.py --sample 25 --write
+
+      # And then look: pose the animal the way FlyWorld.apply does, put the
+      # app's own cameras where WorldRig puts them, and fail unless every one
+      # of them frames the body of the animal. The eye panes in that same
+      # screenshot were correct — a fly standing on a grid — which is why this
+      # is a camera check and not a model check.
+      - name: Step 4 — every camera must frame the animal
+        run: python3 tools/audit_view.py --gate --out build/view
+
       - name: Step 5 — rebuild the body asset
         run: |
           python3 tools/build_body.py --flybody data/flybody \

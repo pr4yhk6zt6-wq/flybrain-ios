@@ -40,16 +40,26 @@ final class WorldRig {
     /// is worked out here instead.
     private static let up = (Float(0), Float(0), Float(1))
 
-    init() {
+    init(mainFov: Double = 38, paneFov: Double = 50,
+         paneDistance: Double = 0.306) {
         root.name = "rig"
         root.addChildNode(focus)
 
         // The fly faces +x; its left is +y and its right is −y. The two
         // flanking cameras sit a body length out and a little above, so the
-        // whole animal fits the little pane.
-        camera(main, 38, SCNVector3(0.40, -0.30, 0.25))
-        camera(left, 50, SCNVector3(0.03, 0.30, 0.05))
-        camera(right, 50, SCNVector3(0.03, -0.30, 0.05))
+        // whole animal fits the little pane — and how far out that is comes
+        // from the asset (`tools/measure_view.py`), because the distance at
+        // which the animal fits is a property of the animal and the lens and
+        // not of this file. The panes are the one view in IMG_2715 that showed
+        // a fly standing correctly assembled: they are the measurement that
+        // says the pose and the meshes are fine and the main camera is not.
+        let base = (0.03 * 0.03 + 0.30 * 0.30 + 0.05 * 0.05).squareRoot()
+        let s = paneDistance / base
+        camera(main, CGFloat(mainFov), SCNVector3(0.40, -0.30, 0.25))
+        camera(left, CGFloat(paneFov),
+               SCNVector3(Float(0.03 * s), Float(0.30 * s), Float(0.05 * s)))
+        camera(right, CGFloat(paneFov),
+               SCNVector3(Float(0.03 * s), Float(-0.30 * s), Float(0.05 * s)))
     }
 
     private func camera(_ n: SCNNode, _ fov: CGFloat, _ at: SCNVector3) {
@@ -105,8 +115,9 @@ final class WorldRig {
 
     /// Where the camera you steer sits, in spherical coordinates about the
     /// animal.
-    func set(azimuth: Double, elevation: Double, distance: Double) {
-        let d = max(WorldModel.minDistance, min(WorldModel.maxDistance, distance))
+    func set(azimuth: Double, elevation: Double, distance: Double,
+             min minDistance: Double, max maxDistance: Double) {
+        let d = max(minDistance, min(maxDistance, distance))
         let el = max(-1.45, min(1.45, elevation))
         main.position = SCNVector3(
             Float(d * cos(el) * cos(azimuth)),
@@ -135,20 +146,24 @@ final class WorldModel: ObservableObject {
 
     @Published var azimuth: Double = WorldModel.homeAzimuth
     @Published var elevation: Double = WorldModel.homeElevation
-    /// At the model's true scale (docs/AUDIT.md §0) the animal spans most of
-    /// a phone at the old 0.60; start where the whole fly is in frame and let
-    /// the pinch do the rest.
-    @Published var distance: Double = WorldModel.homeDistance
+    /// Where the camera starts, and how far it may go either way. All three
+    /// come from the world asset (`FlyWorld.ViewLimits`, measured by
+    /// `tools/measure_view.py`) and are assigned in `init`; the value here is
+    /// only what the property is worth before that.
+    @Published var distance: Double = 1.0
+    private let limits: FlyWorld.ViewLimits
     /// Magnification while a pinch is in flight; committed into `distance`
     /// when the pinch ends. Not published: only the renderer reads it.
     var liveZoom: Double = 1.0
 
     // MARK: - The camera
 
-    /// Where the camera starts, and where the reset button puts it back.
+    /// Which way round the camera starts looking, and how high, and where the
+    /// reset button puts it back. The *distance* is not here: it is the
+    /// asset's own measurement (`limits.home`), because it is the only one of
+    /// the three that depends on how big the animal is.
     static let homeAzimuth   = 2.2
     static let homeElevation = 0.42
-    static let homeDistance  = 1.0
 
     /// Radians of orbit per point of drag, and the same for tilt.
     ///
@@ -164,16 +179,15 @@ final class WorldModel: ObservableObject {
     static let orbitRate = 0.0035
     static let tiltRate  = 0.0025
 
-    /// The closest the camera may get, and the furthest.
-    ///
-    /// 0.06 cm was the old floor, and the animal is 0.297 cm long: at 0.06 the
-    /// camera is *inside* the thorax, the near plane clips the body open and
-    /// what is on the screen is a scatter of interior surfaces — which reads as
-    /// "the model is broken" when the model is fine. 0.22 cm is a little under
-    /// one body length: a real close-up, from outside. The panes' own cameras
-    /// sit at 0.30 cm and show the whole animal (see the same screenshot).
-    static let minDistance = 0.22
-    static let maxDistance = 3.0
+    // `minDistance`/`maxDistance`/`homeDistance` used to live here as 0.22,
+    // 3.0 and 1.0. IMG_2715 is the screenshot of what 0.22 did: a 38° lens at
+    // 0.22 cm sees a window 0.70 mm wide, the animal's body is 1.24 mm across,
+    // and 29.7% of the body's vertices were inside the frame — so the screen
+    // showed a thorax filling it with legs and wings crossing at angles, which
+    // reads as "the model is in pieces" when the model is fine. They are
+    // measured from the animal now (`tools/measure_view.py`, into
+    // `world.json`, checked by `tools/audit_view.py --gate`), and this screen
+    // reads them out of the asset rather than carrying its own copy.
 
     /// One camera event, in points of drag **since the last event**.
     func orbit(dx: Double, dy: Double) {
@@ -187,22 +201,21 @@ final class WorldModel: ObservableObject {
     /// Pinch, in flight and committed.
     func zoom(by factor: Double) {
         guard factor > 0.01 else { return }
-        distance = min(WorldModel.maxDistance,
-                       max(WorldModel.minDistance, distance / factor))
+        distance = min(limits.max, max(limits.min, distance / factor))
     }
 
     /// Put the camera back where it starts. The reset button on this screen.
     func resetView() {
         azimuth = WorldModel.homeAzimuth
         elevation = WorldModel.homeElevation
-        distance = WorldModel.homeDistance
+        distance = limits.home
         liveZoom = 1.0
     }
 
     let world: FlyWorld
     /// The animal. Not a recording of one: see FlyLiveBody.
     let live: FlyLiveBody
-    let rig = WorldRig()
+    let rig: WorldRig
 
     /// The brain the animal's cord runs on, if the app has loaded one. The Map
     /// screen is not drawing while this screen is up, so this screen has to
@@ -235,6 +248,11 @@ final class WorldModel: ObservableObject {
         self.world = world
         self.live = live
         self.engine = engine
+        let v = world.viewLimits
+        self.limits = v
+        self.rig = WorldRig(mainFov: v.fovY, paneFov: v.paneFovY,
+                            paneDistance: v.pane)
+        self.distance = v.home
         world.scene.rootNode.addChildNode(rig.root)
         world.apply(live: live)
     }
@@ -370,7 +388,8 @@ final class WorldModel: ObservableObject {
         rig.root.position = world.centre()
         rig.set(azimuth: azimuth,
                 elevation: elevation,
-                distance: distance / max(0.01, liveZoom))
+                distance: distance / max(0.01, liveZoom),
+                min: limits.min, max: limits.max)
     }
 
     /// Simulated seconds since the animal was stood up.

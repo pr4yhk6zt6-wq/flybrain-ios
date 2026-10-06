@@ -33,6 +33,22 @@ struct WorldManifest: Decodable {
     let frames: WorldFrames
     let behaviour: WorldBehaviour?
     let weight: Double
+    /// The camera's limits, measured from the animal itself by
+    /// `tools/measure_view.py` and written into `world.json`. Optional
+    /// because a world written before that tool existed does not carry it, and
+    /// such a world gets the conservative fallbacks in `FlyWorld.viewLimits`.
+    let view: WorldView?
+
+    struct WorldView: Decodable {
+        let fov_y: Double
+        let pane_fov_y: Double
+        let body_radius_cm: Double
+        let all_radius_cm: Double
+        let min_distance_cm: Double
+        let home_distance_cm: Double
+        let max_distance_cm: Double
+        let pane_distance_cm: Double
+    }
 
     struct WorldGeom: Decodable {
         let name: String
@@ -108,6 +124,29 @@ final class FlyWorld: @unchecked Sendable {
     /// The scene: the animal, a floor, three lights. Nothing else.
     let scene = SCNScene()
 
+    /// Where the camera may sit, and where it starts.
+    ///
+    /// These are not preferences and they are not constants in this file any
+    /// more. IMG_2715 is the screenshot of what the old `minDistance = 0.22`
+    /// did on a phone: at 0.22 cm a 38° lens sees a window 0.70 mm wide, the
+    /// animal's body is 1.24 mm, and 29.7% of the body's vertices were inside
+    /// the frustum — a thorax filling the screen with legs and wings crossing
+    /// it at angles, which reads as "the model is in pieces" when the model is
+    /// fine. `tools/measure_view.py` measures the animal out of this same
+    /// asset and writes the distances into `world.json`; `tools/audit_view.py
+    /// --gate` fails the build if any camera the app can reach crops the body.
+    /// The fallbacks are the v0.7 numbers, so an old world still loads.
+    struct ViewLimits {
+        let min: Double
+        let home: Double
+        let max: Double
+        let pane: Double
+        let fovY: Double
+        let paneFovY: Double
+    }
+
+    let viewLimits: ViewLimits
+
     /// One node per mesh-bearing part, in the order they appear in the
     /// recording, so a frame index can pose them directly.
     private(set) var nodes: [SCNNode] = []
@@ -115,6 +154,11 @@ final class FlyWorld: @unchecked Sendable {
     /// with `nodes`. The manifest's `part`, or — for a manifest written
     /// before that field existed — the same count this file used to keep.
     private var partOf: [Int] = []
+    /// How many vertices each node's mesh carries, index-aligned with `nodes`.
+    /// The rig centres itself on where the geometry is: the legs, wings and
+    /// bristles are many parts with small meshes, and a mean that counts them
+    /// equally sits off the animal by about a third of a body radius.
+    private var weightOf: [Float] = []
 
     private var framesData = Data()
     /// node index -> index into the body asset's `visual` array, built once
@@ -167,6 +211,17 @@ final class FlyWorld: @unchecked Sendable {
 
 
         self.manifest = manifest
+        if let v = manifest.view {
+            self.viewLimits = ViewLimits(min: v.min_distance_cm,
+                                         home: v.home_distance_cm,
+                                         max: v.max_distance_cm,
+                                         pane: v.pane_distance_cm,
+                                         fovY: v.fov_y,
+                                         paneFovY: v.pane_fov_y)
+        } else {
+            self.viewLimits = ViewLimits(min: 0.82, home: 1.0, max: 2.5,
+                                         pane: 0.306, fovY: 38, paneFovY: 50)
+        }
         self.floorZ = Float(manifest.floor_z)
         self.frameCount = framesData.isEmpty ? 0 : manifest.frames.n
         self.partCount = manifest.frames.parts
@@ -182,6 +237,7 @@ final class FlyWorld: @unchecked Sendable {
         for geom in manifest.geoms {
             guard let m = geom.mesh, m < geometries.count else { continue }
             let node = SCNNode(geometry: geometries[m])
+            weightOf.append(Float(manifest.body_geometry.meshes[m].vert[1]))
             node.name = geom.name
             // The mesh vertices are in model centimetres; the geom's world
             // transform comes from the pose. Any non-unit scale here would be
@@ -287,9 +343,11 @@ final class FlyWorld: @unchecked Sendable {
             primitiveType: .line, primitiveCount: idx.count / 2,
             bytesPerIndex: 4)
 
+        // Dark enough to read against the 0.82 floor and the 0.965 sky: the
+        // grid is how a viewer knows the animal is standing on something.
         let material = SCNMaterial()
         material.lightingModel = .constant
-        material.diffuse.contents = UIColor(white: 0.78, alpha: 1)
+        material.diffuse.contents = UIColor(white: 0.60, alpha: 1)
 
         let node = SCNNode(geometry: SCNGeometry(sources: [source],
                                                  elements: [element]))
@@ -299,12 +357,19 @@ final class FlyWorld: @unchecked Sendable {
     }
 
     /// The floor it stands on, a grid, and three lights. Nothing else is in
-    /// the world, on purpose: the animal is the subject. Nothing else is in the
-    /// world, on purpose: the animal is the subject.
+    /// the world, on purpose: the animal is the subject.
+    ///
+    /// The ground is deliberately darker than the sky. It used to be 0.93 — a
+    /// white floor with 5% of mirror on it — under a 0.965 background, and the
+    /// two are the same colour: as the camera orbits, the floor fills the
+    /// screen at some angles and the background fills it at others, so the
+    /// screen swaps between grey and white and the ground stops reading as
+    /// ground. That is the other thing IMG_2715's screenshot was asked about.
     private static func dress(scene: SCNScene, floorZ: Float) {
         let floor = SCNFloor()
-        floor.reflectivity = 0.05
-        floor.firstMaterial?.diffuse.contents = UIColor(white: 0.93, alpha: 1)
+        floor.reflectivity = 0                     // no mirror: a floor, not a lake
+        floor.firstMaterial?.diffuse.contents = UIColor(white: 0.82, alpha: 1)
+        floor.firstMaterial?.roughness.contents = 1.0
         let floorNode = SCNNode(geometry: floor)
         floorNode.position = SCNVector3(0, 0, floorZ)
         scene.rootNode.addChildNode(floorNode)
@@ -421,14 +486,16 @@ final class FlyWorld: @unchecked Sendable {
     /// Where the animal is, so a camera can keep it in frame.
     func centre() -> SCNVector3 {
         guard !nodes.isEmpty else { return SCNVector3(0, 0, floorZ) }
-        var x: Float = 0, y: Float = 0, z: Float = 0
-        for node in nodes {
-            x += node.position.x
-            y += node.position.y
-            z += node.position.z
+        var x: Float = 0, y: Float = 0, z: Float = 0, w: Float = 0
+        for (k, node) in nodes.enumerated() {
+            let weight = k < weightOf.count ? weightOf[k] : 1
+            x += node.position.x * weight
+            y += node.position.y * weight
+            z += node.position.z * weight
+            w += weight
         }
-        let n = Float(nodes.count)
-        return SCNVector3(x / n, y / n, z / n)
+        guard w > 0 else { return SCNVector3(0, 0, floorZ) }
+        return SCNVector3(x / w, y / w, z / w)
     }
 
     /// Frames in the recording, if one was packed. Zero means the screen is
