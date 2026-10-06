@@ -92,8 +92,13 @@ if [ "$DO_BUILD" = 1 ]; then
       unzip -q -o "$ipa" -d /tmp/restore_ipa
       app=/tmp/restore_ipa/Payload/FlyBrain.app
       cp "$app/flybanc.bin" "$app/flybanc_meta.json" "$app/fly_anatomy.json" build/
+      # `World/fly.bin` is the mesh blob under the name the app reads it by;
+      # the tools that ask for it call it `build/fly_meshes.bin`, so it is
+      # restored under that name. (One file, two names — and shipping both is
+      # what tools/audit_ipa.py now fails a build for.)
       cp "$app/World/fly_body.json" "$app/World/fly_golden.json" \
-         "$app/World/world.json"    "$app/World/fly_meshes.bin" build/
+         "$app/World/world.json"    build/
+      cp "$app/World/fly.bin" build/fly_meshes.bin
       ls -lh build/
     fi
   fi

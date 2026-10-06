@@ -522,9 +522,20 @@ jobs:
         run: |
           APP="build/dd/Build/Products/Release-iphoneos/FlyBrain.app"
           test -d "$APP" || { echo "no .app at $APP"; exit 1; }
+          # The .app the *device* build wrote, and nothing else: a simulator
+          # product would sit at Release-iphonesimulator, and shipping that
+          # instead is one of the ways an .ipa installs nowhere.
+          test -f "$APP/FlyBrain" || { echo "no executable in $APP"; exit 1; }
           rm -rf build/Payload && mkdir -p build/Payload
           cp -R "$APP" build/Payload/
-          cd build && zip -qry FlyBrain-unsigned.ipa Payload
+          # `ditto` is Apple's own archiver and keeps the permissions and the
+          # resource forks the way the platform expects; `zip -r` does not
+          # guarantee the executable bit inside the archive, and an .app whose
+          # binary is not executable when it lands installs as a greyed-out
+          # icon that never finishes. (`tools/audit_ipa.py` checks the mode in
+          # the archive either way.)
+          (cd build && ditto -c -k --sequesterRsrc --keepParent Payload \
+             FlyBrain-unsigned.ipa)
           ls -lh FlyBrain-unsigned.ipa
 
       - name: The .ipa must contain its data, and must not contain a recording
@@ -562,6 +573,23 @@ jobs:
             exit 1
           fi
           echo "the app carries its model and its connectome, and no recording"
+
+      - name: The .ipa must be installable-shaped
+        run: |
+          # An .ipa can pass every scientific gate in this repository and still
+          # be one nobody can install: the wrong slice, a binary that is not
+          # executable inside the archive, a missing plist key, or the same
+          # megabytes shipped twice. This reads the built product and fails on
+          # any of them (and on a version number that does not match the build,
+          # because the phone's screen prints it).
+          VERSION=$(python3 - <<'PY'
+          import re, pathlib
+          y = pathlib.Path('project.yml').read_text()
+          print(re.search(r'CFBundleShortVersionString: "([^"]+)"', y).group(1))
+          PY
+          )
+          echo "this build is v$VERSION"
+          python3 tools/audit_ipa.py build/FlyBrain-unsigned.ipa --expect-version "$VERSION"
 
       - name: The manifest's part axis must be written, not counted
         run: |

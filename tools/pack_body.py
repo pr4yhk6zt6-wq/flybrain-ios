@@ -32,7 +32,18 @@ DEST = ROOT / "FlyBrain" / "World"
 # What the app reads. fly_body.json is required; the golden trace is only used
 # by the tests, so a build without it still ships.
 NEEDED = ("fly_body.json",)
-OPTIONAL = ("fly_golden.json", "fly_meshes.bin")
+#
+# `fly_meshes.bin` is deliberately *not* shipped, and this is the fix for a
+# third of the .ipa's size. `build_body.py` writes the welded meshes to
+# `build/fly_meshes.bin` and `tools/step4_world.py` writes the same bytes to
+# `world/fly.bin`; this packer used to copy the first into the app bundle under
+# its own name and `pack_world.py` copied the second under *its* name, so every
+# shipped .ipa carried 6.3 MB twice — verified byte-identical by
+# `tools/audit_ipa.py`, which now fails a build that does it again. The app
+# reads `World/fly.bin` (FlyWorld.swift), so that is the one that ships;
+# `build/fly_meshes.bin` stays for the viewer and the probes that ask for it by
+# that name.
+OPTIONAL = ("fly_golden.json",)
 
 
 def check(src: pathlib.Path) -> dict:

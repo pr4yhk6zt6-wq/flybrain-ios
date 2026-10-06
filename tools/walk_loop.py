@@ -61,6 +61,14 @@ KAPPA = 1.0         # assumption #11 — `FlyCordSettings.kappa`: how much of th
                     # gain was half the phone's. `tools/check_cord_laws.py` now
                     # fails the build if the three files stop agreeing, and if
                     # either organ law stops using its named κ.
+DRIVE_GROUP = "descending"   # the population the brain's command lands on.
+                    # `descending` (1,316 cells) is what the app drives. The
+                    # other candidate is `premotor:multileg` (788 cells, the
+                    # only cells in BANC that reach more than one leg's pools):
+                    # driving *it* asks whether the tripod's leg set is chosen
+                    # by the cord's own coupling or by the body's geometry,
+                    # which is the question §7 of reports/item4_walking.md
+                    # leaves open.
 POLARITY = 1.0      # assumption #11 — +1: flexion stretches the organ, which
                     # silences it (FeCO, published). -1 reverses the reflex.
 COMMAND_GAIN = 0.5  # assumption #24 — `FlyCordSettings.gain`, excitation per unit
@@ -92,7 +100,8 @@ class Cord:
 
     def __init__(self, body, asset, gain, tone=TONE,
                  channels=("chordotonal", "campaniform"),
-                 closed_calibration=False, kappa=KAPPA, polarity=POLARITY):
+                 closed_calibration=False, kappa=KAPPA, polarity=POLARITY,
+                 drive_group=DRIVE_GROUP):
         """`gain` is the *command* gain (assumption #24), not the LIF's.
 
         `closed_calibration` decides what the reference balance is measured
@@ -108,6 +117,7 @@ class Cord:
         self.gain = gain
         self.kappa = kappa
         self.polarity = polarity
+        self.drive_group = drive_group
         self.closed_calibration = closed_calibration
         self.pattern = None          # (Hz, amplitude) on the descending group
         self.channels = set(channels)
@@ -174,7 +184,7 @@ class Cord:
         if self.pattern:
             f, a = self.pattern
             tone = max(0.0, self.tone + a * np.sin(2 * np.pi * f * t_ms / 1000.0))
-        net.drive("descending", tone)
+        net.drive(self.drive_group, tone)
         # The app has no camera in world mode until the user grants one, and
         # `BrainEngine.load` gives the retina a flat 1.0 so the brain is alive
         # the moment the view appears. Same drive here, so this loop's operating
@@ -271,7 +281,8 @@ def run_loop(args) -> dict:
     net = pp.LIF(c, args.gain, seed=args.seed)
     cord = Cord(body, asset, args.command_gain, tone=args.tone,
                 closed_calibration=args.closed_calibration,
-                kappa=args.kappa, polarity=args.polarity)
+                kappa=args.kappa, polarity=args.polarity,
+                drive_group=args.drive_group)
     if args.desc_pattern:
         f, a = args.desc_pattern
         cord.pattern = (f, a)
@@ -320,6 +331,7 @@ def run_loop(args) -> dict:
     # ---- what happened ----------------------------------------------------
     out = {"ms": args.ms, "gain": args.gain, "command_gain": args.command_gain,
            "tone": args.tone, "kappa": args.kappa, "polarity": args.polarity,
+           "drive_group": args.drive_group,
            "cord": not args.no_cord, "feedback": not args.no_feedback,
            "phase_at_end": cord.phase, "wall_s": wall, "legs": {},
            "history": {k: [round(v, 3) for v in vals] for k, vals in cord.history.items()}}
@@ -430,6 +442,10 @@ def main() -> int:
     ap.add_argument("--polarity", type=float, default=POLARITY,
                     help="+1: flexion stretches the organ and silences it "
                          "(published). -1 is the control experiment.")
+    ap.add_argument("--drive-group", default=DRIVE_GROUP,
+                    help="which population the brain's command lands on: "
+                         "`descending` (the app) or `premotor:multileg` (the "
+                         "788 cells that reach more than one leg's pools)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no-cord", action="store_true", help="muscle tone only")
     ap.add_argument("--no-feedback", action="store_true",
