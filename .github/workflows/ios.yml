@@ -471,7 +471,37 @@ jobs:
       # the packer, and fails unless the two agree cell for cell and the nine
       # groups partition every cell that reaches a pool motor neuron.
       - name: Step 6 — the premotor split must partition the cells that reach a pool
-        run: python3 tools/verify_premotor.py
+        run: |
+          python3 tools/verify_premotor.py
+          # And the muscle axis has to keep the shape the experiment in
+          # reports/item4_walking.md §10 measured: the populations that reach
+          # these ten muscles, and the two of them whose net command to the two
+          # tripods is most opposed. A group that silently disappears reads as
+          # 0 Hz in the app, which is indistinguishable from a quiet one.
+          python3 tools/premotor_axis.py --json reports/premotor_axis.json > /dev/null
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open('reports/premotor_axis.json'))
+          mus = {row['muscle']: row for row in r['muscle']}
+          missing = [m for m in ('long_tendon', 'coxa_rotator_ant',
+                                 'tarsus_depressor', 'tibia_extensor',
+                                 'femur_reductor', 'trochanter_flexor')
+                     if m not in mus or mus[m]['cells'] < 100]
+          if missing:
+              print(f'FAIL these muscle groups are missing or empty: {missing}')
+              sys.exit(1)
+          for name, row in mus.items():
+              if abs(row['asym']) > 1.0001:
+                  print(f'FAIL {name}: asymmetry {row["asym"]} cannot leave [-1, 1]')
+                  sys.exit(1)
+          lt, cra = mus['long_tendon']['asym'], mus['coxa_rotator_ant']['asym']
+          if lt * cra >= 0:
+              print(f'FAIL long_tendon ({lt:+.3f}) and coxa_rotator_ant '
+                    f'({cra:+.3f}) are no longer opposed on the tripods')
+              sys.exit(1)
+          print(f'the muscle axis holds: long_tendon {lt:+.1%} against '
+                f'coxa_rotator_ant {cra:+.1%}, {len(mus)} groups')
+          PY
 
       - name: Pack the recorded world into the app bundle
         run: |
