@@ -404,11 +404,22 @@ final class WorldModel: ObservableObject {
     /// the organs are updated at, and it is written into the connectome every
     /// simulated millisecond by `FlyCord.update` like every other drive.
     ///
-    /// The head is looked up by name in the mesh table the world already posed:
-    /// the body model's own `head` geom, which is where the antennae are.
+    /// The head is looked up in the mesh table the world already posed — the
+    /// body model's own `head` geom, which is where the antennae are. If the
+    /// body file names its head something else, `odorSamplePosition()` finds it
+    /// by trying the names flybody uses, and says so when it cannot.
     private func sampleOdor() {
         if let c = cord, !c.hasOdorGroup { odorNote = "no antenna in this build" }
-        guard let head = world.position(of: "head") else { return }
+        guard let head = world.odorSamplePosition() else {
+            odorNote = "no head part in this build to smell with"
+            return
+        }
+        // The part the smell is read at is only worth a note when it is not the
+        // usual one: a body file that names its head mesh differently is worth
+        // knowing about, but "at the head" on every frame is not.
+        if let part = world.odorPart, part != "head" {
+            odorNote = "at the \(part)"
+        }
         let t = live.simulatedMS
         odorConcentration = world.odorField.concentration(at: head, tMs: t)
         odorDrive = world.odorField.drive(at: head, tMs: t)

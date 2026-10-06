@@ -581,9 +581,16 @@ final class FlyCordTests: XCTestCase {
                        "the brain's tone did not reach the connectome")
         XCTAssertEqual(cord.descendingRateHz, 24.0, accuracy: 1e-9,
                        "a group the connectome reports at 24 Hz read as 0 Hz")
-        XCTAssertEqual(stub.drives.count, cord.organs.count + 1,
-                       "the organs and the descending population are the whole "
-                       + "of what this body drives")
+        // Named, not counted: a count accepts a fourth group added without
+        // anyone deciding the body should drive it (adding the antenna in item
+        // 11 is what made this test fail, at 14 against 13 — which is the test
+        // doing its job, so it now says *which* three things are driven instead
+        // of how many).
+        let driven = Set([cord.settings.descendingGroup, cord.settings.odorGroup])
+            .union(cord.organs.map { $0.group })
+        XCTAssertEqual(Set(stub.drives.keys), driven,
+                       "the organs, the descending population and the antennae "
+                       + "are the whole of what this body drives")
     }
 }
 

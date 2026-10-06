@@ -709,6 +709,32 @@ jobs:
           echo "this build is v$VERSION"
           python3 tools/audit_ipa.py build/FlyBrain-unsigned.ipa --expect-version "$VERSION"
 
+      # The animal smells through its antennae, and the app reads the field at
+      # the body model's head geom. If the body file names that mesh something
+      # else, the app would read drive 0.00 forever — exactly what clean air
+      # reads as, so nothing on the screen would say anything was wrong. The
+      # names the app will try are in FlyWorld.odorParts, and this checks the
+      # world it ships with actually has one of them. It is here, after the
+      # world is packed into the bundle, rather than with the other step-4
+      # checks: the file that matters is the packed one, and `world.json`'s geom
+      # names are what `FlyWorld` puts on its nodes.
+      - name: Step 4 — the animal must have a head to smell with
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+          world = json.loads(pathlib.Path('FlyBrain/World/world.json').read_text())
+          names = {g.get('name') for g in world['geoms']}
+          src = pathlib.Path('FlyBrain/Sources/FlyWorld.swift').read_text()
+          want = re.findall(r'static let odorParts = \[([^\]]+)\]', src)[0]
+          want = [n.strip().strip('"') for n in want.split(',')]
+          found = [n for n in want if n in names]
+          if not found:
+              print(f'FAIL none of the app\'s head names {want} is in the packed body '
+                    f'({len(names)} geoms, e.g. {sorted(names)[:5]})')
+              sys.exit(1)
+          print(f'the app will smell at {found[0]!r} ({len(names)} geoms in the body)')
+          PY
+
       - name: The manifest's part axis must be written, not counted
         run: |
           # Every renderer skips the parts with no mesh (the floor is part 0)

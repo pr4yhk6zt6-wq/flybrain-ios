@@ -511,6 +511,31 @@ final class FlyWorld: @unchecked Sendable {
     /// Where a named part is, in world coordinates — the same frame the odor
     /// field and the camera limits are written in. `head` is where the antennae
     /// are, and the antennae are what smell.
+    /// Where the animal smells from: the antennae, which the body model does not
+    /// name — it names the head they sit on. Which of the head's parts exists
+    /// depends on the body file (flybody's fused model calls the visual head
+    /// mesh `head_body`, the un-fused one `head`), so the names are tried in
+    /// order and the one that was used is kept.
+    static let odorParts = ["head", "head_body", "head_red"]
+
+    /// The part the smell is sampled at, or nil if this body has no head in it.
+    private(set) var odorPart: String?
+
+    /// The point the odor field is read at. `WorldModel.sampleOdor` uses this
+    /// rather than a name, so a build whose body file uses a different name for
+    /// its head reports that it cannot smell instead of reading a silent zero —
+    /// a zero that is exactly what clean air reads as.
+    func odorSamplePosition() -> SIMD3<Double>? {
+        for name in FlyWorld.odorParts {
+            if let p = position(of: name) {
+                odorPart = name
+                return p
+            }
+        }
+        odorPart = nil
+        return nil
+    }
+
     func position(of name: String) -> SIMD3<Double>? {
         guard let node = nodes.first(where: { $0.name == name }) else { return nil }
         let p = node.simdPosition

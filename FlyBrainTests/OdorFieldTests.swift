@@ -29,19 +29,22 @@ final class OdorFieldTests: XCTestCase {
     /// order, so this is not a numerical-tolerance question, it is an
     /// arithmetic-identity question.
     private let golden: [(SIMD3<Double>, Double, Double)] = [
-        (SIMD3<Double>(0.300000, 0.000000, -0.009000), 0.0000, 0.000000000),
-        (SIMD3<Double>(0.300000, 0.000000, -0.009000), 128.0000, 0.685601585),
-        (SIMD3<Double>(0.300000, 0.000000, -0.009000), 396.0000, 1.367105636),
-        (SIMD3<Double>(0.900000, 0.000000, -0.009000), 4.0000, 0.250193741),
-        (SIMD3<Double>(0.900000, 0.000000, -0.009000), 18.0000, 0.000000000),
-        (SIMD3<Double>(0.900000, 0.000000, -0.009000), 274.0000, 0.517387282),
-        (SIMD3<Double>(0.300000, 0.100000, -0.009000), 0.0000, 0.000000000),
-        (SIMD3<Double>(0.300000, 0.100000, -0.009000), 94.0000, 0.574272943),
-        (SIMD3<Double>(0.300000, 0.100000, -0.009000), 396.0000, 1.104873524),
-        (SIMD3<Double>(-0.400000, 0.000000, -0.009000), 0.0000, 0.000000000),
-        (SIMD3<Double>(3.000000, 0.000000, -0.009000), 20.0000, 0.000000000),
-        (SIMD3<Double>(3.000000, 0.000000, -0.009000), 276.0000, 0.034507395),
-        (SIMD3<Double>(3.000000, 0.000000, -0.009000), 290.0000, 0.017260779),
+        (SIMD3<Double>(0.052000, 0.000000, -0.009000), 0.0000, 0.000000000),
+        (SIMD3<Double>(0.052000, 0.000000, -0.009000), 364.0000, 13.155658983),
+        (SIMD3<Double>(0.052000, 0.000000, -0.009000), 382.0000, 25.924177144),
+        (SIMD3<Double>(-0.700000, 0.000000, -0.009000), 16.0000, 7.710491484),
+        (SIMD3<Double>(-0.700000, 0.000000, -0.009000), 46.0000, 0.000000000),
+        (SIMD3<Double>(-0.700000, 0.000000, -0.009000), 286.0000, 3.741388362),
+        (SIMD3<Double>(-1.200000, 0.000000, -0.009000), 0.0000, 0.000000000),
+        (SIMD3<Double>(-1.200000, 0.000000, -0.009000), 138.0000, 2.023172286),
+        (SIMD3<Double>(-1.200000, 0.000000, -0.009000), 152.0000, 3.805948910),
+        (SIMD3<Double>(0.700000, 0.000000, -0.009000), 0.0000, 0.000000000),
+        (SIMD3<Double>(-2.700000, 0.000000, -0.009000), 20.0000, 0.000000000),
+        (SIMD3<Double>(-2.700000, 0.000000, -0.009000), 276.0000, 0.597243373),
+        (SIMD3<Double>(-2.700000, 0.000000, -0.009000), 290.0000, 0.298744259),
+        (SIMD3<Double>(-0.700000, -0.100000, -0.009000), 16.0000, 7.266157278),
+        (SIMD3<Double>(-0.700000, -0.100000, -0.009000), 46.0000, 0.000000000),
+        (SIMD3<Double>(-0.700000, -0.100000, -0.009000), 286.0000, 3.504287755),
     ]
 
     func testTheFieldIsTheOneTheToolMeasures() {
@@ -56,14 +59,21 @@ final class OdorFieldTests: XCTestCase {
 
     /// The three properties the field is *for*, tested on the Swift side so the
     /// app cannot keep a field that stopped being a plume.
+    ///
+    /// Points here are written as distances downwind of the source (`down(_:)`)
+    /// rather than as world coordinates, because the source is a place in the
+    /// world and the field's shape is not: `source` is 2.5 mm in front of the
+    /// animal and the air blows onto it, so 1 cm downwind is *behind* the
+    /// animal, and upwind of the source is in front of it.
     func testItIsAPlumeAndNotACloud() {
         let field = OdorField(spec: nil)
-        let onAxis = { (s: Double) in
-            field.meanConcentration(at: SIMD3(s, 0, -0.009))
+        // the wind is -x, so `s` downwind of a source at x = +0.30 is x = 0.30 - s
+        let down = { (s: Double) in
+            field.meanConcentration(at: SIMD3(0.30 - s, 0, -0.009))
         }
-        XCTAssertGreaterThan(onAxis(0.05), onAxis(0.2))
-        XCTAssertGreaterThan(onAxis(0.2), onAxis(0.8))
-        XCTAssertEqual(field.meanConcentration(at: SIMD3(-0.4, 0, -0.009)), 0,
+        XCTAssertGreaterThan(down(0.05), down(0.2))
+        XCTAssertGreaterThan(down(0.2), down(0.8))
+        XCTAssertEqual(field.meanConcentration(at: SIMD3(0.7, 0, -0.009)), 0,
                        "a plume does not reach upwind of its source")
 
         // A filament passes: over one gust cycle at a fixed point the
@@ -72,7 +82,7 @@ final class OdorFieldTests: XCTestCase {
         var zero = 0.0
         let period = 1000.0 / field.p.gustHz
         for i in 0..<400 {
-            let c = field.concentration(at: SIMD3(0.30, 0, -0.009),
+            let c = field.concentration(at: SIMD3(0.052, 0, -0.009),
                                         tMs: Double(i) * period / 400)
             peak = max(peak, c)
             zero += c == 0 ? 1 : 0

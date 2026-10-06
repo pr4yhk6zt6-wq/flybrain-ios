@@ -29,8 +29,14 @@ struct OdorField {
     /// app reads them rather than keeping a second copy, the same way the
     /// camera limits come from the `view` block.
     struct Params {
-        var source = SIMD3<Double>(-0.30, 0.0, 0.0)   // 3 mm upwind of the start
-        var wind = SIMD3<Double>(0.30, 0.0, 0.0)      // cm/s
+        var source = SIMD3<Double>(0.30, 0.0, 0.0)    // a patch 2.5 mm in
+                                                   // front of the animal, which
+                                                   // stands at the origin facing
+                                                   // +x: it has found the food
+        var wind = SIMD3<Double>(-0.30, 0.0, 0.0)     // cm/s, blowing onto the
+                                                   // animal, so the plume goes
+                                                   // over its head and upwind
+                                                   // (+x) is towards the source
         var c0 = 1.0
         var decayCm = 1.20
         var sigma0Cm = 0.045
@@ -39,7 +45,14 @@ struct OdorField {
         var duty = 0.20
         var gustHz = 3.5
         var wavenumber = 6.0
-        var baselineDrive = 2.6
+        // Set by measurement, not by taste: `tools/odor_field.py --probe` walks
+        // a ladder of currents on the ORN group and finds the group leaves its
+        // ~20 Hz clean-air rate at about 2.9. At 45 the antennae's own filament
+        // peak is a current of ~26 — 9x the threshold — and a filament peak
+        // still crosses it out to 1.7 cm downwind. The first version used 2.6,
+        // which put the animal's own antennae *below* its receptors' threshold:
+        // the app shipped a fly that could not smell its own food.
+        var baselineDrive = 45.0
     }
 
     let p: Params
