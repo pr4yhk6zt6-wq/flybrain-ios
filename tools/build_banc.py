@@ -416,6 +416,70 @@ if onto_pool.any():
     log(f"    {'premotor:multileg':<28} {len(multi):>6,} "
         f"({int((legs_reached > 0).sum()):,} cells reach any pool)")
 
+# ---- the same 7,033 cells, split by *which* legs they reach -----------------
+# `premotor:multileg` says a cell reaches more than one leg. It does not say
+# *which* ones, and that is the question item 4 now turns on
+# (reports/item4_walking.md §8): the leg-selection under a patterned command is
+# made in this population, so can the cells that reach one tripod be told apart
+# from the cells that reach the other? The partition below makes that a count
+# rather than an argument. Every cell that reaches any pool motor neuron lands in
+# exactly one of nine groups:
+#
+#     premotor:leg:<leg>   it reaches that leg's pools and no other leg's
+#     premotor:tripodA     ≥2 legs, all of them in {T1_left, T2_right, T3_left}
+#     premotor:tripodB     ≥2 legs, all of them in {T1_right, T2_left, T3_right}
+#     premotor:cross       at least one leg from each of the two tripods
+#
+# The tripod partition is the classical alternating one — the same one
+# `tools/gait_probe.py` and `walk_loop.py` test with the tripod index — and it is
+# a *hypothesis* about which legs move together, not a measurement. What is a
+# measurement is `premotor:cross`: a cell that reaches a leg of each tripod can
+# couple the two halves of a gait, and a cell that does not cannot. If a pattern
+# on `premotor:tripodA` is to alternate anything, that count has to be small
+# enough that the two groups are separable.
+TRIPOD = {"A": ("T1_left", "T2_right", "T3_left"),
+          "B": ("T1_right", "T2_left", "T3_right")}
+# The six legs in `leg_ids` order, and one bit each.
+LEG_ORDER = sorted(leg_ids, key=lambda k: leg_ids[k])
+bit_of_id = {leg_ids[leg]: 1 << i for i, leg in enumerate(LEG_ORDER)}
+mask_of_cell = np.zeros(N, np.int32)
+cells_of_uniq = (uniq // 16).astype(np.int64)
+legs_of_uniq = (uniq % 16).astype(np.int64)
+for leg_id, bit in bit_of_id.items():
+    sel = legs_of_uniq == leg_id
+    mask_of_cell[cells_of_uniq[sel]] |= bit
+
+mask_A = sum(bit_of_id[leg_ids[l]] for l in TRIPOD["A"])
+mask_B = sum(bit_of_id[leg_ids[l]] for l in TRIPOD["B"])
+single = {leg: np.flatnonzero(mask_of_cell == bit_of_id[leg_ids[leg]])
+          for leg in LEG_ORDER}
+A_only = np.flatnonzero((mask_of_cell & mask_B == 0)
+                        & (mask_of_cell & mask_A != 0)
+                        & (mask_of_cell & (mask_of_cell - 1) != 0))
+B_only = np.flatnonzero((mask_of_cell & mask_A == 0)
+                        & (mask_of_cell & mask_B != 0)
+                        & (mask_of_cell & (mask_of_cell - 1) != 0))
+cross = np.flatnonzero((mask_of_cell & mask_A != 0) & (mask_of_cell & mask_B != 0))
+
+premotor_split = [("premotor:leg:" + leg, single[leg].astype(np.uint32))
+                  for leg in LEG_ORDER]
+premotor_split += [("premotor:tripodA", A_only.astype(np.uint32)),
+                   ("premotor:tripodB", B_only.astype(np.uint32)),
+                   ("premotor:cross", cross.astype(np.uint32))]
+for name, idx in premotor_split:
+    group_table.append({"name": name, "start": cursor, "count": int(len(idx))})
+    group_indices = np.concatenate([group_indices, idx])
+    cursor += len(idx)
+    log(f"    {name:<28} {len(idx):>6,}")
+reach_any = int((mask_of_cell > 0).sum())
+split_total = sum(len(idx) for _, idx in premotor_split)
+log(f"    {'premotor split total':<28} {split_total:>6,} of {reach_any:,} "
+    f"cells that reach any pool")
+if split_total != reach_any:
+    raise SystemExit("the premotor split does not partition the cells that reach "
+                     "a pool motor neuron — every such cell must land in exactly "
+                     "one of the nine groups")
+
 # ---- retinotopic UV for the visual group, per hemisphere -------------------
 vis = next(g for g in group_table if g["name"] == "sensory_vision")
 vis_idx = group_indices[vis["start"]:vis["start"] + vis["count"]]

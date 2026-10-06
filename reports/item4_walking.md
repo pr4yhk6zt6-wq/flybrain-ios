@@ -392,3 +392,59 @@ question is whether the ones that reach tripod A are separable from the ones tha
 reach tripod B. If they are not, no pattern on that group can alternate anything,
 and the gait has to come from somewhere else — which would then be a measurement
 rather than a wish.
+
+## 9. Are the two tripods separable in the cord? (structural, 2026-10-06)
+
+§8 showed that the set of legs which lift under a patterned command changes with
+the population the command lands on — so the leg-selection is made in the cord's
+wiring. The next question is the one that decides what a gait can be built from:
+**can the cells that reach one tripod be told apart from the cells that reach the
+other?** Only a cell that reaches *one* tripod can be part of a mechanism that
+drives the two apart; a cell that reaches both is common to the two halves by
+construction.
+
+`tools/build_banc.py` now packs that as a partition. Every cell that reaches any
+pool motor neuron lands in exactly one of nine groups — six
+`premotor:leg:<leg>` (it reaches that leg's pools and no other leg's),
+`premotor:tripodA` (≥2 legs, all in {T1_left, T2_right, T3_left}),
+`premotor:tripodB` (the mirror), and `premotor:cross` (at least one leg of each).
+`tools/verify_premotor.py` (new, and a CI step) re-derives the split from the
+shipped `build/flybanc.bin` by walking the CSR *backwards* — the packer walked
+forwards from each pool motor neuron — and the two agree cell for cell on all
+nine groups:
+
+| | cells |
+| --- | --- |
+| reach any pool motor neuron | **7,033** |
+| private to one leg | 6,245 |
+| multi-leg (more than one leg) | **788** |
+| — exclusive to tripod A | **9** |
+| — exclusive to tripod B | **14** |
+| — reaching **both** tripods | **765** (97.1 % of the multi-leg cells) |
+
+**So the two tripods are not separable in this population.** 97.1 % of the
+multi-leg premotor cells touch both halves, and only 23 cells in the whole
+connectome reach more than one leg *and* stay inside one tripod. Two independent
+measurements now say the same thing from opposite ends:
+
+* **structural** (this section): a pattern on `premotor:multileg` lands on 788
+  cells of which 765 must reach both tripods;
+* **dynamic** (§8): driving exactly that group with a 20 Hz pattern leaves the
+  index at −0.300 — the two halves moving together, which is what a
+  predominantly shared population can produce.
+
+The consequence is a constraint on the next design rather than an obstacle:
+"drive the multi-leg premotor pool and let the tripods alternate" is not
+available, because the pool is not wired that way. The candidates that remain,
+and each is a measurement rather than a wish:
+
+1. **The descending cells' pattern plus the multi-leg pool together** — §7's
+   shape on the population of §8, which is the one configuration not yet run;
+2. **a phase signal that does not exist in the connectome** — a declared,
+   labelled PLACEHOLDER per the brief, with `tools/gait_probe.py`'s index as the
+   instrument and the 23 exclusive cells as the target it is standing in for;
+3. **the 23 cells** — too few to drive a gait on their own, and the honest
+   reading of a count that small is that BANC's premotor population organises
+   the legs in some other way (by joint, by load, by segment) that this project
+   has not looked for yet. That search is the natural next measurement: cluster
+   the 788 by which *muscles* they reach rather than which legs.

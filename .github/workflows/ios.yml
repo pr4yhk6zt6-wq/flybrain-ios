@@ -463,6 +463,16 @@ jobs:
       - name: Step 6 — the cord's laws must be one set of numbers in all three files
         run: python3 tools/check_cord_laws.py --explain
 
+      # The 788 multi-leg premotor cells, split by which legs each one reaches.
+      # This is the measurement item 4 turns on (reports/item4_walking.md §9):
+      # if the cells that reach one tripod are not separable from those that
+      # reach the other, no pattern on that population can alternate anything.
+      # The tool re-derives the split from the graph, the other way round from
+      # the packer, and fails unless the two agree cell for cell and the nine
+      # groups partition every cell that reaches a pool motor neuron.
+      - name: Step 6 — the premotor split must partition the cells that reach a pool
+        run: python3 tools/verify_premotor.py
+
       - name: Pack the recorded world into the app bundle
         run: |
           python3 tools/pack_world.py
