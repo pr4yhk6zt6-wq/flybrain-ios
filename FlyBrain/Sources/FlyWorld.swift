@@ -38,6 +38,25 @@ struct WorldManifest: Decodable {
     /// because a world written before that tool existed does not carry it, and
     /// such a world gets the conservative fallbacks in `FlyWorld.viewLimits`.
     let view: WorldView?
+    /// The smell in the world. See `OdorField` and docs/ASSUMPTIONS.md #26–#29.
+    let odor: OdorSpec?
+
+    /// The odor field's parameters, written by `tools/odor_field.py --write`.
+    /// Every field is optional so that a world which predates the block still
+    /// loads: `OdorField` applies the tool's own defaults for anything absent.
+    struct OdorSpec: Decodable {
+        let source_cm: [Double]?
+        let wind_cms: [Double]?
+        let c0: Double?
+        let decay_cm: Double?
+        let sigma0_cm: Double?
+        let widening: Double?
+        let s0_cm: Double?
+        let duty: Double?
+        let gust_hz: Double?
+        let wavenumber: Double?
+        let baseline_drive: Double?
+    }
 
     struct WorldView: Decodable {
         let fov_y: Double
@@ -147,6 +166,10 @@ final class FlyWorld: @unchecked Sendable {
 
     let viewLimits: ViewLimits
 
+    /// The smell, in the same frame as the meshes. The animal samples it at its
+    /// own antennae; `WorldModel` is what actually calls it, once per frame.
+    let odorField: OdorField
+
     /// One node per mesh-bearing part, in the order they appear in the
     /// recording, so a frame index can pose them directly.
     private(set) var nodes: [SCNNode] = []
@@ -222,6 +245,7 @@ final class FlyWorld: @unchecked Sendable {
             self.viewLimits = ViewLimits(min: 0.82, home: 1.0, max: 2.5,
                                          pane: 0.306, fovY: 38, paneFovY: 50)
         }
+        self.odorField = OdorField(spec: manifest.odor)
         self.floorZ = Float(manifest.floor_z)
         self.frameCount = framesData.isEmpty ? 0 : manifest.frames.n
         self.partCount = manifest.frames.parts
@@ -267,6 +291,7 @@ final class FlyWorld: @unchecked Sendable {
         }
 
         FlyWorld.dress(scene: scene, floorZ: floorZ)
+        FlyWorld.markOdor(in: scene, at: odorField.source, z: floorZ)
         apply(frame: 0)
     }
 
@@ -481,6 +506,31 @@ final class FlyWorld: @unchecked Sendable {
             // Scale stays what node creation pinned it to (1): the solver
             // gives a pose, and the vertices are already life size.
         }
+    }
+
+    /// Where a named part is, in world coordinates — the same frame the odor
+    /// field and the camera limits are written in. `head` is where the antennae
+    /// are, and the antennae are what smell.
+    func position(of name: String) -> SIMD3<Double>? {
+        guard let node = nodes.first(where: { $0.name == name }) else { return nil }
+        let p = node.simdPosition
+        return SIMD3<Double>(Double(p.x), Double(p.y), Double(p.z))
+    }
+
+    /// A disc on the floor where the odor comes from, so the smell is somewhere
+    /// you can see rather than a number in a corner of the screen.
+    private static func markOdor(in scene: SCNScene, at source: SIMD3<Double>,
+                                z: Float) {
+        let disc = SCNCylinder(radius: 0.045, height: 0.0008)
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 0.36, green: 0.62, blue: 0.38,
+                                            alpha: 1)
+        disc.materials = [material]
+        let node = SCNNode(geometry: disc)
+        node.name = "odor_source"
+        node.position = SCNVector3(Float(source.x), Float(source.y), z + 0.0004)
+        scene.rootNode.addChildNode(node)
     }
 
     /// Where the animal is, so a camera can keep it in frame.

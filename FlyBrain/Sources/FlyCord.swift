@@ -101,6 +101,11 @@ struct FlyCordSettings {
     /// it (`tools/step3_closedloop.py`: `drivers = [(self.desc, self.args.desc,
     /// 0, ms)]`, injected on every millisecond of every mode).
     var descendingGroup: String = "descending"
+    /// The population that smells: BANC's own annotation of the olfactory
+    /// receptor neurons (`cell_function == "olfactory"`, 3,000 cells), packed
+    /// by `tools/build_banc.py`. `tools/odor_field.py --gate` fails CI if it
+    /// is missing, because a missing group and a silent one look the same.
+    var odorGroup: String = "sensory_olfactory"
 }
 
 // MARK: - The loop
@@ -190,6 +195,14 @@ final class FlyCord {
     /// The tone last put on the descending population — the brain's own input to
     /// the cord, kept so the HUD and the tests can see it rather than infer it.
     private(set) var descendingDrive: Double = 0
+    /// The current last put on the antenna. Unlike the tone this one does not
+    /// come from the brain: it comes from the *world*, sampled where the head
+    /// is, and it is the only input the cord has that is not the body talking
+    /// to itself. `WorldModel` samples `OdorField` and sets it here.
+    var odorDrive: Double = 0
+    /// Whether the connectome has the odor group at all, so a screen can say
+    /// "there is no antenna in this build" rather than showing a silent zero.
+    private(set) var hasOdorGroup = false
     /// The firing rate of the descending population, Hz, as the connectome
     /// reported it on the last update. The cord does not use it — it is here
     /// because "the pools are silent" is a claim about the *input*, and the
@@ -273,9 +286,15 @@ final class FlyCord {
         // descending input is missing is standing on its sense organs alone and
         // would otherwise never say so.
         for name in Set(pools.map { $0.group } + organs.map { $0.group }
-                        + [settings.descendingGroup]).sorted() {
+                        + [settings.descendingGroup, settings.odorGroup]).sorted() {
             if !source.hasGroup(name) { missingGroups.append(name) }
         }
+        // The antenna is the one input that comes from the world rather than
+        // from the connectome, so a build without it must be able to say so:
+        // otherwise its ORN group reads 0 Hz, which is what "no smell" reads
+        // as, and the fly would look like it is standing in clean air while it
+        // is standing in the plume.
+        hasOdorGroup = !missingGroups.contains(settings.odorGroup)
     }
 
     /// Does the shipped connectome carry the descending population? The cord
@@ -312,6 +331,14 @@ final class FlyCord {
         // magnitude of its own).
         descendingDrive = settings.tone
         source.setGroupDrive(settings.descendingGroup, descendingDrive)
+
+        // --- the world -> the antenna ----------------------------------------
+        // The smell is the one drive the cord does not compute. `WorldModel`
+        // samples the field at the head every frame and leaves the current
+        // here; this is where it reaches the connectome, through the same
+        // `setGroupDrive` path the tone and the organs use, so a missing group
+        // is caught by the same check rather than failing quietly.
+        source.setGroupDrive(settings.odorGroup, odorDrive)
 
         // --- the load a leg carries standing: the campaniform organ's scale ---
         // Collected across the calibration window and taken as a median. One

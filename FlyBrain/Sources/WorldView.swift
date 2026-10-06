@@ -233,6 +233,15 @@ final class WorldModel: ObservableObject {
     /// Simulated milliseconds of cord per wall second, measured — 1.0 is real
     /// time. Reported, never assumed.
     @Published private(set) var cordRealtime: Double = 0
+    /// The smell at the antennae: the concentration the field puts there and
+    /// the current it becomes, both reported rather than inferred. Zero is a
+    /// real reading (clean air, or upwind of the source) — the HUD says which
+    /// of the two, because a zero that could be a bug is a zero nobody trusts.
+    @Published private(set) var odorConcentration: Double = 0
+    @Published private(set) var odorDrive: Double = 0
+    /// Set when the connectome has no olfactory group: the world still has a
+    /// smell, but this build has no antenna to receive it.
+    @Published private(set) var odorNote = ""
 
     /// How many 1 ms steps of connectome this screen asks for per frame. Started
     /// at 4 and moved by what the device actually manages, the same way the Map
@@ -370,6 +379,9 @@ final class WorldModel: ObservableObject {
             // then the connectome is stepped so those drives are what it fires
             // on. The rates come back on the next frame's completion.
             live.advance(wallSeconds: dt)
+            // Where the animal is, is what it smells — so the field is sampled
+            // after the body moves and before the cord is pumped.
+            sampleOdor()
             pumpCord(wallSeconds: dt)
         }
         render()
@@ -383,6 +395,26 @@ final class WorldModel: ObservableObject {
 
     /// Pose the animal and put the cameras where they belong. Public so the
     /// screen can show the first frame before the display link ticks.
+    /// The world's smell, at the animal's antennae, for this frame.
+    ///
+    /// Sampled here rather than inside the cord because it needs the *body*:
+    /// the antennae are on the head, the head moves, and whether the animal is
+    /// standing in a filament is a fact about where it is. The value is held on
+    /// the cord between frames (`FlyCord.odorDrive`), which is the same cadence
+    /// the organs are updated at, and it is written into the connectome every
+    /// simulated millisecond by `FlyCord.update` like every other drive.
+    ///
+    /// The head is looked up by name in the mesh table the world already posed:
+    /// the body model's own `head` geom, which is where the antennae are.
+    private func sampleOdor() {
+        if let c = cord, !c.hasOdorGroup { odorNote = "no antenna in this build" }
+        guard let head = world.position(of: "head") else { return }
+        let t = live.simulatedMS
+        odorConcentration = world.odorField.concentration(at: head, tMs: t)
+        odorDrive = world.odorField.drive(at: head, tMs: t)
+        cord?.odorDrive = odorDrive
+    }
+
     func render() {
         world.apply(live: live)
         rig.root.position = world.centre()
@@ -767,6 +799,14 @@ struct WorldHUD: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+            // The smell, and the fact that it is a *place*: the number is the
+            // concentration at the antennae right now, which rises and falls as
+            // filaments of the plume pass the animal. It is on the HUD rather
+            // than in a panel because the first question about an odor field is
+            // "is it doing anything" and the second is "where is it".
+            line(String(format: "odor %.3f at the antennae · drive %.2f%@",
+                        model.odorConcentration, model.odorDrive,
+                        model.odorNote.isEmpty ? "" : " · \(model.odorNote)"))
             // The per-pool readout: the loudest three, and the window the rates
             // came from. Never more than one line, so it cannot collide with
             // anything below it.
