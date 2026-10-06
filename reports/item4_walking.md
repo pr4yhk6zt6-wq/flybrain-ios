@@ -162,3 +162,38 @@ critical path:
    both the tool and `FlyCord.swift`;
 3. and only then is a gait's *absence* or *presence* a statement about the cord
    rather than about the setup.
+
+
+## 5. Two levers, measured (the operating point, and the command)
+
+The loop above says the cord as it stands distorts the stance. Two knobs can
+change that, and both were measured in the loop (700 ms, closed calibration,
+the app's LIF gain 12):
+
+| condition | pools in the loop | loads, of stance | legs lifting | knee motion |
+| --- | --- | --- | --- | --- |
+| tone 2.5, command gain 0.5 (the app) | 61 Hz | 0.30–2.42 | 5/6 | 0.20–0.46 rad |
+| tone 2.5, command gain **0.1** | 67 Hz | **0.52–1.36** | 3/6, 0–2 steps | 0.06–0.14 rad |
+| tone 5.0, command gain 0.5 | 85 Hz | 0.12–3.89 | 5/6 | 0.20–0.49 rad |
+| tone 1.0, command gain 0.5 | 56 Hz | 0.54–2.64 | 6/6 | 0.20–0.46 rad |
+
+The trade is exact and it is between the two things item 4 needs at once:
+
+* the command gain sets how much the cord can *move* the body, and how much it
+  *disturbs* the stance — at 0.1 the animal stands almost evenly (loads 0.52–1.36,
+  knee motion 0.06–0.14 rad) and at 0.5 it distorts (0.30–2.42, up to 0.46 rad);
+* the tone sets how hard the network runs, and a higher tone makes the distortion
+  worse (tone 5.0: loads 0.12–3.89) while a lower one does not fix it (tone 1.0
+  still 0.54–2.64), because the bias is in the *balance*, not in the scale.
+
+So a constant tone cannot be both: it is a hold, and a hold at a gain that can
+move a leg is a hold that can also lean on it. What a walking insect has, and
+what this loop does not, is a *patterned* descending command. `walk_loop.py` can
+now inject one (`--desc-pattern HZ:AMP`, the tone plus AMP·sin(2π·HZ·t) on the
+descending population), and the question it answers is the one this whole item
+turns on: does the cord's own wiring turn a modulated command into alternating
+tripods, or do all six legs simply follow the drive in phase? A tripod index that
+grows with the modulation means the connectivity is doing the coordination and
+the pattern is a command; a tripod index that stays at zero means the six legs
+are six copies of the drive, and item 4 needs the coupling to be built rather
+than found.

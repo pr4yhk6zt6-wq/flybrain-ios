@@ -95,6 +95,7 @@ class Cord:
         self.tone = tone
         self.gain = gain
         self.closed_calibration = closed_calibration
+        self.pattern = None          # (Hz, amplitude) on the descending group
         self.channels = set(channels)
 
         hinge_of = {j["name"]: i for i, j in enumerate(body.hinges)}
@@ -137,7 +138,7 @@ class Cord:
         self.organ_rate = 0.0
 
     # -- the cord, one millisecond ------------------------------------------
-    def update(self, net, dt_ms, angles, loads, feedback=True):
+    def update(self, net, dt_ms, angles, loads, feedback=True, t_ms=0.0):
         """Drive the net, step it, read the rates back, return the offset.
 
         `feedback=False` holds every organ at its standing value, so the cord's
@@ -145,7 +146,16 @@ class Cord:
         muscles of a body that cannot answer it. That is the control for "is the
         motion the loop's or the network's".
         """
-        net.drive("descending", self.tone)
+        # The brain's command. A constant tone is a *hold*; real descending
+        # commands are patterned, and the pattern is the experiment: does the
+        # cord's own wiring turn a modulated command into alternating tripods,
+        # or do all six legs simply follow the drive in phase? `pattern` is
+        # (frequency Hz, amplitude in the same units as the tone).
+        tone = self.tone
+        if self.pattern:
+            f, a = self.pattern
+            tone = max(0.0, self.tone + a * np.sin(2 * np.pi * f * t_ms / 1000.0))
+        net.drive("descending", tone)
         # The app has no camera in world mode until the user grants one, and
         # `BrainEngine.load` gives the retina a flat 1.0 so the brain is alive
         # the moment the view appears. Same drive here, so this loop's operating
@@ -235,6 +245,9 @@ def run_loop(args) -> dict:
     net = pp.LIF(c, args.gain, seed=args.seed)
     cord = Cord(body, asset, args.command_gain, tone=args.tone,
                 closed_calibration=args.closed_calibration)
+    if args.desc_pattern:
+        f, a = args.desc_pattern
+        cord.pattern = (f, a)
 
     legs = sorted(asset["legs"].keys())
     knee_hinge = {leg: next(o["hinge"] for o in cord.organs
@@ -263,7 +276,8 @@ def run_loop(args) -> dict:
             continue
         # The control: the cord runs, but its organs are never told what the body
         # did. What is left is the cord's own dynamics plus physics.
-        offset = cord.update(net, 1.0, angles, loads, feedback=not args.no_feedback)
+        offset = cord.update(net, 1.0, angles, loads,
+                             feedback=not args.no_feedback, t_ms=float(t))
         offsets_seen.append(float(np.abs(offset).max()))
         exc = np.clip(posture + offset, -1.0, 1.0)
         for _ in range(sub):
@@ -385,6 +399,9 @@ def main() -> int:
     ap.add_argument("--no-cord", action="store_true", help="muscle tone only")
     ap.add_argument("--no-feedback", action="store_true",
                     help="the cord runs, the organs are held at tone")
+    ap.add_argument("--desc-pattern", type=lambda s: tuple(float(x) for x in s.split(":")),
+                    default=None, metavar="HZ:AMP",
+                    help="modulate the descending command: tone + AMP*sin(2 pi HZ t)")
     ap.add_argument("--closed-calibration", action="store_true",
                     help="measure the reference balance with the organs live "
                          "(the regime the loop runs in) instead of clamped")
