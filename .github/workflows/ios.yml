@@ -546,7 +546,15 @@ jobs:
           # the archive either way.)
           (cd build && ditto -c -k --sequesterRsrc --keepParent Payload \
              FlyBrain-unsigned.ipa)
-          ls -lh FlyBrain-unsigned.ipa
+          # The archive is written *inside* build/ by the subshell above, so the
+          # path has to say so. The step that did not say so died here, after
+          # `ditto` had already made a perfectly good .ipa — and a step that
+          # dies here takes the two checks below it (does it carry its data, is
+          # it installable-shaped) and the upload with it, so the run fails with
+          # `ls: No such file or directory` and no artifact at all.
+          IPA=build/FlyBrain-unsigned.ipa
+          test -f "$IPA" || { echo "no .ipa at $IPA"; exit 1; }
+          ls -lh "$IPA"
 
       - name: The .ipa must contain its data, and must not contain a recording
         run: |
