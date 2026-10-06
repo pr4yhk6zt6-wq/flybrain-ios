@@ -85,6 +85,89 @@ final class FlyLiveBody {
     private var nextCordAtMS: Double = 0
     private var cordOffset: [Double] = []
 
+    // -- the wings (brief item 6) -------------------------------------------
+
+    /// The wing force model, attached once the world's `wings` block is known.
+    var wingAero: WingAero?
+    /// The four wing pools' rates, asked of the cord once per cord update.
+    var wingRates: (() -> [String: Double])?
+    /// Where the wing beat has got to, 0...1. The app's own clock, integrated
+    /// at the stroke frequency — not a lookup into a recording.
+    private(set) var strokePhase = 0.0
+    /// Each wing's stroke amplitude activation, from the pools' rates.
+    private(set) var wingActivation = SIMD2<Double>(0, 0)
+    /// The wrench the wings are putting on the thorax right now.
+    private(set) var wingWrench = WingAero.Wrench()
+    /// The beat's cycle mean, for the readout (recomputed a few times a second,
+    /// not every substep: it is 720 samples and the HUD is 10 Hz).
+    private(set) var wingBeat = WingAero.Beat()
+    private(set) var liftOverWeight = 0.0
+    private var lastWingReadoutMS: Double = -1e9
+    private var thoraxIndex = -1
+    private var wingYawJoints: (Int, Int) = (-1, -1)
+    private var wingWrenchArray: [SVec6] = []
+
+    /// Attach the wings. The spec is the `wings` block of `world.json`.
+    func attachWings(spec: WingSpec?) {
+        let aero = WingAero(spec: spec)
+        wingAero = aero
+        thoraxIndex = dynamics.bodyIndex(named: "thorax") ?? -1
+        wingYawJoints = (dynamics.hingeIndex(named: "wing_yaw_left") ?? -1,
+                         dynamics.hingeIndex(named: "wing_yaw_right") ?? -1)
+        if thoraxIndex >= 0 {
+            wingWrenchArray = [SVec6](repeating: .zero, count: dynamics.asset.bodies.count)
+            dynamics.externalWrench = wingWrenchArray
+        }
+        wingBeat = aero.beat(activationLeft: 0, activationRight: 0, samples: 8)
+    }
+
+    /// One substep of wings: advance the beat, hold the two stroke joints at the
+    /// measured kinematics with the joint's *own spring*, and hand the air's
+    /// answer back to the solver as a force and a torque on the thorax.
+    ///
+    /// The boundary this draws is the honest one for item 6: the *beat* is the
+    /// animal's measured stroke — the thorax resonator and the stretch-activated
+    /// flight muscles that would generate it are not modelled (ASSUMPTIONS #37)
+    /// — while everything the beat then does to the animal is the solver's,
+    /// because what leaves this function is a wrench and nothing else.
+    private func stepWings() {
+        guard let aero = wingAero else { return }
+        strokePhase += dt * aero.p.strokeHz
+        strokePhase -= floor(strokePhase)
+        let w = aero.instantaneous(phase: strokePhase,
+                                  activationLeft: wingActivation.x,
+                                  activationRight: wingActivation.y)
+        wingWrench = w
+        if thoraxIndex >= 0 {
+            wingWrenchArray[thoraxIndex] = SVec6(
+                Vec3(w.moment.x, w.moment.y, w.moment.z),
+                Vec3(w.force.x, w.force.y, w.force.z))
+            dynamics.externalWrench = wingWrenchArray
+        }
+        let s = sin(2 * Double.pi * strokePhase)
+        for (j, activation) in [(wingYawJoints.0, wingActivation.x),
+                                (wingYawJoints.1, wingActivation.y)] where j >= 0 {
+            dynamics.hingeTargets[j] = aero.amplitudeDeg(activation: activation)
+                * Double.pi / 180 * s
+        }
+    }
+
+    /// The cord's wing pools, once per cord update: rates in, stroke amplitudes
+    /// out. Nothing here decides what the pools do — that is the connectome's,
+    /// with the haltere afferents landing on the wing steering motor neurons
+    /// among its own synapses.
+    private func updateWingActivation() {
+        guard let aero = wingAero, let rates = wingRates?() else { return }
+        let a = aero.activation(ratesHz: rates)
+        wingActivation = SIMD2(a.left, a.right)
+        if simulatedMS - lastWingReadoutMS >= 100 {
+            lastWingReadoutMS = simulatedMS
+            wingBeat = aero.beat(activationLeft: a.left, activationRight: a.right,
+                                 samples: 180)
+            liftOverWeight = wingBeat.flightForceDyn / max(aero.weightDyn, 1e-12)
+        }
+    }
+
     // -- what the HUD reads ------------------------------------------------
 
     /// Simulated time since start-up, ms.
@@ -141,6 +224,7 @@ final class FlyLiveBody {
                 nextCordAtMS = simulatedMS + cordIntervalMs
                 cordOffset = drive(proprioception())
                 cordUpdates += 1
+                updateWingActivation()
             }
             var exc = posture
             for j in 0..<exc.count {
@@ -149,6 +233,7 @@ final class FlyLiveBody {
                 }
             }
             excitation = exc
+            stepWings()
             dynamics.step(dt: dt, torque: dynamics.muscleTorque(
                 q: dynamics.q, qd: dynamics.qd, excitation: exc))
         }

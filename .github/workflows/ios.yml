@@ -531,6 +531,138 @@ jobs:
                 f'measured')
           PY
 
+      # The wings: the force model, measured out of the body model and driven
+      # through the cord, with `--write` putting the whole of it — the measured
+      # geometry, the lift directions, the beat's constants and the four pools'
+      # own reference rates — into `world.json` for the app to read.
+      #
+      # `--probe` drives the four wing motor pools through the shipped
+      # connectome and reads their rates back: each pool against its *own*
+      # full-drive rate, because the two power pools do not run at the same rate
+      # (173.7 and 212.3 Hz) and one shared reference would hold an amplitude
+      # asymmetry open with no command behind it. It also measures the reflex
+      # arc the connectome already contains (item 7 found the haltere afferents
+      # synapsing directly onto the wing steering motor neurons): a 400 °/s yaw
+      # moves those pools, which is what makes the arc a fact rather than an
+      # assumption.
+      - name: Step 6 — the wings, measured and written
+        run: python3 tools/wing_aero.py --probe --write --golden build/wing_golden.json
+
+      # What the gate claims: the strips add up to the wing; the two wings are
+      # mirrors of each other and sweep the same way at the same joint angle;
+      # the beat's flight force is the animal's weight (lift/weight 1.00) at a
+      # mid-stroke angle of attack of 45° — which is what Dickinson, Lehmann &
+      # Sane measured in the animal's own hovering beat; a left-right amplitude
+      # asymmetry makes a yaw moment and reverses it; and the attitude the wing
+      # force implies (47° nose-up when the body is level) is one a fly holds.
+      - name: Step 6 — the wings must carry the animal, and an asymmetry must turn it
+        run: python3 tools/wing_aero.py --gate
+
+      # And the gate has teeth. Both rehearsals are deliberately wrong models:
+      # `--convention mirrored` mirrors the right wing's stroke joint in the
+      # body model, so the two wings sweep against each other; `--lift-from
+      # rest_plane` pitches the wing away from the body model's rest plane
+      # instead of its stroke plane, which flies the wing edge-on. Each has to
+      # be caught — a gate that passes a broken model is worse than no gate.
+      - name: Step 6 — the wing model's rehearsals must fail
+        run: |
+          set -e
+          if python3 tools/wing_aero.py --gate --convention mirrored; then
+            echo "FAIL the gate passed a body model whose wings sweep against each other"
+            exit 1
+          fi
+          if python3 tools/wing_aero.py --gate --lift-from rest_plane; then
+            echo "FAIL the gate passed a wing pitched away from its rest plane"
+            exit 1
+          fi
+          echo "both rehearsals failed the gate, as they have to"
+
+      # And the two implementations — the tool's and the phone's — must be the
+      # same aerodynamics. The Swift test carries the golden rows in its own
+      # source (a test that reads its expectations from the tool it is checking
+      # cannot fail), so what has to be checked is that those embedded rows are
+      # still the ones this run produced: the wing's geometry, the force law at
+      # 25 (velocity, angle of attack) points, and nine whole beats each driven
+      # by the two wings' own activations.
+      - name: Step 6 — the wings in the Swift test are the wings this run measured
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          golden = json.loads(pathlib.Path('build/wing_golden.json').read_text())
+          src = pathlib.Path('FlyBrain/Sources/WingAero.swift').read_text()
+
+          def block(name):
+              start = src.index(f'static let {name} = """') + len(f'static let {name} = """')
+              end = src.index('"""', start)
+              rows = []
+              for line in src[start:end].strip().splitlines():
+                  vals = [float(v) for v in line.split()]
+                  if vals:
+                      rows.append(vals)
+              return rows
+
+          def near(a, b, tol=1e-9):
+              return abs(a - b) <= tol * max(1.0, abs(b))
+
+          failures = []
+
+          wing = block('goldenWing')
+          g = golden['wing']
+          head = wing[0]
+          checks = [
+              (head[1], g['area_cm2'], 'area'), (head[2], g['span_cm'], 'span'),
+              (head[4], g['chord_cm'], 'chord'),
+              (head[5], g['second_moment_cm4'], '∫r²dA'),
+              (head[6], g['r2_hat_cm'], 'r̂₂'), (head[8], g['com_cm'], 'com'),
+              (head[9], g['sin_theta'], 'sinθ'),
+              (head[10], golden['attitude_deg'], 'the attitude'),
+              (head[11], golden['weight_dyn'], 'the weight'),
+          ]
+          for got, want, what in checks:
+              if not near(got, want):
+                  failures.append(f'{what}: the test carries {got}, this run measured {want}')
+          for i, key in enumerate(['stroke_axis', 'span_axis', 'lift_dir', 'hinge_cm']):
+              for j in range(3):
+                  if not near(wing[i + 1][j], g[key][j]):
+                      failures.append(f'{key}[{j}]: the test carries {wing[i + 1][j]}, '
+                                      f'this run measured {g[key][j]}')
+
+          strips = block('goldenStrip')
+          if len(strips) != len(golden['strip_force']):
+              failures.append(f'the test carries {len(strips)} strip rows, this run '
+                              f'made {len(golden["strip_force"])}')
+          else:
+              for i, (row, want) in enumerate(zip(strips, golden['strip_force'])):
+                  for j, key in ((2, 'cl'), (3, 'cd'), (4, 'lift_dyn'), (5, 'drag_dyn')):
+                      if not near(row[j], want[key]):
+                          failures.append(f'strip {i} {key}: the test carries {row[j]}, '
+                                          f'this run measured {want[key]}')
+
+          beats = block('goldenBeat')
+          keys = ['activation_left', 'activation_right', 'amplitude_left_deg',
+                  'amplitude_right_deg', 'lift_left_dyn', 'lift_right_dyn',
+                  'flight_force_dyn', 'thrust_dyn', 'vertical_dyn', 'side_dyn',
+                  'yaw_moment_dyn_cm', 'roll_moment_dyn_cm', 'pitch_moment_dyn_cm',
+                  'drag_cost_dyn']
+          if len(beats) != len(golden['beat']):
+              failures.append(f'the test carries {len(beats)} beats, this run made '
+                              f'{len(golden["beat"])}')
+          else:
+              for i, (row, want) in enumerate(zip(beats, golden['beat'])):
+                  for j, key in enumerate(keys):
+                      if not near(row[j], want[key]):
+                          failures.append(f'beat {i} {key}: the test carries {row[j]}, '
+                                          f'this run measured {want[key]}')
+
+          if failures:
+              for f in failures:
+                  print('FAIL ' + f)
+              sys.exit(1)
+          print(f'the Swift port carries this run\'s wing: geometry, '
+                f'{len(strips)} strip rows and {len(beats)} beats')
+          PY
+
+
       - name: Step 6 — the LIF kernel's external-input convention must match the reference
         run: |
           grep -q 'iSyn \* P.gain + externalInput\[gid\] + noise' FlyBrain/Shaders/LIF.metal \

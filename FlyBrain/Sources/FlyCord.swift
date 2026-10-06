@@ -112,6 +112,15 @@ struct FlyCordSettings {
     /// (`tools/haltere_gyro.py` measures both; docs/ASSUMPTIONS.md #30-#33).
     var haltereLeftGroup: String = "sensory_haltere_left"
     var haltereRightGroup: String = "sensory_haltere_right"
+    /// The four pools that move the wings (item 6): the two power pools, which
+    /// carry the flight tone, and the two steering pools, whose *rate*
+    /// difference opens one stroke and closes the other. BANC annotates all
+    /// four by side and name (12 cells each), and the wing steering motor
+    /// neurons are among the haltere afferents' direct targets (item 7 measured
+    /// 10 and 8 synapses) — so a turn reaches the wings through the cord's own
+    /// wiring, with no controller of ours in between.
+    var wingGroups: [String] = ["motor_wing_power_left", "motor_wing_power_right",
+                                "motor_wing_steering_left", "motor_wing_steering_right"]
 }
 
 // MARK: - The loop
@@ -217,10 +226,24 @@ final class FlyCord {
     /// `haltere` block (`WorldView.attachCord`), so the app does not keep a
     /// second copy of geometry the tool measures.
     var gyro = HaltereGyro()
+    /// The wings: the rate-to-stroke map, and the names it reads the pools by.
+    var wings = WingAero()
+    /// A steering command the *screen* can put on the wing steering pools, in
+    /// tone units, added to the left and subtracted from the right. Default 0:
+    /// with nothing asking for a turn the two steering pools are driven
+    /// equally, and whatever asymmetry comes out is the connectome's own.
+    var wingSteer: Double = 0
+    /// The four wing pools' rates, as the cord last measured them — the input
+    /// `WingAero` turns into each wing's stroke amplitude.
+    private(set) var wingRates: [String: Double] = [:]
     /// The rate the sensor reports after its lag, degrees per second, body
     /// frame — for the readout, and for a reflex that wants to ask.
     var sensedRateDPS: SIMD3<Double> { gyro.sensedDPS }
     private(set) var hasHaltereGroups = false
+    /// Are the four wing pools in this connectome? Without them the wings make
+    /// no force at all, and the animal cannot leave the floor — which is worth
+    /// saying out loud rather than showing as a fly that will not fly.
+    private(set) var hasWingGroups = false
     /// The firing rate of the descending population, Hz, as the connectome
     /// reported it on the last update. The cord does not use it — it is here
     /// because "the pools are silent" is a claim about the *input*, and the
@@ -306,7 +329,8 @@ final class FlyCord {
         for name in Set(pools.map { $0.group } + organs.map { $0.group }
                         + [settings.descendingGroup, settings.odorGroup,
                                            settings.haltereLeftGroup,
-                                           settings.haltereRightGroup]).sorted() {
+                                           settings.haltereRightGroup]
+                        + settings.wingGroups).sorted() {
             if !source.hasGroup(name) { missingGroups.append(name) }
         }
         // The antenna is the one input that comes from the world rather than
@@ -317,6 +341,7 @@ final class FlyCord {
         hasOdorGroup = !missingGroups.contains(settings.odorGroup)
         hasHaltereGroups = !missingGroups.contains(settings.haltereLeftGroup)
             && !missingGroups.contains(settings.haltereRightGroup)
+        hasWingGroups = !settings.wingGroups.contains { missingGroups.contains($0) }
     }
 
     /// Does the shipped connectome carry the descending population? The cord
@@ -374,6 +399,25 @@ final class FlyCord {
             haltereRightDrive = d.y
             source.setGroupDrive(settings.haltereLeftGroup, d.x)
             source.setGroupDrive(settings.haltereRightGroup, d.y)
+        }
+
+        // --- the flight tone -> the wing motor pools --------------------------
+        // The four pools are driven the way the animal drives them: the power
+        // pools get the brain's flight tone, and the steering pools get the same
+        // tone plus whatever steering command is on the cord. Their *rates* are
+        // then read back, because the rate is the command: `WingAero` maps each
+        // pool's rate against its own resting and full-drive rates to that
+        // wing's stroke amplitude. Nothing here decides how much force the wings
+        // make; it decides how hard the muscles are driven, and the force
+        // follows from the wings and the air.
+        if hasWingGroups {
+            let d = wings.poolDrives(tone: settings.tone, steer: wingSteer)
+            for (name, value) in d {
+                source.setGroupDrive(name, value)
+            }
+            var rates: [String: Double] = [:]
+            for name in settings.wingGroups { rates[name] = source.poolRate(name) }
+            wingRates = rates
         }
 
         // --- the load a leg carries standing: the campaniform organ's scale ---

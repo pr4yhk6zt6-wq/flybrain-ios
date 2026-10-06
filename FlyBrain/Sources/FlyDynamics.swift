@@ -679,6 +679,31 @@ final class FlyDynamics {
     private var v: [SVec6]
     private var c: [SVec6]
     private var impact: [SVec6]          // wrench the floor applies, per body
+    /// Where a named hinge sits in this model's hinge list. The wings are the
+    /// only caller: their stroke comes from the animal's measured beat, held by
+    /// the joint's own spring, while every leg is driven by its own muscles.
+    func hingeIndex(named name: String) -> Int? { jointName.firstIndex(of: name) }
+
+    /// Where a named body sits.
+    func bodyIndex(named name: String) -> Int? {
+        asset.bodies.firstIndex { $0.name == name }
+    }
+
+    /// A wrench on a body from outside the body — the wings (item 6). In the
+    /// body's own frame, both halves of it, like the floor's: a world-frame
+    /// force crossed with a body-frame lever arm is neither. `WingAero`'s
+    /// moments are already taken about the thorax origin, which is the frame
+    /// the thorax body's own origin sits in, so what it returns can go straight
+    /// in. Empty means no wings, and nothing changes.
+    var externalWrench: [SVec6] = []
+    /// Hinge targets for the joints whose motion comes from outside the muscle
+    /// loop — the wing stroke, which item 6 takes from the animal's *measured*
+    /// beat rather than from the flight muscles (docs/ASSUMPTIONS.md #37: the
+    /// thorax resonator and the stretch-activated flight muscles are the next
+    /// item's job; until then the wing is held at the measured stroke by the
+    /// joint's own spring, at the joint's own stiffness, and everything the
+    /// wing then does to the air and to the body is the solver's).
+    var hingeTargets: [Int: Double] = [:]
     private var IA: [SMat6]
     private var pA: [SVec6]
     private var U: [SVec6]
@@ -999,6 +1024,9 @@ final class FlyDynamics {
         }
         let wrench = floorContact()
         for i in 0..<nBody { c[i] -= wrench[i] }
+        if !externalWrench.isEmpty {
+            for i in 0..<min(nBody, externalWrench.count) { c[i] -= externalWrench[i] }
+        }
     }
 
     /// The floor, as a penalty contact on every collision geom.
@@ -1144,7 +1172,8 @@ final class FlyDynamics {
         bias()
 
         for j in 0..<nj {
-            tau[j] = torque[j] - stiffness[j] * (q[j] - springRef[j])
+            let ref = hingeTargets[j] ?? springRef[j]
+            tau[j] = torque[j] - stiffness[j] * (q[j] - ref)
         }
 
         for i in 0..<nBody {

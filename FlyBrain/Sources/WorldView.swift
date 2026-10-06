@@ -320,6 +320,14 @@ final class WorldModel: ObservableObject {
         // haltere pair out of the body model and puts the two sensitivity axes
         // and the constants in `world.json`.
         c.gyro = HaltereGyro(spec: world.haltereSpec)
+        // The wings (item 6): their geometry and their constants come from the
+        // same world file, measured by `tools/wing_aero.py --write`. The body
+        // asks the cord for the four wing pools' rates once per millisecond and
+        // the aero model turns them into a wrench on the thorax — the animal
+        // moves because it is pushed, and nothing on this screen pushes it.
+        c.wings = WingAero(spec: world.wingSpec)
+        live.attachWings(spec: world.wingSpec)
+        live.wingRates = { [weak c] in c?.wingRates ?? [:] }
         cord = c
         live.cordIntervalMs = 1.0
         live.drive = { [weak c] p in c?.update(dtMs: 1.0, proprio: p) ?? [] }
@@ -330,6 +338,9 @@ final class WorldModel: ObservableObject {
             // which looks exactly like an animal doing nothing. Say so instead.
             cordLine = "\(c.missingGroups.count) of "
                      + "\(c.missingGroups.count + c.poolsPresent) groups missing"
+        }
+        if !c.hasWingGroups {
+            cordLine += " · no wing pools: the animal cannot leave the floor"
         }
     }
 
@@ -854,6 +865,19 @@ struct WorldHUD: View {
             line(String(format: "odor %.3f at the antennae · drive %.2f%@",
                         model.odorConcentration, model.odorDrive,
                         model.odorNote.isEmpty ? "" : " · \(model.odorNote)"))
+            // The wings: what the flight muscles are being driven at, what
+            // stroke that buys, and what the air gives back. `lift/weight` is
+            // the number the animal is judged on — it has to be able to carry
+            // itself — and the yaw moment is printed because a fly that turns
+            // without a difference between its wings is a fly that is not
+            // turning with its wings.
+            line(String(format: "wings stroke L %.0f° R %.0f° · lift/weight %.2f · "
+                        + "yaw %+.4f dyn·cm · drag %.2f dyn",
+                        model.live.wingBeat.amplitudeLeftDeg,
+                        model.live.wingBeat.amplitudeRightDeg,
+                        model.live.liftOverWeight,
+                        model.live.wingBeat.yawMomentDynCM,
+                        model.live.wingBeat.dragCostDyn))
             // The halteres: what the body is doing, as the pair senses it, and
             // what that became. Yaw is the third number because it is the one a
             // walking fly turns with; the two drives are printed separately

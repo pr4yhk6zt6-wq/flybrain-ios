@@ -45,6 +45,11 @@ struct WorldManifest: Decodable {
     /// a world that predates the block still loads, and `HaltereGyro` keeps the
     /// defaults the tool measured with.
     let haltere: HaltereSpec?
+    /// The wings' geometry and constants, written by
+    /// `tools/wing_aero.py --write`. Optional for the same reason `haltere` is:
+    /// a world that predates the block still loads, and `WingAero` keeps the
+    /// measured defaults it was pinned with.
+    let wings: WingSpec?
 
     /// The odor field's parameters, written by `tools/odor_field.py --write`.
     /// Every field is optional so that a world which predates the block still
@@ -177,6 +182,8 @@ final class FlyWorld: @unchecked Sendable {
     /// What the gyro is built from (`WorldView.attachCord`). Kept as the spec
     /// rather than as a `HaltereGyro`, because the cord owns the filter state.
     let haltereSpec: HaltereSpec?
+    /// The wings (item 6), from the same file.
+    let wingSpec: WingSpec?
 
     /// One node per mesh-bearing part, in the order they appear in the
     /// recording, so a frame index can pose them directly.
@@ -255,6 +262,7 @@ final class FlyWorld: @unchecked Sendable {
         }
         self.odorField = OdorField(spec: manifest.odor)
         self.haltereSpec = manifest.haltere
+        self.wingSpec = manifest.wings
         self.floorZ = Float(manifest.floor_z)
         self.frameCount = framesData.isEmpty ? 0 : manifest.frames.n
         self.partCount = manifest.frames.parts
