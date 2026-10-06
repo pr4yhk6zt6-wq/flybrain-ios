@@ -59,7 +59,7 @@ block = f'''    // MARK: - the golden table
     static var goldenWingVectors: [SIMD3<Double>] {{
         goldenWing.split(separator: "\\n").compactMap {{ line in
             let v = line.split(separator: " ").compactMap {{ Double($0) }}
-            return v.count == 3 ? SIMD3(v[0], v[1], v[2]) : nil
+            return v.count == 3 ? SIMD3<Double>(v[0], v[1], v[2]) : nil
         }}
     }}
 
@@ -68,18 +68,6 @@ block = f'''    // MARK: - the golden table
 {chr(10).join(station_rows)}
 """
 
-    /// The same strips as the table the port integrates, parsed out of the
-    /// literal above so the numbers exist in one copy. A `WingAero()` with no
-    /// spec uses these; before this existed it had *no strips at all*, so every
-    /// force came out zero and the tests said so ("the beat costs drag", 0.0).
-    /// A port that silently makes no force is worse than one that crashes,
-    /// because the fly then simply does not fly and nothing says why.
-    static var defaultStations: [(r: Double, chord: Double, area: Double)] {{
-        goldenStations.split(separator: "\\n").compactMap {{ line in
-            let v = line.split(separator: " ").compactMap {{ Double($0) }}
-            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
-        }}
-    }}
 
     /// The right wing's strips. The two wings in the body model are *not*
     /// identical — their areas differ by 6.6e-05 — so each wing is integrated

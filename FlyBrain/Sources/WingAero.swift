@@ -333,10 +333,10 @@ struct WingAero {
     var stripChordsCM: [Double] { p.stations.map { $0.chord } }
     /// Each wing integrates its own strips: two wings whose areas differ by
     /// 6.6e-05 are not one wing used twice.
-    func stripRadiiCM(_ side: Side) -> [Double] {
+    func stripRadii(_ side: Side) -> [Double] {
         (side == .left ? p.stations : p.stationsRight).map { $0.r }
     }
-    func stripAreasCM2(_ side: Side) -> [Double] {
+    func stripAreas(_ side: Side) -> [Double] {
         (side == .left ? p.stations : p.stationsRight).map { $0.area }
     }
 
@@ -377,9 +377,9 @@ struct WingAero {
         let sgn = omegaRadS >= 0 ? 1.0 : -1.0
         let hinge = hinge(side)
         var out = Wrench()
-        let areas = stripAreasCM2(side)
+        let areas = stripAreas(side)
         let sinT = sinTheta(side)
-        for (i, r) in stripRadiiCM(side).enumerated() {
+        for (i, r) in stripRadii(side).enumerated() {
             let v = abs(omegaRadS) * r * sinT
             let q = 0.5 * p.rhoGCM3 * v * v * areas[i]
             let force = f.lift * (q * cl) - f.v * (q * cd * sgn)
@@ -571,7 +571,7 @@ struct WingAero {
     static var goldenWingVectors: [SIMD3<Double>] {
         goldenWing.split(separator: "\n").compactMap { line in
             let v = line.split(separator: " ").compactMap { Double($0) }
-            return v.count == 3 ? SIMD3(v[0], v[1], v[2]) : nil
+            return v.count == 3 ? SIMD3<Double>(v[0], v[1], v[2]) : nil
         }
     }
 
@@ -591,18 +591,6 @@ struct WingAero {
 0.253716259911797 0.00252526758180444 5.52832728144024e-05
 """
 
-    /// The same strips as the table the port integrates, parsed out of the
-    /// literal above so the numbers exist in one copy. A `WingAero()` with no
-    /// spec uses these; before this existed it had *no strips at all*, so every
-    /// force came out zero and the tests said so ("the beat costs drag", 0.0).
-    /// A port that silently makes no force is worse than one that crashes,
-    /// because the fly then simply does not fly and nothing says why.
-    static var defaultStations: [(r: Double, chord: Double, area: Double)] {
-        goldenStations.split(separator: "\n").compactMap { line in
-            let v = line.split(separator: " ").compactMap { Double($0) }
-            return v.count >= 3 ? (v[0], v[1], v[2]) : nil
-        }
-    }
 
     /// The right wing's strips. The two wings in the body model are *not*
     /// identical — their areas differ by 6.6e-05 — so each wing is integrated
