@@ -184,9 +184,12 @@ final class FlyCord {
 
     private var calibratingMs: Double = 0
     private var calibrationSamples: [Double] = []
+    /// Every leg's load through the calibration window, for the campaniform
+    /// organ's per-leg scale (the median of these is what "standing" means).
+    private var calibrationLoads: [String: [Double]] = [:]
     /// The load each leg carries while standing — the campaniform organ's own
     /// normalisation, measured on the body, not chosen.
-    private var referenceLoad: [String: Double] = [:]
+    private(set) var referenceLoad: [String: Double] = [:]
 
     /// Hinge count, from the asset: the offset array the body expects.
     let hingeCount: Int
@@ -288,9 +291,19 @@ final class FlyCord {
         source?.setGroupDrive(settings.descendingGroup, descendingDrive)
 
         // --- the load a leg carries standing: the campaniform organ's scale ---
-        if referenceLoad.isEmpty {
-            for (leg, force) in proprio.legLoad where force > 0 {
-                referenceLoad[leg] = force
+        // Collected across the calibration window and taken as a median. One
+        // sample of a penalty contact is a number with a millisecond of the
+        // solver's noise in it, and a per-leg scale built from one sample is a
+        // scale that can be wrong by a factor of two on the leg that happened to
+        // be between contacts — which then drives that leg's campaniform organ
+        // twice as hard as its neighbours' for as long as the animal stands.
+        if phase == .calibrating {
+            for (leg, force) in proprio.legLoad {
+                calibrationLoads[leg, default: []].append(force)
+            }
+        } else if referenceLoad.isEmpty {
+            for (leg, samples) in calibrationLoads where !samples.isEmpty {
+                referenceLoad[leg] = median(samples)
             }
         }
 
@@ -381,6 +394,15 @@ final class FlyCord {
 
         // --- muscle excitation ------------------------------------------------
         for o in 0..<offset.count { offset[o] = 0 }
+        // While calibrating there is nothing to command *towards*: `reference`
+        // is still zero, so `gain * (balance − 0)` would be a push of up to
+        // `gain` held for the whole 300 ms window — applied to an animal that is
+        // supposed to be standing still so that its stance can be measured at
+        // all. Step 3's `mode="clamped"`, which is where this phase comes from,
+        // commands every joint to the rest pose while `b_ref` is measured; the
+        // equivalent here is to command nothing and let muscle tone hold the
+        // animal, which is what returning early with a zero offset does.
+        guard phase == .running else { return offset }
         for (k, hinge) in drivenHinges.enumerated() where hinge < offset.count {
             let command = settings.gain * (balance[k] - reference[k])
             offset[hinge] = min(1, max(-1, command))
@@ -390,6 +412,15 @@ final class FlyCord {
 
     private func angle(_ p: FlyProprioception, _ hinge: Int) -> Double {
         hinge < p.angle.count ? p.angle[hinge] : 0
+    }
+
+    /// The middle of a sample, by value — the load a leg carries when it is not
+    /// between contacts. `sorted()` on a few hundred doubles, once per leg.
+    private func median(_ values: [Double]) -> Double {
+        let s = values.sorted()
+        guard !s.isEmpty else { return 0 }
+        return s.count % 2 == 1 ? s[s.count / 2]
+                                : 0.5 * (s[s.count / 2 - 1] + s[s.count / 2])
     }
 
     // MARK: Readouts

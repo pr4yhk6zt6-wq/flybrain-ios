@@ -37,6 +37,8 @@ REQUIRED = (
     "testTheDescendingNeuronsCarryTheBrainsToneIntoTheCord",
     "testTheJointListStartsWithTheFreeJoint",
     "testTheLoopIsBalancedAroundTheStanceItMeasured",
+    "testTheCordHoldsTheStanceItIsMeasuring",
+    "testTheStandingLoadIsTheWindowAndNotOneSample",
     "testTheLoopReachesBothDirectionsFromTheStance",
     "testSilenceGivesTheStanceBackRatherThanADrift",
     "testTheChordotonalOrganReportsTheJointItSpans",

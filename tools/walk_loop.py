@@ -134,6 +134,11 @@ class Cord:
         # number averaged over both describes neither.
         self.history = {"calib_desc": [], "calib_pool": [], "run_desc": [],
                         "run_pool": [], "run_offset": []}
+        # The load each leg carries *standing* — the campaniform organ's own
+        # normalisation. Measured across the calibration window and taken as a
+        # median, because one sample of a penalty contact is a number with a
+        # millisecond of the solver's noise in it.
+        self._calib_loads = {leg: [] for leg in self.body.legs}
         self.descending_rate = 0.0
         self.organ_rate = 0.0
 
@@ -180,11 +185,6 @@ class Cord:
                 n_org += 1
         self.organ_rate = org_sum / n_org if n_org else 0.0
 
-        if not self.reference_load:
-            for leg, force in loads.items():
-                if force > 0:
-                    self.reference_load[leg] = force
-
         net.step()
         counts = net.counts([p["group"] for p in self.pools])
         sizes = np.array([max(len(net.members(p["group"])), 1) for p in self.pools])
@@ -192,6 +192,9 @@ class Cord:
         self.descending_rate = float(
             net.counts(["descending"])[0] / max(len(net.members("descending")), 1)
             * 1000.0 / dt_ms)
+        if self.phase == "calibrating":
+            for leg, force in loads.items():
+                self._calib_loads.setdefault(leg, []).append(float(force))
         key = "calib" if self.phase == "calibrating" else "run"
         self.history[key + "_desc"].append(self.descending_rate)
         self.history[key + "_pool"].append(float(self.rate.mean()))
@@ -216,13 +219,22 @@ class Cord:
             self.calibrating_ms += dt_ms
             if self.calibrating_ms >= CALIBRATE_MS:
                 self.reference = self._calib_sum / max(1, self.calibrating_ms / dt_ms)
+                tail = {leg: v[-50:] for leg, v in self._calib_loads.items() if len(v) >= 10}
+                self.reference_load = {leg: float(np.median(v)) for leg, v in tail.items()}
                 self.phase = "running"
 
         offset = np.zeros(self.body.nj)
-        for k, hinge in enumerate(self.driven):
-            offset[hinge] = np.clip(self.gain * (self.balance[k] - self.reference[k]), -1, 1)
         if self.phase == "running":
+            for k, hinge in enumerate(self.driven):
+                offset[hinge] = np.clip(self.gain * (self.balance[k] - self.reference[k]),
+                                        -1, 1)
             self.history["run_offset"].append(float(np.abs(offset).max()))
+        # While calibrating there is nothing to command *towards* yet: `reference`
+        # is still zero and `gain*(balance - 0)` would be a push of up to gain,
+        # applied for 300 ms to an animal that is supposed to be holding its
+        # stance so the stance can be measured. Step 3's "clamped" mode commands
+        # every joint to the rest pose for exactly this phase; so does this, by
+        # returning no offset at all and letting muscle tone hold the animal.
         return offset
 
 

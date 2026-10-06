@@ -308,6 +308,72 @@ final class FlyCordTests: XCTestCase {
         }
     }
 
+    /// While the loop is measuring the stance, it must not be pushing the
+    /// animal it is measuring.
+    ///
+    /// The first version of `FlyCord.update` computed `gain * (balance −
+    /// reference)` in every phase, and `reference` is zero until the window
+    /// closes — so for the first 300 ms the cord pushed every driven joint with
+    /// up to `gain` of excitation, while step 3's `mode="clamped"` (the phase
+    /// this one is copied from) commands every joint to the rest pose and
+    /// measures the stance an animal is *holding*. The loop run headless with
+    /// the body answering it (`tools/walk_loop.py`) is what made the difference
+    /// visible: measured this way the animal lifted five of six feet and pressed
+    /// itself 2.1× deeper into the floor; held this way it stands on six.
+    func testTheCordHoldsTheStanceItIsMeasuring() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        let p = stance(asset, hingeCount: cord.hingeCount)
+
+        // Every pool at 20 Hz: a joint with only an extensor on it balances at
+        // 1.0, so `gain * (balance − 0)` is a large positive command if the
+        // calibration window is not holding anything.
+        for pool in cord.pools { stub.rates[pool.group] = 20 }
+        XCTAssertEqual(cord.phase, .calibrating)
+        for ms in 0..<299 {
+            let offset = cord.update(dtMs: 1, proprio: p)
+            XCTAssertEqual(cord.phase, .calibrating, "left the window early at \(ms) ms")
+            XCTAssertTrue(offset.allSatisfy { $0 == 0 },
+                          "the cord commanded the animal at \(ms) ms of a window that "
+                          + "exists to measure the pose it is already holding")
+        }
+        // ...and one millisecond later it is running, and commanding again.
+        _ = cord.update(dtMs: 1, proprio: p)
+        XCTAssertEqual(cord.phase, .running)
+    }
+
+    /// The campaniform organ's scale is the load a leg carries *standing*, and
+    /// a standing leg's load is not one contact sample.
+    func testTheStandingLoadIsTheWindowAndNotOneSample() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        for pool in cord.pools { stub.rates[pool.group] = 20 }
+
+        // A leg that is between contacts for the first milliseconds — a spike of
+        // 40, then the real standing load — must not end up with a scale of 40.
+        var noisy = [String: Double]()
+        for (key, _) in asset.legs { noisy[key] = 1.0 }
+        for ms in 0..<320 {
+            if ms == 0, let first = asset.legs.keys.first { noisy[first] = 40 }
+            if ms == 1, let first = asset.legs.keys.first { noisy[first] = 1.0 }
+            let offset = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount,
+                                                              loads: noisy))
+            XCTAssertEqual(offset.count, cord.hingeCount)
+        }
+        XCTAssertEqual(cord.phase, .running)
+        // The organ's normalisation is measured, not chosen: whatever the scale
+        // ends up as, the median of a window that was 1.0 for 319 of its 320
+        // samples is 1.0.
+        XCTAssertEqual(cord.referenceLoad.count, asset.legs.count,
+                       "a leg's standing load was never measured")
+        for (_, value) in cord.referenceLoad {
+            XCTAssertEqual(value, 1.0, accuracy: 1e-9,
+                           "the scale picked up a sample instead of the window")
+        }
+    }
+
     func testTheLoopReachesBothDirectionsFromTheStance() throws {
         let asset = try asset()
         let stub = StubRates()
