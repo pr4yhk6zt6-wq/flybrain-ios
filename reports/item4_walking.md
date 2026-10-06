@@ -299,3 +299,40 @@ control that separates them is the same run with `--no-feedback`, which holds
 every organ at its standing value and leaves the cord driving a body that cannot
 answer it — 3 minutes of wall clock. That is the next measurement, and item 4
 should not be called either way until it is made.
+
+### The control that was named above, run (same day)
+
+`--ms 800 --desc-pattern 20:1.0 --no-feedback` — the cord runs and drives the
+muscles exactly as before, but every organ is held at its standing value, so
+nothing the body did can reach the network:
+
+| 800 ms, 20 Hz pattern | with feedback | organs clamped (`--no-feedback`) |
+| --- | --- | --- |
+| pools | 63.4 Hz | 68.3 Hz |
+| legs leaving the floor | 2/6 (T2_right, T3_left) | 2/6 (**the same two legs**) |
+| airborne fraction | 62.6 %, 60.1 % | 62.6 %, 53.0 % |
+| loads, of stance | 0.36–1.37 | 0.36–1.24 |
+| COM z | −0.02266 → −0.03802 cm | −0.02266 → −0.03889 cm |
+| foot-load tripod index | +0.855 (+0.340 / −0.515) | **+0.863 (+0.347 / −0.515)** |
+
+**The tripod structure is not made by the feedback.** Opening the loop changes
+the index by 0.008 and the two tripod groups by nothing at all (across-tripod
+correlation −0.515 in both runs); the same two legs lift, by about the same
+amount, in the same window. So proprioceptive coupling is not what splits the six
+legs, and the 15 conditions in `gait_probe.py` that found no tripod were not
+missing a feedback term.
+
+What is left is two candidates, and they are separable in one run:
+
+1. **the cord's feedforward wiring** — the same 788 multi-leg premotor cells
+   (§2), carrying the command to the six legs unequally; or
+2. **the body's mechanics** — a common command, six legs with different loads
+   and geometry, and two of them at the corners that come off the floor first.
+
+The separation is to drive `premotor:multileg` (788 cells) with the same 20 Hz
+pattern instead of `descending`, which needs a `--drive-group` flag on
+`walk_loop.py`, and to compare the *set* of legs that lift: if the cord's own
+coupling chooses them, the set changes with the drive group; if the body's
+geometry chooses them, it does not. That is the next run, and until it exists
+item 4 stays where §7 leaves it: one condition with the sign right, no walk, and
+two candidate mechanisms that have not been told apart.
