@@ -106,6 +106,12 @@ struct FlyCordSettings {
     /// by `tools/build_banc.py`. `tools/odor_field.py --gate` fails CI if it
     /// is missing, because a missing group and a silent one look the same.
     var odorGroup: String = "sensory_olfactory"
+    /// The two populations that feel the halteres: BANC annotates them by side
+    /// (216 and 212 cells) and 57 of their targets are shared, which is what
+    /// makes the pair's *difference* a yaw signal and its *sum* a pitch signal
+    /// (`tools/haltere_gyro.py` measures both; docs/ASSUMPTIONS.md #30-#33).
+    var haltereLeftGroup: String = "sensory_haltere_left"
+    var haltereRightGroup: String = "sensory_haltere_right"
 }
 
 // MARK: - The loop
@@ -200,9 +206,21 @@ final class FlyCord {
     /// is, and it is the only input the cord has that is not the body talking
     /// to itself. `WorldModel` samples `OdorField` and sets it here.
     var odorDrive: Double = 0
+    /// What the gyro last put on each haltere population, for the readout.
+    private(set) var haltereLeftDrive: Double = 0
+    private(set) var haltereRightDrive: Double = 0
     /// Whether the connectome has the odor group at all, so a screen can say
     /// "there is no antenna in this build" rather than showing a silent zero.
     private(set) var hasOdorGroup = false
+    /// The gyro: the body's own angular velocity, through the pair's measured
+    /// sensitivity axes, onto the two afferent groups. Set from the world's
+    /// `haltere` block (`WorldView.attachCord`), so the app does not keep a
+    /// second copy of geometry the tool measures.
+    var gyro = HaltereGyro()
+    /// The rate the sensor reports after its lag, degrees per second, body
+    /// frame — for the readout, and for a reflex that wants to ask.
+    var sensedRateDPS: SIMD3<Double> { gyro.sensedDPS }
+    private(set) var hasHaltereGroups = false
     /// The firing rate of the descending population, Hz, as the connectome
     /// reported it on the last update. The cord does not use it — it is here
     /// because "the pools are silent" is a claim about the *input*, and the
@@ -286,7 +304,9 @@ final class FlyCord {
         // descending input is missing is standing on its sense organs alone and
         // would otherwise never say so.
         for name in Set(pools.map { $0.group } + organs.map { $0.group }
-                        + [settings.descendingGroup, settings.odorGroup]).sorted() {
+                        + [settings.descendingGroup, settings.odorGroup,
+                                           settings.haltereLeftGroup,
+                                           settings.haltereRightGroup]).sorted() {
             if !source.hasGroup(name) { missingGroups.append(name) }
         }
         // The antenna is the one input that comes from the world rather than
@@ -295,6 +315,8 @@ final class FlyCord {
         // as, and the fly would look like it is standing in clean air while it
         // is standing in the plume.
         hasOdorGroup = !missingGroups.contains(settings.odorGroup)
+        hasHaltereGroups = !missingGroups.contains(settings.haltereLeftGroup)
+            && !missingGroups.contains(settings.haltereRightGroup)
     }
 
     /// Does the shipped connectome carry the descending population? The cord
@@ -339,6 +361,20 @@ final class FlyCord {
         // `setGroupDrive` path the tone and the organs use, so a missing group
         // is caught by the same check rather than failing quietly.
         source.setGroupDrive(settings.odorGroup, odorDrive)
+
+        // --- the body's rotation -> the halteres -----------------------------
+        // Two drives, not one: the pair's difference carries yaw and roll and
+        // its sum carries pitch, and that is only true if each population is
+        // driven by its own haltere. The rate is the body's own; the afferent
+        // lag (one first-order pole, assumption #31) is applied here because it
+        // is a property of the receptors, not of the body.
+        if hasHaltereGroups {
+            let d = gyro.drive(rate: proprio.angularRate, dtMs: dtMs)
+            haltereLeftDrive = d.x
+            haltereRightDrive = d.y
+            source.setGroupDrive(settings.haltereLeftGroup, d.x)
+            source.setGroupDrive(settings.haltereRightGroup, d.y)
+        }
 
         // --- the load a leg carries standing: the campaniform organ's scale ---
         // Collected across the calibration window and taken as a median. One

@@ -88,7 +88,8 @@ final class FlyCordTests: XCTestCase {
     /// angle, each leg carrying its own weight.
     private func stance(_ asset: FlyBodyAsset, hingeCount: Int,
                         kneeAngle: Double? = nil,
-                        loads: [String: Double]? = nil) -> FlyProprioception {
+                        loads: [String: Double]? = nil,
+                        rotate: SIMD3<Double> = .zero) -> FlyProprioception {
         var angle = [Double](repeating: 0, count: hingeCount)
         var load: [String: Double] = [:]
         for (key, leg) in asset.legs {
@@ -102,7 +103,8 @@ final class FlyCordTests: XCTestCase {
         return FlyProprioception(angle: angle,
                                  rate: [Double](repeating: 0, count: hingeCount),
                                  legLoad: load, height: 0, speed: 0,
-                                 feetDown: 6)
+                                 feetDown: 6,
+                                 angularRate: rotate)
     }
 
     /// The trap this file's helper fell into once: the asset's `joints` array
@@ -586,11 +588,74 @@ final class FlyCordTests: XCTestCase {
         // 11 is what made this test fail, at 14 against 13 — which is the test
         // doing its job, so it now says *which* three things are driven instead
         // of how many).
-        let driven = Set([cord.settings.descendingGroup, cord.settings.odorGroup])
+        let driven = Set([cord.settings.descendingGroup, cord.settings.odorGroup,
+                          cord.settings.haltereLeftGroup,
+                          cord.settings.haltereRightGroup])
             .union(cord.organs.map { $0.group })
         XCTAssertEqual(Set(stub.drives.keys), driven,
-                       "the organs, the descending population and the antennae "
-                       + "are the whole of what this body drives")
+                       "the organs, the descending population, the antennae and "
+                       + "the two halteres are the whole of what this body drives")
+    }
+
+    /// The body's rotation has to *reach* the halteres, and the pair has to
+    /// carry it as a left-right difference that reverses when the turn does.
+    ///
+    /// This is the claim item 7 makes at the loop's level — the measurement of
+    /// what the LIF does with it is in `tools/haltere_gyro.py`, on the shipped
+    /// connectome. Here the cord is driven by a stub, so what is being checked
+    /// is the wiring: the rate the body reports is converted through the pair's
+    /// own sensitivity axes (assumption #31) onto the two named populations,
+    /// every simulated millisecond, with the afferents' lag.
+    func testTheBodyRotationReachesTheHalteres() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        let hinges = cord.hingeCount
+        func drive(leftRight dps: SIMD3<Double>) -> Double {
+            // 40 ms: long enough for the 5 ms afferent lag to have arrived, and
+            // short enough that this is a measurement of the wiring rather than
+            // of the solver
+            for _ in 0..<40 {
+                _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: hinges,
+                                                         rotate: dps))
+            }
+            return (stub.drives[cord.settings.haltereLeftGroup] ?? .nan)
+                 - (stub.drives[cord.settings.haltereRightGroup] ?? .nan)
+        }
+        let still = drive(leftRight: SIMD3(0, 0, 0))
+        XCTAssertEqual(0.5 * (stub.drives[cord.settings.haltereLeftGroup]!
+                              + stub.drives[cord.settings.haltereRightGroup]!),
+                       3.0, accuracy: 1e-9,
+                       "a still animal's halteres are not at their tonic drive")
+        let left = drive(leftRight: SIMD3(0, 0, 200))
+        let right = drive(leftRight: SIMD3(0, 0, -200))
+        XCTAssertGreaterThan(left, 1.0,
+                             "a 200 deg/s yaw to the left does not show up as a "
+                             + "difference between the two halteres")
+        XCTAssertLessThan(right, -1.0, "and the other way round must reverse it")
+        XCTAssertEqual(still, 0, accuracy: 1e-12,
+                       "a still body must give the two halteres the same drive, "
+                       + "exactly: a difference at rest is a gyro reading a "
+                       + "rotation that is not there")
+    }
+
+    /// Half a gyro is not a gyro. A build whose connectome has only one of the
+    /// two haltere populations must say so and drive neither, rather than
+    /// driving one and letting the other read as a pool that is simply quiet.
+    func testAMissingHaltereIsReportedNotSilentlyHalved() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        stub.absent = ["sensory_haltere_right"]
+        let cord = FlyCord(asset: asset, source: stub)
+        XCTAssertFalse(cord.hasHaltereGroups)
+        XCTAssertTrue(cord.missingGroups.contains("sensory_haltere_right"),
+                      "the missing haltere is not in the missing-groups list, so "
+                      + "nothing would tell the operator why the fly cannot feel "
+                      + "its own rotation")
+        _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount,
+                                                rotate: SIMD3(0, 0, 300)))
+        XCTAssertNil(stub.drives["sensory_haltere_left"],
+                     "one haltere was driven while the other was missing")
     }
 }
 

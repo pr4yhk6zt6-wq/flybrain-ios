@@ -39,6 +39,15 @@ struct FlyProprioception {
     /// Body height above the floor, cm, and the speed of the centre of mass.
     var height: Double
     var speed: Double
+    /// The body's angular velocity, **body frame**, in degrees per second.
+    ///
+    /// This is what the halteres measure (item 7): `omega` in the solver is the
+    /// root body's rate in the world frame, and the haltere sensitivity axes
+    /// are in the body frame, so the body takes the world-frame rate into its
+    /// own frame here — one rotation, once per cord update. Nothing else about
+    /// it is invented: the group drives are computed from it by `HaltereGyro`,
+    /// and what crosses the synapse is a current like any other.
+    var angularRate: SIMD3<Double>
     /// How many legs currently have any load on them.
     var feetDown: Int
 }
@@ -168,11 +177,19 @@ final class FlyLiveBody {
         }
         var rate = 0.0
         for r in dynamics.qd { rate = max(rate, abs(r)) }
+        // rad/s world frame -> deg/s body frame: `quatToMat(rootQuat)` takes a
+        // body-frame vector into the world, so its transpose takes the rate
+        // back into the body.
+        let R = quatToMat(dynamics.rootQuat)
+        let w = dynamics.omega
+        let body = R.transpose * w
+        let deg = 180.0 / Double.pi
         return FlyProprioception(angle: dynamics.q, rate: dynamics.qd,
                                  legLoad: load,
                                  height: dynamics.centreOfMass().z,
                                  speed: dynamics.vel.length,
-                                 feetDown: feet)
+                                 feetDown: feet,
+                                 angularRate: SIMD3(body.x, body.y, body.z) * deg)
     }
 
     /// World position and orientation of every mesh, in the asset's `visual`

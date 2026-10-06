@@ -243,6 +243,19 @@ final class WorldModel: ObservableObject {
     /// smell, but this build has no antenna to receive it.
     @Published private(set) var odorNote = ""
 
+    /// The body's rotation as the halteres report it, degrees per second, body
+    /// frame: `(roll, pitch, yaw)` about the fly's own axes. This is a *sensed*
+    /// value, not the solver's — it has been through the pair's sensitivity
+    /// axes and the afferents' lag (item 7), which is why it is worth showing
+    /// next to the drives it becomes.
+    @Published private(set) var gyroRateDPS = SIMD3<Double>.zero
+    /// What the gyro put on each haltere population, in the app's tone units.
+    @Published private(set) var gyroDriveLeft = 0.0
+    @Published private(set) var gyroDriveRight = 0.0
+    /// Set when the connectome has no haltere afferents: the body still turns,
+    /// but nothing in this build feels it.
+    @Published private(set) var gyroNote = ""
+
     /// How many 1 ms steps of connectome this screen asks for per frame. Started
     /// at 4 and moved by what the device actually manages, the same way the Map
     /// screen's renderer moves its own.
@@ -302,6 +315,11 @@ final class WorldModel: ObservableObject {
         }
         let source = SimulationRateSource(engine: sim, groups: engine.groupNames)
         let c = FlyCord(asset: live.asset, source: source)
+        // The gyro's geometry comes from the world the tool wrote, not from a
+        // second copy in the app: `tools/haltere_gyro.py --write` measures the
+        // haltere pair out of the body model and puts the two sensitivity axes
+        // and the constants in `world.json`.
+        c.gyro = HaltereGyro(spec: world.haltereSpec)
         cord = c
         live.cordIntervalMs = 1.0
         live.drive = { [weak c] p in c?.update(dtMs: 1.0, proprio: p) ?? [] }
@@ -383,6 +401,7 @@ final class WorldModel: ObservableObject {
             // after the body moves and before the cord is pumped.
             sampleOdor()
             pumpCord(wallSeconds: dt)
+            readGyro()
         }
         render()
 
@@ -408,6 +427,23 @@ final class WorldModel: ObservableObject {
     /// body model's own `head` geom, which is where the antennae are. If the
     /// body file names its head something else, `odorSamplePosition()` finds it
     /// by trying the names flybody uses, and says so when it cannot.
+    /// The halteres, as the cord last reported them.
+    ///
+    /// The drives are computed *inside* the cord loop (once per simulated
+    /// millisecond, where the body's rate is), so this only copies them out for
+    /// the readout. The alternative — computing the drives here, at frame rate
+    /// — would make the afferent lag depend on the display's frame rate, which
+    /// is the one thing a reflex's timing must not do.
+    private func readGyro() {
+        guard let c = cord else { return }
+        if !c.hasHaltereGroups {
+            gyroNote = "no haltere afferents in this build"
+        }
+        gyroRateDPS = c.sensedRateDPS
+        gyroDriveLeft = c.haltereLeftDrive
+        gyroDriveRight = c.haltereRightDrive
+    }
+
     private func sampleOdor() {
         if let c = cord, !c.hasOdorGroup { odorNote = "no antenna in this build" }
         guard let head = world.odorSamplePosition() else {
@@ -818,6 +854,17 @@ struct WorldHUD: View {
             line(String(format: "odor %.3f at the antennae · drive %.2f%@",
                         model.odorConcentration, model.odorDrive,
                         model.odorNote.isEmpty ? "" : " · \(model.odorNote)"))
+            // The halteres: what the body is doing, as the pair senses it, and
+            // what that became. Yaw is the third number because it is the one a
+            // walking fly turns with; the two drives are printed separately
+            // because their *difference* is the signal and their *sum* is the
+            // other axis (docs/ASSUMPTIONS.md #30-#33).
+            line(String(format: "gyro roll %+.0f pitch %+.0f yaw %+.0f deg/s · "
+                        + "halteres %.2f/%.2f (L-R %+.2f)%@",
+                        model.gyroRateDPS.x, model.gyroRateDPS.y, model.gyroRateDPS.z,
+                        model.gyroDriveLeft, model.gyroDriveRight,
+                        model.gyroDriveLeft - model.gyroDriveRight,
+                        model.gyroNote.isEmpty ? "" : " · \(model.gyroNote)"))
             // The per-pool readout: the loudest three, and the window the rates
             // came from. Never more than one line, so it cannot collide with
             // anything below it.

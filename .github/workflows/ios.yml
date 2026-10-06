@@ -471,6 +471,66 @@ jobs:
       # name: external input is added raw, and the retina scales the camera path
       # only. Both are also measured against the Python reference by
       # tools/pool_probe.py (docs/ASSUMPTIONS.md #25).
+      # ------------------------------------------------------- item 7: the gyro
+      # These three sit with the smell's rather than with the step-4 world
+      # checks: the gate and the golden table both read build/flybanc.bin, which
+      # is packed a few steps above. (Placed before the pack, this failed on a
+      # missing file rather than on a wrong gyro -- the same trap the odor gate
+      # fell into in run 37457864200.)
+      # The haltere pair's geometry is measured from the body model itself, and
+      # the measurement needs the MJCF (so: after the body is downloaded). The
+      # probe needs the packed connectome (so: after it is built). Hence its
+      # position here rather than with the step-6 checks that read the same bin.
+      - name: Step 7 — the halteres, written where the app reads them
+        run: |
+          python3 tools/haltere_gyro.py --write --golden build/haltere_golden.json
+
+      # What the gate claims: the pair is a two-axis rate sensor (yaw and roll
+      # in the difference of the two halteres, pitch in their sum, leakage under
+      # 1%), a rotation moves the two sensory populations of the shipped
+      # connectome, and a fast turn is resolvable from them in one second. Two
+      # rehearsals are part of the tool, not of this file: `--convention mirrored`
+      # (the opposite stroke convention, which puts yaw in the sum channel and
+      # fails) and `--drive-gain 0` (a gyro wired to nothing, which fails on the
+      # pools not moving).
+      - name: Step 7 — the halteres must be a gyro, and it must reach the cord
+        run: python3 tools/haltere_gyro.py --gate
+
+      # And the two implementations — the tool's and the phone's — must be the
+      # same gyro. The Swift test carries the golden numbers in its own source
+      # (a test that reads its expectations from the tool it is checking cannot
+      # fail), so what has to be checked is that those embedded numbers are still
+      # the ones this run produced.
+      - name: Step 7 — the gyro in the Swift test is the gyro this run measured
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+          golden = json.loads(pathlib.Path('build/haltere_golden.json').read_text())
+          want = [(round(s['dps'][0], 6), round(s['dps'][1], 6), round(s['dps'][2], 6),
+                   s['left'], s['right']) for s in golden]
+          src = pathlib.Path('FlyBrainTests/HaltereGyroTests.swift').read_text()
+          rows = re.findall(r'\(SIMD3<Double>\(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\), '
+                            r'([-0-9.eE]+), ([-0-9.eE]+)\)', src)
+          got = [(round(float(a), 6), round(float(b), 6), round(float(c), 6),
+                  float(d), float(e)) for a, b, c, d, e in rows]
+          if len(got) != len(want):
+              print(f'FAIL the Swift test carries {len(got)} samples, the tool '
+                    f'produced {len(want)}')
+              sys.exit(1)
+          for i, (g, w) in enumerate(zip(got, want)):
+              if g[:3] != w[:3]:
+                  print(f'FAIL sample {i} is for {g[:3]} in the test and {w[:3]} '
+                        f'in the tool')
+                  sys.exit(1)
+              for j, name in ((3, 'left'), (4, 'right')):
+                  if abs(g[j] - w[j]) > 1e-9:
+                      print(f'FAIL sample {i} {name} drive is {g[j]} in the test '
+                            f'and {w[j]} in the tool')
+                      sys.exit(1)
+          print(f'the {len(want)} samples in the Swift test are the ones this run '
+                f'measured')
+          PY
+
       - name: Step 6 — the LIF kernel's external-input convention must match the reference
         run: |
           grep -q 'iSyn \* P.gain + externalInput\[gid\] + noise' FlyBrain/Shaders/LIF.metal \
