@@ -684,9 +684,7 @@ final class FlyCordTests: XCTestCase {
         let asset = try asset()
         let stub = StubRates()
         let cord = FlyCord(asset: asset, source: stub)
-        guard let organ = cord.organs.first(where: { $0.kind == "tactile" }),
-              let chord = cord.organs.first(where: {
-                  $0.leg == organ.leg && $0.kind == "chordotonal" }) else {
+        guard let organ = cord.organs.first(where: { $0.kind == "tactile" }) else {
             throw XCTSkip("the asset carries no tactile organ — run "
                           + "tools/build_body.py from the item-12 table")
         }
