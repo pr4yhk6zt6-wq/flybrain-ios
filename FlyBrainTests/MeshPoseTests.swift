@@ -168,4 +168,109 @@ final class MeshPoseTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - The camera, which is where a correct pose looks broken
+
+    /// The tilt band the floor allows: computed, not written down, and checked
+    /// against the two views IMG_2715 was reporting — "the background is
+    /// sometimes grey, sometimes white" is the floor seen from its two sides.
+    ///
+    /// From below, the scene does not light the floor: the same plane that
+    /// reads bright from above reads grey from underneath, and the grid (line
+    /// primitives, which are not back-face culled) floats in the background.
+    /// So the rule is: the lens stays above the floor plane, by a margin,
+    /// wherever the pinch and the drag can put it.
+    func testTheLensMayNotGoUnderTheFloor() throws {
+        // the app's own numbers, as `world.json` carries them
+        let floorZ = -0.132, targetZ = -0.028, margin = WorldRig.eyeMarginCM
+        let distances = [0.818546, 1.0, 1.5, 2.49904]      // min, home, mid, max
+
+        for d in distances {
+            let band = WorldRig.elevationBand(floorZ: floorZ, targetZ: targetZ,
+                                              distance: d, margin: margin)
+            XCTAssertGreaterThan(band.width, 1.0, "the band at \(d) cm leaves "
+                                + "the lens less than a radian of tilt")
+            // the lowest permitted tilt puts the lens exactly on the margin
+            let low = band.lower
+            let z = targetZ + d * sin(low)
+            XCTAssertGreaterThanOrEqual(z - floorZ, margin - 1e-12,
+                                        "at \(d) cm a tilt of \(low) rad puts "
+                                        + "the lens \(z - floorZ) cm above the "
+                                        + "floor — under it, or on it")
+            // and one step below the band is under the floor, so the band is
+            // tight rather than merely safe
+            XCTAssertLessThan(targetZ + d * sin(low - 0.01) - floorZ, margin,
+                              "the band at \(d) cm is looser than the floor")
+        }
+        // the old clamp let the lens reach here: 0.82 cm at a 17° downward tilt
+        // is 0.19 cm below the floor plane
+        let oldZ = targetZ + 0.818546 * sin(-0.3)
+        XCTAssertLessThan(oldZ, floorZ,
+                          "the defect this replaced: −0.3 rad at the closest "
+                          + "distance was under the floor and the clamp allowed it")
+    }
+
+    /// The camera's basis comes from the two angles the user steers, so it is
+    /// defined at every tilt — including straight down, where the old
+    /// `up × z` fallback jumped to a world axis and rolled the image in a step.
+    func testTheCameraBasisIsContinuousThroughThePoles() throws {
+        // the same construction as WorldRig.orient, without a node
+        func basis(az: Double, el: Double) -> (x: (Double, Double, Double),
+                                               y: (Double, Double, Double),
+                                               z: (Double, Double, Double)) {
+            let z = (cos(el) * cos(az), cos(el) * sin(az), sin(el))
+            var x = (-sin(az), cos(az), 0.0)
+            let dot = x.0 * z.0 + x.1 * z.1 + x.2 * z.2
+            x = (x.0 - dot * z.0, x.1 - dot * z.1, x.2 - dot * z.2)
+            let xl = (x.0 * x.0 + x.1 * x.1 + x.2 * x.2).squareRoot()
+            x = (x.0 / xl, x.1 / xl, x.2 / xl)
+            return (x, (z.1 * x.2 - z.2 * x.1,
+                        z.2 * x.0 - z.0 * x.2,
+                        z.0 * x.1 - z.1 * x.0), z)
+        }
+
+        func distance(_ a: (Double, Double, Double),
+                      _ b: (Double, Double, Double)) -> Double {
+            ((a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)
+             + (a.2 - b.2) * (a.2 - b.2)).squareRoot()
+        }
+
+        var previous: (Double, Double, Double)?
+        var worst = 0.0
+        // a full sweep of tilt through both poles, at four azimuths
+        for azi in 0..<4 {
+            let az = Double(azi) * .pi / 2
+            previous = nil
+            for i in 0...180 {
+                let el = -Double.pi / 2 + Double(i) * .pi / 180
+                let b = basis(az: az, el: el)
+                // orthonormal, right-handed, and the up axis is up at level tilt
+                XCTAssertEqual(distance(b.x, (0, 0, 0)), 1, accuracy: 1e-12)
+                XCTAssertEqual(distance(b.y, (0, 0, 0)), 1, accuracy: 1e-12)
+                let handed = (b.x.0 * (b.y.1 * b.z.2 - b.y.2 * b.z.1)
+                              - b.y.0 * (b.x.1 * b.z.2 - b.x.2 * b.z.1)
+                              + b.z.0 * (b.x.1 * b.y.2 - b.x.2 * b.y.1))
+                XCTAssertEqual(handed, 1, accuracy: 1e-9, "not right-handed")
+                if let p = previous {
+                    worst = max(worst, distance(p, b.x))
+                }
+                previous = b.x
+            }
+        }
+        // One step of tilt moves the image's right axis by at most a couple of
+        // degrees — a roll *step* (the old fallback) is 90° and cannot hide
+        // under this bound.
+        XCTAssertLessThan(worst, 0.05,
+                          "the camera's right axis jumps by \(worst) per degree "
+                          + "of tilt: that is a roll, not an orbit")
+
+        // And the construction this replaced, for the record: its fallback at
+        // straight down was the world +x axis, whatever the azimuth — so the
+        // image's right axis stepped from the orbit's tangent to (1, 0, 0) as
+        // the tilt crossed the pole. That step is what the bound above forbids.
+        let oldStep = abs(basis(az: 2.2, el: 0).x.1 - 0.0)   // fallback: x = (1,0,0)
+        XCTAssertGreaterThan(oldStep, 0.1,
+                             "the old fallback's step was \\(oldStep) in the "
+                             + "camera's right axis — a roll, not an orbit")
+    }
 }

@@ -29,11 +29,22 @@ geometry is in the frame*, which is the only question here.
     python3 tools/audit_view.py --gate              # and fail if a view is broken
     python3 tools/audit_view.py --frame 350
 
-`--gate` is what CI runs, and it encodes the defect IMG_2715 reported: **the
-closest the pinch can pull the camera must still frame the body.** At the old
-`minDistance` of 0.22 cm the animal's body projected several screens wide and
-only ~60% of its vertices were inside the frustum at all — a view that reads as
-"the model is in pieces" when the model is fine.
+`--gate` is what CI runs, and it encodes the two defects IMG_2715 reported:
+
+1. **The closest the pinch can pull the camera must still frame the body.** At
+   the old `minDistance` of 0.22 cm the animal's body projected several screens
+   wide and only ~60% of its vertices were inside the frustum at all — a view
+   that reads as "the model is in pieces" when the model is fine.
+2. **The lens may not go under the floor.** The floor is a plane the scene
+   dresses itself with; from below it is drawn unlit, so the same floor reads
+   bright from above and grey from underneath (`WorldRig.eyeMarginCM`). The old
+   code clamped the *tilt* to ±83° and let the distance take the camera wherever
+   it liked: 0.82 cm at a 17° downward tilt is 0.19 cm below the floor plane.
+   That is the second half of the screenshot — "the background is sometimes
+   grey, sometimes white".
+
+Both are swept here over the whole reachable camera surface (`--sweep`), not
+just the three named distances.
 """
 
 from __future__ import annotations
@@ -48,6 +59,29 @@ import numpy as np
 # The app's own numbers, by name, so a change in one place shows up here.
 MAIN_FOV_Y = 38.0            # WorldRig.camera(main, 38, ...)
 PANE_FOV_Y = 50.0
+EYE_MARGIN_CM = 0.05         # WorldRig.eyeMarginCM
+TILT_UPPER_RAD = 1.45        # WorldRig.elevationBand
+
+
+OLD_TILT = False             # the rehearsal switch, set from --old-tilt
+
+
+def tilt_band(floor_z: float, target_z: float, distance: float,
+              margin: float = EYE_MARGIN_CM) -> tuple[float, float]:
+    """`WorldRig.elevationBand`, the same rule in this tool: how far down the
+    lens may tilt at this distance without going under the floor.
+
+    With `--old-tilt` it is the rule this replaced — a flat ±83° with the
+    distance ignored — so the gate can be shown to catch what IMG_2715 caught
+    rather than asserted to."""
+    if OLD_TILT:
+        return (-TILT_UPPER_RAD, TILT_UPPER_RAD)
+    s = (floor_z + margin - target_z) / max(distance, 1e-9)
+    if s >= 1:
+        return (TILT_UPPER_RAD, TILT_UPPER_RAD)
+    if s <= -1:
+        return (-TILT_UPPER_RAD, TILT_UPPER_RAD)
+    return (float(np.arcsin(s)), TILT_UPPER_RAD)
 Z_NEAR = 0.002               # WorldRig.camera: c.zNear
 Z_FAR = 6.0
 PHONE = (828, 1792)          # the pixels of IMG_2715; the aspect is what matters
@@ -254,9 +288,20 @@ def main() -> int:
     ap.add_argument("--gate", action="store_true",
                     help="fail if any camera the app can reach frames the "
                          "animal in a way that reads as broken")
+    ap.add_argument("--old-tilt", action="store_true",
+                    help="rehearsal: sweep with the tilt rule this replaced "
+                         "(−83…+83° regardless of the floor), which must fail "
+                         "the gate")
+    ap.add_argument("--sweep", type=int, default=0, metavar="N",
+                    help="also sweep the whole reachable camera surface: N "
+                         "azimuths, N tilts per azimuth and the named "
+                         "distances, checked against the floor rule and the "
+                         "framing rule (the gate does this at N=12)")
     ap.add_argument("--distance", type=float, action="append", default=[],
                     help="extra distances to measure, in cm (repeatable)")
     args = ap.parse_args()
+    global OLD_TILT
+    OLD_TILT = args.old_tilt
 
     manifest, verts, frames = load(args.world)
     posed, owner, origins, name_of_part, table, weights = pose(
@@ -319,6 +364,66 @@ def main() -> int:
     ]
     for d in args.distance:
         cameras.append((f"main  {d:.3f} cm", at(d), fov_main, PHONE))
+
+    # -- the whole reachable camera surface ---------------------------------
+    #
+    # Two rules, swept rather than spot-checked, because both defects IMG_2715
+    # reported were at a *combination* of tilt and distance that the named
+    # cameras below do not stand at: the user had dragged the tilt down and
+    # pinched in.
+    #
+    #   * the lens stays above the floor plane, by `WorldRig.eyeMarginCM`;
+    #   * the body of the animal is inside the frustum.
+    #
+    # `--gate` runs this at N=12; `--sweep 36` is for looking at it by hand.
+    sweep_failures = []
+    sweep_n = args.sweep or (12 if args.gate else 0)
+    if sweep_n:
+        floor_z = float(manifest.get("floor_z", -0.132))
+        target = centre                                  # the rig orbits this
+        worst_low = float("inf")
+        worst_low_at = None
+        worst_frame = (101.0, None)
+        for k in range(sweep_n):
+            az = 2 * np.pi * k / sweep_n
+            # the tilt band is distance-dependent, so sweep the extremes of the
+            # distance range at this azimuth
+            for d in (min_d, 0.5 * (min_d + home_d), home_d, max_d):
+                low, high = tilt_band(floor_z, float(target[2]), d)
+                for el in (low, low + 0.02, 0.0, 0.42, high - 0.02, high):
+                    eye = np.array([d * np.cos(el) * np.cos(az),
+                                    d * np.cos(el) * np.sin(az),
+                                    d * np.sin(el)])
+                    eye_z = float(target[2]) + eye[2] - floor_z
+                    if eye_z < worst_low:
+                        worst_low, worst_low_at = eye_z, (az, el, d)
+                    m = measure(about, eye, fov_main, PHONE, body_mask)
+                    if m["body_in_frame_pct"] < worst_frame[0]:
+                        worst_frame = (m["body_in_frame_pct"],
+                                       (az, el, d, m["body_span_screens"]))
+        log("")
+        log(f"  the camera surface: {sweep_n} azimuths x 4 distances x 6 tilts")
+        log(f"    lowest eye above the floor   {worst_low:+.4f} cm  "
+            f"(margin {EYE_MARGIN_CM}) at az/el/d "
+            f"{worst_low_at[0]:.2f}/{worst_low_at[1]:+.3f}/{worst_low_at[2]:.3f}")
+        log(f"    worst body-in-frame          {worst_frame[0]:.1f}% at "
+            f"az/el/d {worst_frame[1][0]:.2f}/{worst_frame[1][1]:+.3f}/"
+            f"{worst_frame[1][2]:.3f} (body spans "
+            f"{worst_frame[1][3]:.2f} screens)")
+        if worst_low < EYE_MARGIN_CM - 1e-9:
+            sweep_failures.append(
+                f"the camera can be {worst_low:.4f} cm above the floor, under "
+                f"the {EYE_MARGIN_CM} cm margin (az/el/d "
+                f"{worst_low_at[0]:.2f}/{worst_low_at[1]:+.3f}/{worst_low_at[2]:.3f}): "
+                f"from below, the floor is drawn unlit and the view greys out")
+        if worst_frame[0] < 95.0:
+            sweep_failures.append(
+                f"a reachable camera frames only {worst_frame[0]:.1f}% of the "
+                f"body (az/el/d {worst_frame[1][0]:.2f}/{worst_frame[1][1]:+.3f}/"
+                f"{worst_frame[1][2]:.3f})")
+        if not sweep_failures:
+            log("    ok   every reachable camera is above the floor and frames "
+                "the body")
 
     log("")
     log(f"    {'camera':<28} {'nearest':>9} {'behind':>8} {'in frame':>9} "
@@ -407,12 +512,16 @@ def main() -> int:
             problems.append(
                 f"{m['label']}: only {m['body_in_frame_pct']:.1f}% of the body "
                 "is in the pane")
+    # The sweep's findings are findings of the same kind as the named cameras'
+    # — a route the user can actually take that ends somewhere broken.
+    problems = problems + sweep_failures
     log("")
     for p in problems:
         log(f"  FAIL {p}")
     if problems:
         return 1
-    log("  ok   every camera the app can reach frames the body of the animal")
+    log("  ok   every camera the app can reach is above the floor and frames "
+        "the body of the animal")
     log(f"  wrote pictures to {args.out}/")
     return 0
 

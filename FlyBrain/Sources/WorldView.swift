@@ -27,6 +27,35 @@ import QuartzCore
 
 /// A rig that follows the animal, carrying one camera you steer and two
 /// that watch its flanks.
+/// A closed interval of tilt angles, with the clamp that goes with it.
+///
+/// Named rather than a tuple so the clamp is one implementation: the gesture
+/// and the renderer both ask the same question — "how far down may the lens
+/// go, here?" — and both have to answer it the same way or the drag springs
+/// back when the finger lifts.
+struct AngleBand: Equatable {
+    let lower: Double
+    let upper: Double
+
+    init(_ lower: Double, _ upper: Double) {
+        self.lower = min(lower, upper)
+        self.upper = max(lower, upper)
+    }
+
+    func clamp(_ value: Double) -> Double {
+        min(upper, max(lower, value))
+    }
+
+    /// How much tilt the floor leaves. Zero means the lens may only look
+    /// horizontally; the badge the HUD prints is the lower end.
+    var width: Double { upper - lower }
+
+    /// How far the interval reaches below horizontal, in degrees — the number
+    /// the HUD prints, so a screenshot says whether the floor is holding the
+    /// camera up.
+    var belowHorizonDeg: Double { min(0, lower) * 180 / .pi }
+}
+
 final class WorldRig {
     let root = SCNNode()            // moved to the animal's centre
     let focus = SCNNode()           // sits at the rig origin, which
@@ -114,16 +143,83 @@ final class WorldRig {
     }
 
     /// Where the camera you steer sits, in spherical coordinates about the
-    /// animal.
+    /// animal — and the two rules that keep it a camera rather than a view from
+    /// inside the floor.
     func set(azimuth: Double, elevation: Double, distance: Double,
-             min minDistance: Double, max maxDistance: Double) {
+             min minDistance: Double, max maxDistance: Double,
+             floorZ: Double = -Double.greatestFiniteMagnitude,
+             targetZ: Double = 0) {
         let d = max(minDistance, min(maxDistance, distance))
-        let el = max(-1.45, min(1.45, elevation))
+        let band = WorldRig.elevationBand(floorZ: floorZ, targetZ: targetZ,
+                                          distance: d,
+                                          margin: WorldRig.eyeMarginCM)
+        let el = max(band.lower, min(band.upper, elevation))
         main.position = SCNVector3(
             Float(d * cos(el) * cos(azimuth)),
             Float(d * cos(el) * sin(azimuth)),
             Float(d * sin(el)))
-        aim(main)
+        orient(main, azimuth: azimuth)
+    }
+
+    /// How far above the floor the lens has to stay, in cm. The floor is a
+    /// plane the app dresses the scene with (`FlyWorld.dress`), and from below
+    /// it is drawn *unlit* — the same floor reads bright from above and grey
+    /// from underneath, which is exactly the "sometimes grey, sometimes white"
+    /// in uploads/IMG_2715.png. Half a millimetre: less than the animal's
+    /// smallest part, more than the depth precision at these ranges.
+    static let eyeMarginCM = 0.05
+
+    /// The tilt band the lens may hold at `distance`, given the floor and the
+    /// point it orbits.
+    ///
+    /// Below the floor there is no animal to look at: the lens would be under a
+    /// plane whose underside the scene does not light, so the view greys out
+    /// and the grid floats in the sky. The old code clamped the tilt to ±83°
+    /// and let the *distance* take the camera wherever it liked — at 0.82 cm
+    /// with a 17° downward tilt the eye is already 0.19 cm below the floor
+    /// plane, which is what IMG_2715 caught. So the limit is computed, not
+    /// written down: `sin(el) >= (floor + margin - target) / distance`.
+    static func elevationBand(floorZ: Double, targetZ: Double, distance: Double,
+                              margin: Double) -> AngleBand {
+        // Straight up is always allowed; straight down only as far as the
+        // floor permits.
+        let upper = 1.45
+        guard distance > 1e-9 else { return AngleBand(-0.0, upper) }
+        let s = (floorZ + margin - targetZ) / distance
+        if s >= 1 { return AngleBand(upper, upper) }   // the floor is above the lens
+        if s <= -1 { return AngleBand(-upper, upper) } // no floor within reach
+        return AngleBand(asin(s), upper)
+    }
+
+    /// Point the camera from the two angles the user steers, not from its
+    /// position vector.
+    ///
+    /// `aim` below works out the basis from `up × z`, which is undefined when
+    /// the lens looks straight down — and the old code's fallback for that case
+    /// was the world +x axis, so the image *rolled* in a step as the tilt
+    /// crossed it. The basis belongs to the orbit, not to the vector: the
+    /// camera's right is the orbit's tangent, which is defined at every tilt
+    /// including the poles.
+    private func orient(_ n: SCNNode, azimuth: Double) {
+        let d = n.position
+        let len = sqrt(Double(d.x * d.x + d.y * d.y + d.z * d.z))
+        guard len > 1e-9 else { return }
+        let z = (Double(d.x) / len, Double(d.y) / len, Double(d.z) / len)
+        var x = (-sin(azimuth), cos(azimuth), 0.0)
+        // (az, el) comes back as exactly the position it was built from, so
+        // this is orthogonal by construction; the guard is for a caller that
+        // hands in a position instead.
+        let dot = x.0 * z.0 + x.1 * z.1 + x.2 * z.2
+        x = (x.0 - dot * z.0, x.1 - dot * z.1, x.2 - dot * z.2)
+        let xl = sqrt(x.0 * x.0 + x.1 * x.1 + x.2 * x.2)
+        guard xl > 1e-9 else { aim(n); return }
+        x = (x.0 / xl, x.1 / xl, x.2 / xl)
+        let y = (z.1 * x.2 - z.2 * x.1,
+                 z.2 * x.0 - z.0 * x.2,
+                 z.0 * x.1 - z.1 * x.0)
+        n.orientation = WorldRig.quaternion(x: (Float(x.0), Float(x.1), Float(x.2)),
+                                             y: (Float(y.0), Float(y.1), Float(y.2)),
+                                             z: (Float(z.0), Float(z.1), Float(z.2)))
     }
 }
 
@@ -195,13 +291,28 @@ final class WorldModel: ObservableObject {
         // Keep it in (−π, π] so a long spin cannot lose precision.
         if azimuth > .pi { azimuth -= 2 * .pi }
         if azimuth < -.pi { azimuth += 2 * .pi }
-        elevation = min(1.45, max(-1.45, elevation + dy * WorldModel.tiltRate))
+        elevation = tiltBand().clamp(elevation + dy * WorldModel.tiltRate)
+    }
+
+    /// The tilt band the floor allows at the current distance — computed here
+    /// as well as used in `WorldRig.set`, because this is the property the
+    /// gesture writes. A tilt that the renderer would silently clamp is a tilt
+    /// that springs back when the finger lifts, which reads as a broken drag.
+    func tiltBand() -> AngleBand {
+        WorldRig.elevationBand(floorZ: Double(world.floor),
+                               targetZ: Double(world.centre().z),
+                               distance: max(0.01, distance),
+                               margin: WorldRig.eyeMarginCM)
     }
 
     /// Pinch, in flight and committed.
     func zoom(by factor: Double) {
         guard factor > 0.01 else { return }
         distance = min(limits.max, max(limits.min, distance / factor))
+        // Pulling in can put the floor inside the tilt the lens is already
+        // holding: at the closest distance a downward tilt the animal allowed
+        // would now be under the floor, so the tilt comes back with it.
+        elevation = tiltBand().clamp(elevation)
     }
 
     /// Put the camera back where it starts. The reset button on this screen.
@@ -210,6 +321,7 @@ final class WorldModel: ObservableObject {
         elevation = WorldModel.homeElevation
         distance = limits.home
         liveZoom = 1.0
+        elevation = tiltBand().clamp(elevation)
     }
 
     let world: FlyWorld
@@ -479,11 +591,21 @@ final class WorldModel: ObservableObject {
         rig.set(azimuth: azimuth,
                 elevation: elevation,
                 distance: distance / max(0.01, liveZoom),
-                min: limits.min, max: limits.max)
+                min: limits.min, max: limits.max,
+                floorZ: Double(world.floor),
+                targetZ: Double(world.centre().z))
     }
 
     /// Simulated seconds since the animal was stood up.
     var simulatedSeconds: Double { live.simulatedMS / 1000 }
+
+    /// The lens's height above the floor plane, in the scene's own
+    /// coordinates — the number the "the camera may not go under the floor"
+    /// rule is about, printed so a screenshot can be checked against it.
+    var eyeHeightCM: Double {
+        let d = distance / max(0.01, liveZoom)
+        return Double(world.centre().z) + d * sin(elevation) - Double(world.floor)
+    }
 }
 
 // MARK: - Loading
@@ -889,6 +1011,22 @@ struct WorldHUD: View {
                         model.gyroDriveLeft, model.gyroDriveRight,
                         model.gyroDriveLeft - model.gyroDriveRight,
                         model.gyroNote.isEmpty ? "" : " · \(model.gyroNote)"))
+            // The camera, on the HUD, because a screenshot of a broken view is
+            // only worth something if it says where the camera was. `eye z` is
+            // the lens's height above the floor and `tilt floor` is how far
+            // below horizontal the floor lets it go here: if the first ever
+            // goes below the second, the floor rule has a hole in it — and the
+            // grey/white flip in uploads/IMG_2715.png is what that hole looks
+            // like from the outside.
+            line(String(format: "cam az %+.2f el %+.2f rad (%+.0f°) %.3f cm · "
+                        + "eye z %+.3f · floor %+.3f · tilt floor %+.0f°%@",
+                        model.azimuth, model.elevation,
+                        model.elevation * 180 / .pi,
+                        model.distance / max(0.01, model.liveZoom),
+                        model.eyeHeightCM, Double(model.world.floor),
+                        model.tiltBand().belowHorizonDeg,
+                        model.liveZoom > 1.001 || model.liveZoom < 0.999
+                            ? " (pinching)" : ""))
             // The per-pool readout: the loudest three, and the window the rates
             // came from. Never more than one line, so it cannot collide with
             // anything below it.

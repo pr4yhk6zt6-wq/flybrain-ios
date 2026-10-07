@@ -321,8 +321,23 @@ jobs:
       # of them frames the body of the animal. The eye panes in that same
       # screenshot were correct — a fly standing on a grid — which is why this
       # is a camera check and not a model check.
-      - name: Step 4 — every camera must frame the animal
+      - name: Step 4 — every camera must frame the animal, above the floor
         run: python3 tools/audit_view.py --gate --out build/view
+
+      # And the rule has to have teeth: with the tilt rule this replaced — a
+      # flat ±83° with the distance ignored — the lens reaches 2.4 cm *below*
+      # the floor plane, where the scene draws the floor unlit and the view
+      # greys out. uploads/IMG_2715.png is what that looks like from the
+      # outside ("the background is sometimes grey, sometimes white"), so this
+      # step requires the old rule to fail rather than asserting it would.
+      - name: Step 4 — the old tilt rule must let the lens under the floor
+        run: |
+          if python3 tools/audit_view.py --gate --old-tilt --out build/view_old; then
+            echo "FAIL the gate passed the old tilt rule, which put the lens"
+            echo "     2.4 cm below the floor plane (uploads/IMG_2715.png)"
+            exit 1
+          fi
+          echo "the old tilt rule failed the gate, as it has to"
 
       - name: Step 5 — rebuild the body asset
         run: |
