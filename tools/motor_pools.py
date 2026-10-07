@@ -107,13 +107,68 @@ def _predicate(leg, side, muscles):
 # experiment drives and the organ the phone drives are selected by one
 # expression.
 #
-# The values are BANC's `cell_function_detailed` labels for the organ's cells —
-# what the cell is, not what class it is in.
+# An organ's cells are selected by two of BANC's own columns: `cell_function` —
+# what the cell is for (proprioception, tactile) — and, for the proprioceptors,
+# the `cell_function_detailed` label, which is the *kind* of proprioceptor it is.
+#
+# `leg_tag_required` is item 12's addition. The three proprioceptors accept a
+# cell that is tagged to this leg **or** sitting in this leg's neuromere, which
+# is right for them: a femoral chordotonal organ's cells are not all annotated
+# with the leg they are on. A thoracic neuromere also holds the wing's and the
+# haltere's sensilla, so the same fallback would put another appendage's bristles
+# into a leg's touch organ. (Measured: on BANC v888 the fallback would add
+# nothing — every leg bristle carries its leg tag — but the predicate is not
+# allowed to depend on that.)
 ORGANS = {
-    "chordotonal": {"joint_angle", "vibro_position", "stretch"},
-    "campaniform": {"mechanical_strain", "vibro_tactile"},
-    "hairplate":   {"position", "direction"},
+    "chordotonal": {
+        "cell_function": "proprioception",
+        "functions": {"joint_angle", "vibro_position", "stretch"},
+    },
+    "campaniform": {
+        "cell_function": "proprioception",
+        "functions": {"mechanical_strain", "vibro_tactile"},
+    },
+    # In the table and in the shipped connectome (BANC annotates 37-68 hair-plate
+    # cells per leg), but `driven: False`: the cord has no law for it yet. The
+    # femoral chordotonal organ already reports the knee's angle, and a second
+    # position channel with no measurement behind it would be a placeholder
+    # wearing a sensor's name.
+    "hairplate": {
+        "cell_function": "proprioception",
+        "functions": {"position", "direction"},
+        "driven": False,
+    },
+    # Touch, item 12: the leg's tactile hairs — trichoid sensilla, "the primary
+    # exteroceptive organs" (Tuthill & Wilson 2016, Curr Biol 26:R1022). BANC
+    # gives a leg's tactile cells no detailed label of their own — 3,172 of the
+    # 3,184 are blank — so `functions` is None and the label is not filtered;
+    # that is BANC's own function call, which is the authority the other three
+    # organs also use. What the class is, for the record: 3,011 bristle neurons,
+    # 114 the mechanosensory neuron of a tarsal taste hair (a bimodal sensillum —
+    # its own function is still tactile), 38 orphan neurons, 20 unclassed, 1
+    # hair-plate neuron. All 3,184 are `super_class == "sensory"`, all sit in the
+    # ventral nerve cord, and 43 carry no side, so they are in no organ group and
+    # `tools/verify_loop.py` reports them rather than dropping them quietly.
+    "tactile": {
+        "cell_function": "tactile",
+        "functions": None,
+        "leg_tag_required": True,
+    },
 }
+
+# The three proprioceptors, as one view of the table above. This is what
+# `tools/step2_reflex.py` measures its reflex baseline on, and it is not a
+# tidiness choice: that tool drives every cell of every organ it is given and
+# measures what the pools do, so admitting 3,184 more afferents would move a
+# baseline instead of describing touch. `organ_groups()` — what writes the
+# shipped connectome — reads the whole table.
+PROPRIOCEPTORS = {k: v for k, v in ORGANS.items()
+                  if v["cell_function"] == "proprioception"}
+
+# The organs the cord has a drive law for: exactly what `tools/build_body.py`
+# writes into each leg of the body asset — where `FlyCord.swift` finds its
+# `kind` — and what `tools/verify_loop.py` requires both ends to agree on.
+DRIVEN_ORGANS = {k for k, v in ORGANS.items() if v.get("driven", True)}
 
 
 def organ_slug(neuro, side, organ):
@@ -125,29 +180,33 @@ def organ_groups():
     """
     (name, predicate) pairs for every leg's sense organs.
 
-    The predicate is the one step 2 selected the leg's organs with: a
-    proprioceptor, of the right detailed function, on the right side, either
-    tagged to this leg or sitting in its neuromere. A cell that cannot be placed
-    on a leg is not in any organ group, which is reported by
+    The predicate is the one step 2 selected the leg's organs with, widened by
+    the organ's own entry: a cell of the right function, of the right detailed
+    kind where the organ has kinds, on the right side, either tagged to this leg
+    or — for an organ that accepts it — sitting in its neuromere. A cell that
+    cannot be placed on a leg is not in any organ group, which is reported by
     `tools/verify_loop.py` rather than quietly dropped.
     """
     specs = []
     for leg, neuro in LEGS.items():
         for side in SIDES:
-            for organ, funcs in ORGANS.items():
+            for organ, spec in ORGANS.items():
                 specs.append((organ_slug(neuro, side, organ),
-                              _organ_predicate(leg, neuro, side, funcs)))
+                              _organ_predicate(leg, neuro, side, spec)))
     return specs
 
 
-def _organ_predicate(leg, neuro, side, funcs):
-    funcs = list(funcs)
+def _organ_predicate(leg, neuro, side, spec):
+    funcs = None if spec["functions"] is None else list(spec["functions"])
 
     def pred(d):
         part = d["body_part_sensory"].fillna("").astype(str)
-        return ((d["cell_function"] == "proprioception")
-                & d["cell_function_detailed"].isin(funcs)
-                & (d["side"] == side)
-                & (part.str.contains(leg, regex=False) | (d["neuromere"] == neuro)))
+        m = ((d["cell_function"] == spec["cell_function"])
+             & (d["side"] == side))
+        if funcs is not None:
+            m = m & d["cell_function_detailed"].isin(funcs)
+        if spec.get("leg_tag_required"):
+            return m & part.str.contains(leg, regex=False)
+        return m & (part.str.contains(leg, regex=False) | (d["neuromere"] == neuro))
 
     return pred

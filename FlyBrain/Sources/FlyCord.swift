@@ -91,9 +91,39 @@ struct FlyCordSettings {
     /// this is the same measurement, done on the device, so the reference is the
     /// one *this* connectome and *this* body agree on.
     var calibrateMs: Double = 300.0
-    /// Which organs are wired up. Both by default; a single-channel run is how
-    /// step 3 showed which one does the work.
-    var channels: Set<String> = ["chordotonal", "campaniform"]
+    /// Which organs are wired up. All three by default; a single-channel run is
+    /// how step 3 showed which one does the work.
+    ///
+    /// The third channel is item 12's: the leg's tactile hairs
+    /// (`organ:<seg>_<side>:tactile`, 481–604 cells per leg). It is safe to
+    /// leave on at rest for a reason that is arithmetic rather than a hope: a
+    /// foot in contact drives the organ at exactly `tone` (its adapted response
+    /// is 1), which is the value the calibration phase holds every organ at, so
+    /// a standing animal is the same fixed point with the channel on or off.
+    /// `FlyCordTests` asserts that, and the burst and the drop are what the
+    /// channel exists for.
+    var channels: Set<String> = ["chordotonal", "campaniform", "tactile"]
+    /// A tarsus counts as touching when the force under it exceeds this
+    /// fraction of the load that leg carries standing — the load the
+    /// calibration phase already measured per leg. The penalty contact has no
+    /// on/off, so a threshold has to be chosen, and it is chosen as a *fraction
+    /// of the animal's own stance* rather than as a force in dyn.
+    /// Assumption #41.
+    var touchContactFraction: Double = 0.05
+    /// Contact below `fraction × hysteresis` of the standing load to release.
+    /// A foot resting exactly at the contact boundary would otherwise flicker
+    /// across the threshold every millisecond, and every flicker is an onset —
+    /// i.e. a burst of touch spikes that the animal never received.
+    /// Assumption #41.
+    var touchHysteresis: Double = 0.5
+    /// The response at contact onset, in units of the adapted (standing) one:
+    /// a trichoid sensillum is phasic-tonic, so touching down is a burst that
+    /// decays while the foot rests. Assumption #42.
+    var touchPeak: Double = 2.0
+    /// How fast that burst decays to the adapted level, and how fast the
+    /// response falls when the foot leaves the floor: one mechanical event,
+    /// reversed. Assumption #42.
+    var touchAdaptMs: Double = 30.0
     /// The population that carries the brain's tone into the cord, by the name
     /// the shipped connectome gives it — `build/flybanc_meta.json` lists
     /// `descending` with 1,316 cells. Assumption #5 is about *this* group: the
@@ -145,9 +175,9 @@ final class FlyCord {
         let neurons: Int        // how many motor neurons the pool has
     }
 
-    /// One leg's two sense organs, as the body can report them.
+    /// One leg's sense organs, as the body can report them.
     struct Organ {
-        let kind: String        // "chordotonal" | "campaniform"
+        let kind: String        // "chordotonal" | "campaniform" | "tactile"
         let group: String       // "organ:T1_left:chordotonal"
         let leg: String         // "T1_left"
         let hinge: Int          // the knee the chordotonal organ spans
@@ -264,6 +294,14 @@ final class FlyCord {
     /// Every leg's load through the calibration window, for the campaniform
     /// organ's per-leg scale (the median of these is what "standing" means).
     private var calibrationLoads: [String: [Double]] = [:]
+    /// The tarsal hairs' own state, per leg: the adapted response (0 while the
+    /// leg is in the air, 1 while it stands, `touchPeak` at the instant it
+    /// lands) and whether the foot was in contact on the previous update, which
+    /// is what makes an *onset* an onset. Not a controller — nothing here
+    /// decides what the leg does; it is the receptor's transfer function, and
+    /// what it feeds is the organ's current.
+    private var touchResponse: [String: Double] = [:]
+    private var touchContact: [String: Bool] = [:]
     /// The load each leg carries while standing — the campaniform organ's own
     /// normalisation, measured on the body, not chosen.
     private(set) var referenceLoad: [String: Double] = [:]
@@ -435,6 +473,21 @@ final class FlyCord {
             for (leg, samples) in calibrationLoads where !samples.isEmpty {
                 referenceLoad[leg] = median(samples)
             }
+            // The touch organ's state belongs to the receptor, and this animal
+            // has been standing for the whole window: a fly that has been on its
+            // feet for 300 ms does not *land* when the loop starts. Seed each
+            // leg's contact state from the calibration's own samples, so the
+            // first running millisecond is the stance and the channel's first
+            // event is the first real change of contact.
+            if touchContact.isEmpty {
+                for (leg, samples) in calibrationLoads where !samples.isEmpty {
+                    let ref = referenceLoad[leg] ?? 0
+                    let down = ref > 1e-9
+                        && median(samples) > settings.touchContactFraction * ref
+                    touchContact[leg] = down
+                    touchResponse[leg] = down ? 1 : 0
+                }
+            }
         }
 
         // --- body -> organ ---------------------------------------------------
@@ -459,6 +512,41 @@ final class FlyCord {
                     let load = proprio.legLoad[organ.leg] ?? 0
                     let ref = referenceLoad[organ.leg] ?? 0
                     value = ref > 1e-9 ? settings.tone * (load / ref) : settings.tone
+                case "tactile":
+                    // A hair, not a gauge. It reports that the tarsus is *in
+                    // contact* — the event, not the force — and it adapts while
+                    // the foot stays there, so what it sends is an onset, a
+                    // falling plateau, and a silence when the leg lifts. This is
+                    // the gap docs/AUDIT.md row 12 names: the campaniform organ
+                    // carries the load, and a load is the same number whether the
+                    // foot has just landed or has been standing for a second.
+                    //
+                    // The floor is the only surface this body can be in contact
+                    // with, and the force under a foot is the same number the
+                    // campaniform organ reads; the difference is the threshold,
+                    // the onset and the adaptation, all three of which are
+                    // assumptions #41 and #42.
+                    let load = proprio.legLoad[organ.leg] ?? 0
+                    let ref = referenceLoad[organ.leg] ?? 0
+                    let on = ref > 1e-9 ? settings.touchContactFraction * ref : 0
+                    let off = on * settings.touchHysteresis
+                    let wasDown = touchContact[organ.leg] ?? false
+                    var h = touchResponse[organ.leg] ?? 0
+                    let down = wasDown ? load > off : load > on
+                    let a = min(1, dtMs / max(1e-6, settings.touchAdaptMs))
+                    if down {
+                        // Rising edge: the deflection is largest before the
+                        // receptor adapts. While the foot stays down the
+                        // response decays towards 1 — the adapted rate a
+                        // standing leg's hairs hold, which is the value the
+                        // organ is clamped at while the stance is measured.
+                        h = wasDown ? h + (1 - h) * a : settings.touchPeak
+                    } else {
+                        h += (0 - h) * a
+                    }
+                    touchContact[organ.leg] = down
+                    touchResponse[organ.leg] = h
+                    value = settings.tone * h
                 default:
                     value = settings.tone
                 }
@@ -564,6 +652,11 @@ final class FlyCord {
     /// The pools that are firing at all.
     var activePools: Int { activation.filter { $0 >= 1 }.count }
 
+    /// How many feet the touch organ says are in contact — the channel's own
+    /// readout, so "the animal is standing", "the leg is in the air" and
+    /// "the touch channel is off" cannot be confused on the screen.
+    var touchFeetDown: Int { touchContact.values.filter { $0 }.count }
+
     /// The loudest pools, by the rate the connectome reported, for a per-pool
     /// readout — `[("T1_left tibia_flexor", 12.4), ...]`.
     func loudestPools(_ n: Int = 3) -> [(String, Double)] {
@@ -591,9 +684,16 @@ final class FlyCord {
             // that reads 0/42 with descending at 15 Hz is a broken balance.
             // Without both halves on the screen neither can be told apart
             // (this is item 22's per-pool readout, and item 27's measurement).
-            return String(format: "%d/%d pools · %.1f Hz · desc %.1f Hz (tone %.1f) · organs %.1f Hz · %@",
+            // The touch channel reports its own input the way the load channel
+            // does: `touch 5/6` is five feet in contact, and it is only printed
+            // when the channel is on, because 0/6 with the channel off would
+            // read as an animal in the air.
+            let touch = settings.channels.contains("tactile")
+                ? String(format: " · touch %d/6", touchFeetDown) : ""
+            return String(format: "%d/%d pools · %.1f Hz · desc %.1f Hz (tone %.1f) · organs %.1f Hz%@ · %@",
                           activePools, pools.count, meanPoolHz,
                           descendingRateHz, descendingDrive, organRateHz,
+                          touch,
                           settings.channels.sorted().joined(separator: "+"))
         }
     }

@@ -72,7 +72,14 @@ SIGN = {"acetylcholine": +1.0, "ach": +1.0, "gaba": -1.0,
 
 # The organ table lives with the pools now (tools/motor_pools.py), because the
 # phone closes the loop with the same organs this tool measures the reflex in.
-from motor_pools import ORGANS   # noqa: E402
+#
+# The three *proprioceptors*, though — not the whole table. This tool drives
+# every cell of every organ it is handed and reads what the pools do, and its
+# numbers are the project's reflex baseline; adding the leg's 3,184 tactile
+# cells to that simulation would move a baseline rather than measure touch
+# (tools/motor_pools.py says the same, where the view is defined). Item 12
+# measures the touch pathway on its own, in `tools/tactile_probe.py`.
+from motor_pools import PROPRIOCEPTORS as ORGANS   # noqa: E402
 
 # The motor pools live in one file, because step 6 needs the same table on the
 # phone (tools/motor_pools.py). Re-exported here so every caller in this file
@@ -361,8 +368,8 @@ def leg_anatomy(a, loaded=None):
     part_here = np.array([leg in p for p in part_s])
 
     organs = {}
-    for name, funcs in ORGANS.items():
-        m = (fn == "proprioception") & np.isin(det, list(funcs)) & on_leg
+    for name, spec in ORGANS.items():
+        m = (fn == spec["cell_function"]) & np.isin(det, list(spec["functions"])) & on_leg
         m &= part_here | (neuroneme == neuro)
         organs[name] = np.flatnonzero(m)
 

@@ -85,6 +85,12 @@ def load(bin_path: pathlib.Path, meta_path: pathlib.Path):
                 colIdx=view("csrColIdx", np.uint32),
                 weight=view("csrWeight", np.float16).astype(np.float32),
                 delay=view("csrDelay", np.uint8),
+                # 8 bytes per neuron, in the pack's own order: system id,
+                # super-class id, transmitter id, flags, then the cell type as a
+                # little-endian uint16. A tool that asks "what are this group's
+                # targets" reads the answer here rather than in the feather, so
+                # it describes the connectome the app actually loaded.
+                neuronMeta=view("neuronMeta", np.uint8).reshape(-1, 8),
                 meta=meta, groups=groups, members=members)
 
 

@@ -77,9 +77,6 @@ DRIVEN_JOINTS = ("coxa_abduct", "femur", "tibia")
 POOL_ACTION = s3.POOL_ACTION
 POOLS = s2.POOLS
 
-# The two sense organs the body can tell the cord about, in step 2's
-# vocabulary. Chordotonal = joint position, campaniform = load.
-ORGAN_FUNCTIONS = s2.ORGANS
 
 
 # The names the app asks the connectome for. They come from the table that
@@ -88,6 +85,16 @@ ORGAN_FUNCTIONS = s2.ORGANS
 # `pool:T1_left:tibia_flexor` in flybanc.bin is a loop that reads silence, and
 # silence looks exactly like an animal doing nothing.
 import motor_pools as _mp                                          # noqa: E402
+
+# The sense organs the body can tell the cord about. Chordotonal = joint
+# position, campaniform = load, tactile = touch (item 12). The table comes from
+# `motor_pools.py` rather than from step 2's view of it: step 2 measures the
+# proprioceptor reflex and is deliberately handed only the three proprioceptors,
+# while the asset the cord reads has to name every organ the cord drives. The
+# empty list an organ with no kinds of its own gets is not a missing value —
+# `motor_pools.py` records why the touch organ is selected by function alone.
+ORGAN_FUNCTIONS = {k: (spec["functions"] or set())
+                   for k, spec in _mp.ORGANS.items()}
 
 
 def motor_pool_group(part: str, side: str, pool: str) -> str:
@@ -466,6 +473,18 @@ def leg_tables(args, tree, name_of) -> dict:
                         "leg_bodies": feet,
                         "group": organ_group(part, side, "campaniform"),
                         "functions": sorted(ORGAN_FUNCTIONS["campaniform"]),
+                    },
+                    # Touch (item 12): the leg's tactile hairs (trichoid
+                    # sensilla). Not a gauge of the load — a hair reports that
+                    # the foot is *in contact*, and it adapts while it stays
+                    # there, so the cord reads it as an event (FlyCord's
+                    # `case "tactile"`) and not as a magnitude. The bodies are
+                    # the same feet the campaniform organ is read from, because
+                    # the floor is what this body can be in contact with.
+                    "tactile": {
+                        "leg_bodies": feet,
+                        "group": organ_group(part, side, "tactile"),
+                        "functions": sorted(ORGAN_FUNCTIONS["tactile"]),
                     },
                 },
             }

@@ -135,9 +135,17 @@ final class FlyCordTests: XCTestCase {
         XCTAssertGreaterThan(cord.pools.count, 30,
                              "the asset carries far fewer pools than the six legs "
                              + "have — was it written by an older build_body.py?")
-        XCTAssertEqual(cord.organs.count, asset.legs.count * 2,
-                       "each leg reports two organs: the chordotonal organ and "
-                       + "the campaniform sensilla")
+        var organsInAsset = 0
+        for (_, leg) in asset.legs { organsInAsset += leg.organs.count }
+        XCTAssertEqual(cord.organs.count, organsInAsset,
+                       "the cord drives one organ per entry the asset names "
+                       + "(chordotonal, campaniform, and the tactile hairs of "
+                       + "item 12)")
+        XCTAssertGreaterThanOrEqual(cord.organs.count, asset.legs.count * 3,
+                                    "three organs per leg: the chordotonal organ, "
+                                    + "the campaniform sensilla and the tactile "
+                                    + "hairs — was the asset written by an older "
+                                    + "build_body.py?")
 
         // Three joints per leg, and the loops must agree with the asset about
         // which hinge each pool pulls.
@@ -662,6 +670,110 @@ final class FlyCordTests: XCTestCase {
                                                 rotate: SIMD3(0, 0, 300)))
         XCTAssertNil(stub.drives["sensory_haltere_left"],
                      "one haltere was driven while the other was missing")
+    }
+
+    // MARK: - Item 12: touch is an event, not a load
+
+    /// The tactile organ's input, tested the way the other two are: the animal
+    /// stands (the organ's own unit, the load the leg carries standing), the leg
+    /// is lifted, and the leg lands again. What the organ must report is the
+    /// *change of contact* — silence in the air, a burst at touchdown, and the
+    /// adapted level while the foot rests — which is what the campaniform organ
+    /// cannot say, because a load is the same number in all three states.
+    func testTheTouchOrganReportsContactAndNotLoad() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        guard let organ = cord.organs.first(where: { $0.kind == "tactile" }),
+              let chord = cord.organs.first(where: {
+                  $0.leg == organ.leg && $0.kind == "chordotonal" }) else {
+            throw XCTSkip("the asset carries no tactile organ — run "
+                          + "tools/build_body.py from the item-12 table")
+        }
+        let tone = cord.settings.tone
+        // Stand through the calibration window, then one running millisecond:
+        // a foot that has been down for 300 ms holds the adapted response, and
+        // the adapted response is the value the window clamped the organ at.
+        for _ in 0..<500 {
+            _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount))
+        }
+        XCTAssertEqual(cord.phase, .running)
+        _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount))
+        XCTAssertEqual(stub.drives[organ.group] ?? -1, tone, accuracy: tone * 1e-3,
+                       "a standing foot must drive the hair organ at the stance's "
+                       + "own value, or the touch channel moves an animal that is "
+                       + "already standing still")
+        XCTAssertEqual(cord.touchFeetDown, 6)
+        // The leg lifts: no floor force at all under it.
+        let lifted = stance(asset, hingeCount: cord.hingeCount,
+                            loads: [organ.leg: 0.0])
+        for _ in 0..<100 { _ = cord.update(dtMs: 1, proprio: lifted) }
+        XCTAssertEqual(cord.touchFeetDown, 5,
+                       "the organ did not notice the foot leaving the floor")
+        XCTAssertLessThan(stub.drives[organ.group] ?? -1, tone * 0.1,
+                          "a hair in the air is a silent hair")
+        // and the leg lands again: the onset is a burst, above the adapted
+        // level, because a trichoid sensillum is phasic-tonic (assumption #42).
+        let standing = stance(asset, hingeCount: cord.hingeCount)
+        _ = cord.update(dtMs: 1, proprio: standing)
+        XCTAssertEqual(cord.touchFeetDown, 6)
+        XCTAssertGreaterThan(stub.drives[organ.group] ?? -1, tone * 1.5,
+                             "touchdown produced no phasic burst — the organ is "
+                             + "reporting the load, not the event")
+        for _ in 0..<300 { _ = cord.update(dtMs: 1, proprio: standing) }
+        XCTAssertEqual(stub.drives[organ.group] ?? -1, tone, accuracy: tone * 1e-3,
+                       "the burst did not adapt back to the standing level")
+    }
+
+    /// A foot that rests exactly on the contact threshold must not produce a
+    /// stream of landings. Without hysteresis the same sequence does, which is
+    /// the control experiment: the check below is only a check if it fails when
+    /// the hysteresis is removed.
+    func testTheTouchOrganDoesNotChatterAtTheContactThreshold() throws {
+        let asset = try asset()
+        let stub = StubRates()
+        let cord = FlyCord(asset: asset, source: stub)
+        guard let organ = cord.organs.first(where: { $0.kind == "tactile" }) else {
+            throw XCTSkip("the asset carries no tactile organ")
+        }
+        let tone = cord.settings.tone
+        for _ in 0..<500 {
+            _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount))
+        }
+        // The foot sits on the boundary: above the contact threshold on one
+        // millisecond, below it on the next, every millisecond for 200 ms.
+        let f = cord.settings.touchContactFraction
+        var peak = 0.0
+        for ms in 0..<200 {
+            let load = ms % 2 == 0 ? f * 1.2 : f * 0.8
+            _ = cord.update(dtMs: 1, proprio: stance(asset, hingeCount: cord.hingeCount,
+                                                     loads: [organ.leg: load]))
+            peak = max(peak, stub.drives[organ.group] ?? 0)
+        }
+        XCTAssertLessThanOrEqual(peak, tone * 1.001,
+                                 "a foot resting on the contact threshold produced "
+                                 + "onsets — every one of them a landing the animal "
+                                 + "never had")
+
+        // The control: with the hysteresis removed, the same boundary does
+        // chatter. If it does not, the test above is not testing anything.
+        let stub2 = StubRates()
+        var chatty = FlyCordSettings()
+        chatty.touchHysteresis = 1.0
+        let cord2 = FlyCord(asset: asset, source: stub2, settings: chatty)
+        for _ in 0..<500 {
+            _ = cord2.update(dtMs: 1, proprio: stance(asset, hingeCount: cord2.hingeCount))
+        }
+        var peak2 = 0.0
+        for ms in 0..<200 {
+            let load = ms % 2 == 0 ? f * 1.2 : f * 0.8
+            _ = cord2.update(dtMs: 1, proprio: stance(asset, hingeCount: cord2.hingeCount,
+                                                      loads: [organ.leg: load]))
+            peak2 = max(peak2, stub2.drives[organ.group] ?? 0)
+        }
+        XCTAssertGreaterThan(peak2, tone * 1.5,
+                             "the no-hysteresis rehearsal did not chatter, so the "
+                             + "hysteresis assertion above proves nothing")
     }
 }
 

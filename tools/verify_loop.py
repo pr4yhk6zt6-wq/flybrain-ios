@@ -24,7 +24,8 @@ So this checks, on the files the app will actually ship:
   3. every organ group the body asset names is in the connectome's group list,
   4. and is not empty,
   5. every pool lands on a hinge the body asset actually has,
-  6. the loop's shape: 6 legs, 3 joints each, 2 organs each,
+  6. the loop's shape: 6 legs, 3 joints each, one of every organ the organ
+     table declares (tools/motor_pools.py) on every leg,
   7. the asset reports what it could not place rather than dropping it.
 
 Run from the repository root, after both packers:
@@ -41,6 +42,9 @@ import json
 import pathlib
 import struct
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import motor_pools as s2                                    # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MAGIC = b"FLYBANC_"
@@ -104,10 +108,15 @@ def main() -> int:
                     f"{pool['qpos_sign']}, which is not a direction")
         unplaced += len(leg.get("pools_not_placed", []))
         organs = leg.get("organs", {})
-        if set(organs) != {"chordotonal", "campaniform"}:
+        # The set the body must report is the organ table's own keys, not a list
+        # spelled again here: an organ added to `tools/motor_pools.py` and
+        # forgotten in the asset would otherwise read as 0 Hz on whichever side
+        # of the loop missed it, and 0 Hz is this project's silent failure.
+        if set(organs) != set(s2.DRIVEN_ORGANS):
             problems.append(
-                f"{key}: the leg reports organs {sorted(organs)}, not the two "
-                f"the loop drives")
+                f"{key}: the leg reports organs {sorted(organs)}, not the "
+                f"{len(s2.DRIVEN_ORGANS)} the loop drives "
+                f"({sorted(s2.DRIVEN_ORGANS)})")
         for kind, organ in sorted(organs.items()):
             if not organ.get("group"):
                 problems.append(f"{key}: organ '{kind}' has no group name")
@@ -142,8 +151,8 @@ def main() -> int:
          all(by_name.get(g, 0) > 0 for g in pool_groups + organ_groups)),
         ("the connectome carries one group per pool, per leg and side",
          n_pool_named >= 6 * len({p.split(":")[2] for p in pool_groups})),
-        ("the connectome carries both organs for every leg",
-         n_organ_named >= 12),
+        ("the connectome carries every organ for every leg",
+         n_organ_named >= 6 * len(s2.ORGANS)),   # all four, driven or not
         ("nothing the body could not place was dropped",
          not [p for l in legs.values() for p in l.get("pools_not_placed", [])
               if p.get("reason") == "joint not modelled"]),

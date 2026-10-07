@@ -744,6 +744,15 @@ jobs:
       - name: Step 6 — both ends of the loop must exist, and by the same names
         run: python3 tools/verify_loop.py
 
+      # Item 12: the leg's touch organ is a sense organ only if it is (a) in the
+      # connectome the app loads, (b) populated, and (c) able to reach a motor
+      # neuron — a group that reads as silence is the failure mode this project
+      # refuses to hide behind. The tool also runs one footfall through the
+      # reference LIF and prints what the leg's pools do, so the numbers in
+      # reports/item12_touch.md are regenerated rather than quoted.
+      - name: Item 12 — every leg's tactile organ must reach the motor pools
+        run: python3 tools/tactile_probe.py --gate
+
       # The tone the cord runs on is the brain's, and FlyCord puts it on the
       # descending population — where tools/step3_closedloop.py puts it. That is
       # only a wiring claim until it is measured in the binary the app carries:
